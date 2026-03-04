@@ -1,0 +1,206 @@
+"""Base classes for simulator adapters.
+
+SimulatorAdapter
+    Abstract base class that all simulator adapters implement.
+BaseBLISAdapter
+    Shared logic for the three BLIS adapter variants (blackbox, roofline,
+    crossmodel): CLI argument construction, result parsing, and per-stage
+    request splitting.
+"""
+
+from __future__ import annotations
+
+import json
+from abc import ABC, abstractmethod
+
+import numpy as np
+
+from experiment.data_model import (
+    Experiment,
+    LatencyDistribution,
+    SimulatorResult,
+    StageMetrics,
+    ThroughputMetrics,
+)
+
+
+class SimulatorAdapter(ABC):
+    """Interface that every simulator adapter must implement."""
+
+    @property
+    @abstractmethod
+    def name(self) -> str:
+        """Short identifier for this adapter (used in reports)."""
+        ...
+
+    def can_run(self, experiment: Experiment) -> bool:
+        """Return True if this adapter supports the given experiment."""
+        return True
+
+    @abstractmethod
+    def run(self, experiment: Experiment) -> SimulatorResult:
+        """Execute the simulator and return predicted metrics."""
+        ...
+
+
+class BaseBLISAdapter(SimulatorAdapter):
+    """Shared logic for all BLIS simulator modes.
+
+    Subclasses override ``run()`` to add mode-specific CLI flags
+    (e.g. ``--latency-model roofline``).
+    """
+
+    def __init__(self, blis_binary: str):
+        self.blis_binary = blis_binary
+
+    def _build_common_args(
+        self,
+        experiment: Experiment,
+        trace_spec: str,
+        results_path: str,
+    ) -> list[str]:
+        """Build CLI arguments shared by all BLIS modes."""
+        return [
+            self.blis_binary, "run",
+            "--model", experiment.model,
+            "--tp", str(experiment.tp),
+            "--hardware", "H100",
+            "--max-running", str(experiment.max_num_seqs),
+            "--max-tokens", str(experiment.max_num_batched_tokens),
+            "--total-kv-blocks", str(experiment.total_kv_blocks),
+            "--kv-cpu-blocks", str(experiment.cpu_kv_blocks),
+            "--kv-offload-threshold", "0.9",
+            "--kv-transfer-bandwidth", "100.0",
+            "--seed", "0",
+            "--workload-spec", trace_spec,
+            "--results-path", results_path,
+        ]
+
+    def _split_requests_by_stage(
+        self,
+        requests: list[dict],
+        stages_config: list[dict],
+    ) -> list[list[dict]]:
+        """Split a flat request list into per-stage buckets by arrival time.
+
+        Stage boundaries are cumulative durations from ``stages_config``.
+        A request at exactly a boundary is assigned to the earlier stage.
+        Requests past all boundaries fall into the last stage.
+        """
+        boundaries: list[float] = []
+        cumulative = 0.0
+        for s in stages_config:
+            cumulative += s["duration"]
+            boundaries.append(cumulative)
+
+        stage_buckets: list[list[dict]] = [[] for _ in stages_config]
+        for req in requests:
+            for i, boundary in enumerate(boundaries):
+                if req["arrived_at"] <= boundary or i == len(boundaries) - 1:
+                    stage_buckets[i].append(req)
+                    break
+        return stage_buckets
+
+    def _parse_blis_results(
+        self,
+        results_path: str,
+        experiment: Experiment,
+    ) -> SimulatorResult:
+        """Parse BLIS JSON output into a SimulatorResult with per-stage breakdown."""
+        with open(results_path) as fh:
+            data = json.load(fh)
+
+        # --- Aggregate summary from top-level keys ---
+        summary = StageMetrics(
+            stage_index=-1,
+            rate=0.0,
+            duration=0.0,
+            num_requests=data.get("completed_requests", 0),
+            e2e=LatencyDistribution(
+                mean=data["e2e_mean_ms"],
+                p90=data["e2e_p90_ms"],
+                p99=data["e2e_p99_ms"],
+            ),
+            ttft=LatencyDistribution(
+                mean=data["ttft_mean_ms"],
+                p90=data["ttft_p90_ms"],
+                p99=data["ttft_p99_ms"],
+            ),
+            itl=LatencyDistribution(
+                mean=data["itl_mean_ms"],
+                p90=data["itl_p90_ms"],
+                p99=data["itl_p99_ms"],
+            ),
+            throughput=ThroughputMetrics(
+                input_tokens_per_sec=data.get("total_input_tokens", 0) / max(1, data.get("completed_requests", 1)),
+                output_tokens_per_sec=data.get("tokens_per_sec", 0),
+                requests_per_sec=data.get("responses_per_sec", 0),
+            ),
+        )
+
+        # --- Per-stage metrics from request-level data ---
+        stages_config = experiment.profile_config["load"]["stages"]
+        raw_requests = data.get("requests", [])
+        stage_buckets = self._split_requests_by_stage(raw_requests, stages_config)
+
+        stages: list[StageMetrics] = []
+        for i, bucket in enumerate(stage_buckets):
+            stages.append(self._compute_stage_from_bucket(bucket, i, stages_config[i]))
+
+        return SimulatorResult(
+            adapter_name=self.name,
+            experiment_folder=experiment.folder,
+            stages=stages,
+            summary=summary,
+        )
+
+    def _compute_stage_from_bucket(
+        self,
+        bucket: list[dict],
+        stage_index: int,
+        stage_cfg: dict,
+    ) -> StageMetrics:
+        """Compute percentile metrics for a single stage bucket."""
+        if not bucket:
+            zero_lat = LatencyDistribution(mean=0.0, p90=0.0, p99=0.0)
+            return StageMetrics(
+                stage_index=stage_index,
+                rate=float(stage_cfg.get("rate", 0)),
+                duration=float(stage_cfg.get("duration", 0)),
+                num_requests=0,
+                e2e=zero_lat,
+                ttft=zero_lat,
+                itl=zero_lat,
+                throughput=ThroughputMetrics(0, 0, 0),
+            )
+
+        e2e_vals = np.array([r["e2e_ms"] for r in bucket])
+        ttft_vals = np.array([r["ttft_ms"] for r in bucket])
+        itl_vals = np.array([r["itl_ms"] for r in bucket])
+
+        return StageMetrics(
+            stage_index=stage_index,
+            rate=float(stage_cfg.get("rate", 0)),
+            duration=float(stage_cfg.get("duration", 0)),
+            num_requests=len(bucket),
+            e2e=LatencyDistribution(
+                mean=float(np.mean(e2e_vals)),
+                p90=float(np.percentile(e2e_vals, 90)),
+                p99=float(np.percentile(e2e_vals, 99)),
+            ),
+            ttft=LatencyDistribution(
+                mean=float(np.mean(ttft_vals)),
+                p90=float(np.percentile(ttft_vals, 90)),
+                p99=float(np.percentile(ttft_vals, 99)),
+            ),
+            itl=LatencyDistribution(
+                mean=float(np.mean(itl_vals)),
+                p90=float(np.percentile(itl_vals, 90)),
+                p99=float(np.percentile(itl_vals, 99)),
+            ),
+            throughput=ThroughputMetrics(
+                input_tokens_per_sec=sum(r["num_prefill_tokens"] for r in bucket) / stage_cfg["duration"],
+                output_tokens_per_sec=sum(r["num_decode_tokens"] for r in bucket) / stage_cfg["duration"],
+                requests_per_sec=len(bucket) / stage_cfg["duration"],
+            ),
+        )
