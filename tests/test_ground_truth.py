@@ -115,8 +115,12 @@ def _make_exp_dir(
 
 
 def _make_stage_metrics(count, rate, duration, e2e_mean, ttft_mean, itl_mean, is_summary=False):
-    """Build a minimal stage/summary lifecycle metrics JSON structure."""
-    load_summary = {"count": count}
+    """Build a minimal stage/summary lifecycle metrics JSON structure.
+
+    ``count`` is the number of *successful* requests.  ``load_summary.count``
+    is deliberately set higher to verify that parsing uses ``successes.count``.
+    """
+    load_summary = {"count": count + 100}  # total sent (includes failures)
     if not is_summary:
         load_summary["send_duration"] = duration
         load_summary["requested_rate"] = rate

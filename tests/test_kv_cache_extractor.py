@@ -163,31 +163,22 @@ class TestExtractCpuKvBlocks:
         path = _write_kv_events(str(tmp_path), records)
         assert extract_cpu_kv_blocks(path) == 0
 
-    def test_block_stored_cpu(self, tmp_path: str) -> None:
-        """BlockStored events with 'CPU' at position [6] increment the count."""
+    def test_block_stored_cpu_ignored(self, tmp_path: str) -> None:
+        """BlockStored events are NOT counted (same blocks as TransferCompleted)."""
         records = [
-            # Three BlockStored CPU events in one line
             [
                 1.0,
                 [
                     ["BlockStored", "a", "b", "c", "d", "e", "CPU"],
                     ["BlockStored", "a", "b", "c", "d", "e", "CPU"],
-                    ["BlockStored", "a", "b", "c", "d", "e", "GPU"],  # not CPU
                 ],
-                {},
-                {},
-            ],
-            # One more BlockStored CPU
-            [
-                2.0,
-                [["BlockStored", "a", "b", "c", "d", "e", "CPU"]],
                 {},
                 {},
             ],
         ]
         path = _write_kv_events(str(tmp_path), records)
-        # Peak after line 1: 2, after line 2: 3  => peak = 3
-        assert extract_cpu_kv_blocks(path) == 3
+        # BlockStored is ignored to avoid double-counting
+        assert extract_cpu_kv_blocks(path) == 0
 
     def test_transfer_completed_gpu_to_cpu(self, tmp_path: str) -> None:
         """TransferCompleted GPU->CPU increments by block_count."""
@@ -227,33 +218,18 @@ class TestExtractCpuKvBlocks:
         # Peak was 10 (after line 1); drops to 6 after line 2 but peak is still 10.
         assert extract_cpu_kv_blocks(path) == 10
 
-    def test_cache_store_committed_cpu(self, tmp_path: str) -> None:
-        """CacheStoreCommitted with tier='CPU' increments by block_count."""
+    def test_cache_store_committed_ignored(self, tmp_path: str) -> None:
+        """CacheStoreCommitted events are NOT counted (same blocks as TransferCompleted)."""
         records = [
             [
                 1.0,
-                [
-                    # ["CacheStoreCommitted", req_id, tier, block_count, seq]
-                    ["CacheStoreCommitted", "req1", "CPU", 5, 0],
-                ],
+                [["CacheStoreCommitted", "req1", "CPU", 5, 0]],
                 {},
                 {},
             ],
         ]
         path = _write_kv_events(str(tmp_path), records)
-        assert extract_cpu_kv_blocks(path) == 5
-
-    def test_cache_store_committed_gpu_ignored(self, tmp_path: str) -> None:
-        """CacheStoreCommitted with tier='GPU' should not affect CPU count."""
-        records = [
-            [
-                1.0,
-                [["CacheStoreCommitted", "req1", "GPU", 5, 0]],
-                {},
-                {},
-            ],
-        ]
-        path = _write_kv_events(str(tmp_path), records)
+        # CacheStoreCommitted is ignored to avoid double-counting
         assert extract_cpu_kv_blocks(path) == 0
 
     def test_peak_tracking_across_lines(self, tmp_path: str) -> None:
@@ -262,41 +238,41 @@ class TestExtractCpuKvBlocks:
             # +10
             [1.0, [["TransferCompleted", 1, "r1", "GPU", "CPU", 10, True, 0]], {}, {}],
             # +5 -> 15
-            [2.0, [["CacheStoreCommitted", "r2", "CPU", 5, 1]], {}, {}],
+            [2.0, [["TransferCompleted", 3, "r2", "GPU", "CPU", 5, True, 1]], {}, {}],
             # -8 -> 7
             [3.0, [["TransferCompleted", 2, "r3", "CPU", "GPU", 8, True, 2]], {}, {}],
             # +2 -> 9
-            [4.0, [["CacheStoreCommitted", "r4", "CPU", 2, 3]], {}, {}],
+            [4.0, [["TransferCompleted", 4, "r4", "GPU", "CPU", 2, True, 3]], {}, {}],
         ]
         path = _write_kv_events(str(tmp_path), records)
         # Peak is 15 (after line 2)
         assert extract_cpu_kv_blocks(path) == 15
 
-    def test_mixed_events_in_single_line(self, tmp_path: str) -> None:
-        """Multiple event types in a single JSONL line are all processed."""
+    def test_only_transfer_completed_counted(self, tmp_path: str) -> None:
+        """Only TransferCompleted events are counted; BlockStored and CacheStoreCommitted are ignored."""
         records = [
             [
                 1.0,
                 [
-                    ["BlockStored", "a", "b", "c", "d", "e", "CPU"],  # +1
-                    ["TransferCompleted", 1, "r1", "GPU", "CPU", 5, True, 0],  # +5
-                    ["CacheStoreCommitted", "r2", "CPU", 3, 1],  # +3
+                    ["BlockStored", "a", "b", "c", "d", "e", "CPU"],           # ignored
+                    ["TransferCompleted", 1, "r1", "GPU", "CPU", 5, True, 0],   # +5
+                    ["CacheStoreCommitted", "r2", "CPU", 3, 1],                 # ignored
                 ],
                 {},
                 {},
             ],
         ]
         path = _write_kv_events(str(tmp_path), records)
-        # Total: 1 + 5 + 3 = 9
-        assert extract_cpu_kv_blocks(path) == 9
+        # Only TransferCompleted counted: 5
+        assert extract_cpu_kv_blocks(path) == 5
 
-    def test_block_stored_short_event_ignored(self, tmp_path: str) -> None:
-        """A BlockStored event with fewer than 7 elements should be ignored."""
+    def test_short_transfer_event_ignored(self, tmp_path: str) -> None:
+        """A TransferCompleted event with fewer than 7 elements should be ignored."""
         records = [
             [
                 1.0,
                 [
-                    ["BlockStored", "a", "b"],  # too short, no position [6]
+                    ["TransferCompleted", 1, "r1"],  # too short
                 ],
                 {},
                 {},
@@ -305,12 +281,57 @@ class TestExtractCpuKvBlocks:
         path = _write_kv_events(str(tmp_path), records)
         assert extract_cpu_kv_blocks(path) == 0
 
+    def test_failed_transfer_ignored(self, tmp_path: str) -> None:
+        """TransferCompleted with success=False should be ignored."""
+        records = [
+            [
+                1.0,
+                [
+                    ["TransferCompleted", 1, "r1", "GPU", "CPU", 10, False, 0],
+                ],
+                {},
+                {},
+            ],
+        ]
+        path = _write_kv_events(str(tmp_path), records)
+        assert extract_cpu_kv_blocks(path) == 0
+
+    def test_mixed_success_and_failure(self, tmp_path: str) -> None:
+        """Only successful transfers should count."""
+        records = [
+            [
+                1.0,
+                [
+                    ["TransferCompleted", 1, "r1", "GPU", "CPU", 10, True, 0],
+                    ["TransferCompleted", 2, "r2", "GPU", "CPU", 5, False, 1],
+                ],
+                {},
+                {},
+            ],
+        ]
+        path = _write_kv_events(str(tmp_path), records)
+        assert extract_cpu_kv_blocks(path) == 10
+
+    def test_negative_count_clamped_to_zero(self, tmp_path: str) -> None:
+        """CPU->GPU transfer that exceeds current count is clamped to zero."""
+        records = [
+            # Put 5 on CPU
+            [1.0, [["TransferCompleted", 1, "r1", "GPU", "CPU", 5, True, 0]], {}, {}],
+            # Remove 10 (more than available) — should clamp to 0, not go negative
+            [2.0, [["TransferCompleted", 2, "r2", "CPU", "GPU", 10, True, 1]], {}, {}],
+            # Add 3 more — should be 3, not -5+3=-2
+            [3.0, [["TransferCompleted", 3, "r3", "GPU", "CPU", 3, True, 2]], {}, {}],
+        ]
+        path = _write_kv_events(str(tmp_path), records)
+        # Peak is 5 (after line 1); after line 2 clamped to 0; after line 3 = 3
+        assert extract_cpu_kv_blocks(path) == 5
+
     def test_blank_lines_are_skipped(self, tmp_path: str) -> None:
         """Blank lines in the JSONL file should be silently skipped."""
         path = os.path.join(str(tmp_path), "kv_events.jsonl")
         with open(path, "w") as fh:
-            fh.write(json.dumps([1.0, [["CacheStoreCommitted", "r1", "CPU", 7, 0]], {}, {}]) + "\n")
+            fh.write(json.dumps([1.0, [["TransferCompleted", 1, "r1", "GPU", "CPU", 7, True, 0]], {}, {}]) + "\n")
             fh.write("\n")  # blank line
             fh.write("   \n")  # whitespace-only line
-            fh.write(json.dumps([2.0, [["CacheStoreCommitted", "r2", "CPU", 3, 1]], {}, {}]) + "\n")
+            fh.write(json.dumps([2.0, [["TransferCompleted", 2, "r2", "GPU", "CPU", 3, True, 1]], {}, {}]) + "\n")
         assert extract_cpu_kv_blocks(path) == 10

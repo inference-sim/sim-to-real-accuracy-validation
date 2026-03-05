@@ -49,3 +49,4 @@ class SimulatorResult:
     experiment_folder: str
     stages: list[StageMetrics]
     summary: StageMetrics
+    wall_clock_seconds: float = 0.0

@@ -155,10 +155,10 @@ class TestBuildCommonArgs:
 
         args = adapter._build_common_args(exp, trace_spec="/tmp/spec.yaml", results_path="/tmp/out.json")
 
-        idx = args.index("--max-running")
+        idx = args.index("--max-num-running-reqs")
         assert args[idx + 1] == "128"
 
-        idx = args.index("--max-tokens")
+        idx = args.index("--max-num-scheduled-tokens")
         assert args[idx + 1] == "2048"
 
     def test_args_include_workload_spec(self):
@@ -265,3 +265,46 @@ class TestParseBLISResults:
 
         # Should still produce 2 stages (with zeros for empty buckets)
         assert len(result.stages) == 2
+
+    def test_summary_throughput_computed(self, tmp_path):
+        """Summary input_tokens_per_sec = total_input_tokens / total_duration."""
+        adapter = _ConcreteBLISAdapter(blis_binary="blis")
+        blis_output = _make_blis_output(num_requests=10, stage_boundary=600.0)
+        results_path = str(tmp_path / "results.json")
+        with open(results_path, "w") as fh:
+            json.dump(blis_output, fh)
+
+        exp = _make_experiment()
+        result = adapter._parse_blis_results(results_path, exp)
+
+        # total_input_tokens=5660, total_duration=600+600=1200
+        expected_input_tps = 5660 / 1200.0
+        assert abs(result.summary.throughput.input_tokens_per_sec - expected_input_tps) < 0.01
+        assert abs(result.summary.throughput.output_tokens_per_sec - 1235.0) < 0.01
+        assert abs(result.summary.throughput.requests_per_sec - 5.0) < 0.01
+
+    def test_malformed_requests_filtered(self, tmp_path):
+        """Requests missing required keys are filtered out, not crashing."""
+        adapter = _ConcreteBLISAdapter(blis_binary="blis")
+        blis_output = _make_blis_output(num_requests=0, stage_boundary=600.0)
+        blis_output["requests"] = [
+            # Valid request
+            {
+                "arrived_at": 100.0, "e2e_ms": 1800.0, "ttft_ms": 25.0,
+                "itl_ms": 3.6, "num_prefill_tokens": 566, "num_decode_tokens": 247,
+            },
+            # Malformed — missing e2e_ms
+            {"arrived_at": 200.0, "ttft_ms": 25.0, "itl_ms": 3.6},
+            # Malformed — empty dict
+            {},
+        ]
+        results_path = str(tmp_path / "results.json")
+        with open(results_path, "w") as fh:
+            json.dump(blis_output, fh)
+
+        exp = _make_experiment()
+        result = adapter._parse_blis_results(results_path, exp)
+
+        # Only 1 valid request should be counted in stage 0
+        assert result.stages[0].num_requests == 1
+        assert result.stages[0].e2e.mean == 1800.0

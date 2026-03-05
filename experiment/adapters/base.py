@@ -11,9 +11,11 @@ BaseBLISAdapter
 from __future__ import annotations
 
 import json
+import os
 from abc import ABC, abstractmethod
 
 import numpy as np
+import yaml
 
 from experiment.data_model import (
     Experiment,
@@ -51,7 +53,8 @@ class BaseBLISAdapter(SimulatorAdapter):
     """
 
     def __init__(self, blis_binary: str):
-        self.blis_binary = blis_binary
+        self.blis_binary = os.path.abspath(blis_binary)
+        self._blis_dir = os.path.dirname(self.blis_binary)
 
     def _build_common_args(
         self,
@@ -65,8 +68,8 @@ class BaseBLISAdapter(SimulatorAdapter):
             "--model", experiment.model,
             "--tp", str(experiment.tp),
             "--hardware", "H100",
-            "--max-running", str(experiment.max_num_seqs),
-            "--max-tokens", str(experiment.max_num_batched_tokens),
+            "--max-num-running-reqs", str(experiment.max_num_seqs),
+            "--max-num-scheduled-tokens", str(experiment.max_num_batched_tokens),
             "--total-kv-blocks", str(experiment.total_kv_blocks),
             "--kv-cpu-blocks", str(experiment.cpu_kv_blocks),
             "--kv-offload-threshold", "0.9",
@@ -75,6 +78,47 @@ class BaseBLISAdapter(SimulatorAdapter):
             "--workload-spec", trace_spec,
             "--results-path", results_path,
         ]
+
+    @staticmethod
+    def _write_workload_spec(experiment: Experiment, output_path: str) -> str:
+        """Generate a BLIS WorkloadSpec YAML from the experiment's profile_config.
+
+        Uses the ``inference_perf`` format which BLIS expands into synthetic
+        clients matching the experiment's rate/duration stages and token
+        distributions.
+        """
+        stages_config = experiment.profile_config["load"]["stages"]
+        data_config = experiment.profile_config.get("data", {})
+        sp = data_config.get("shared_prefix", data_config)
+
+        total_requests = sum(
+            round(s["rate"] * s["duration"]) for s in stages_config
+        )
+
+        spec = {
+            "version": "2",
+            "seed": 0,
+            "num_requests": total_requests,
+            "inference_perf": {
+                "stages": [
+                    {"rate": float(s["rate"]), "duration": int(s["duration"])}
+                    for s in stages_config
+                ],
+                "shared_prefix": {
+                    "num_unique_system_prompts": int(sp.get("num_unique_system_prompts", 1)),
+                    "num_users_per_system_prompt": int(sp.get("num_users_per_system_prompt", 1)),
+                    "system_prompt_len": int(sp.get("system_prompt_len", 0)),
+                    "question_len": int(sp.get("question_len", 512)),
+                    "output_len": int(sp.get("output_len", 512)),
+                    "enable_multi_turn_chat": bool(sp.get("enable_multi_turn_chat", False)),
+                },
+            },
+        }
+
+        os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
+        with open(output_path, "w") as fh:
+            yaml.dump(spec, fh, default_flow_style=False)
+        return output_path
 
     def _split_requests_by_stage(
         self,
@@ -90,7 +134,7 @@ class BaseBLISAdapter(SimulatorAdapter):
         boundaries: list[float] = []
         cumulative = 0.0
         for s in stages_config:
-            cumulative += s["duration"]
+            cumulative += s.get("duration", 0)
             boundaries.append(cumulative)
 
         stage_buckets: list[list[dict]] = [[] for _ in stages_config]
@@ -111,36 +155,41 @@ class BaseBLISAdapter(SimulatorAdapter):
             data = json.load(fh)
 
         # --- Aggregate summary from top-level keys ---
+        stages_config = experiment.profile_config["load"]["stages"]
+        total_duration = sum(s["duration"] for s in stages_config)
+
         summary = StageMetrics(
             stage_index=-1,
             rate=0.0,
             duration=0.0,
             num_requests=data.get("completed_requests", 0),
             e2e=LatencyDistribution(
-                mean=data["e2e_mean_ms"],
-                p90=data["e2e_p90_ms"],
-                p99=data["e2e_p99_ms"],
+                mean=data.get("e2e_mean_ms", 0.0),
+                p90=data.get("e2e_p90_ms", 0.0),
+                p99=data.get("e2e_p99_ms", 0.0),
             ),
             ttft=LatencyDistribution(
-                mean=data["ttft_mean_ms"],
-                p90=data["ttft_p90_ms"],
-                p99=data["ttft_p99_ms"],
+                mean=data.get("ttft_mean_ms", 0.0),
+                p90=data.get("ttft_p90_ms", 0.0),
+                p99=data.get("ttft_p99_ms", 0.0),
             ),
             itl=LatencyDistribution(
-                mean=data["itl_mean_ms"],
-                p90=data["itl_p90_ms"],
-                p99=data["itl_p99_ms"],
+                mean=data.get("itl_mean_ms", 0.0),
+                p90=data.get("itl_p90_ms", 0.0),
+                p99=data.get("itl_p99_ms", 0.0),
             ),
             throughput=ThroughputMetrics(
-                input_tokens_per_sec=data.get("total_input_tokens", 0) / max(1, data.get("completed_requests", 1)),
+                input_tokens_per_sec=data.get("total_input_tokens", 0) / max(1.0, total_duration),
                 output_tokens_per_sec=data.get("tokens_per_sec", 0),
                 requests_per_sec=data.get("responses_per_sec", 0),
             ),
         )
 
         # --- Per-stage metrics from request-level data ---
-        stages_config = experiment.profile_config["load"]["stages"]
-        raw_requests = data.get("requests", [])
+        raw_requests = [
+            r for r in data.get("requests", [])
+            if isinstance(r, dict) and self._REQUIRED_REQUEST_KEYS.issubset(r)
+        ]
         stage_buckets = self._split_requests_by_stage(raw_requests, stages_config)
 
         stages: list[StageMetrics] = []
@@ -154,6 +203,8 @@ class BaseBLISAdapter(SimulatorAdapter):
             summary=summary,
         )
 
+    _REQUIRED_REQUEST_KEYS = {"e2e_ms", "ttft_ms", "itl_ms", "num_prefill_tokens", "num_decode_tokens", "arrived_at"}
+
     def _compute_stage_from_bucket(
         self,
         bucket: list[dict],
@@ -161,8 +212,12 @@ class BaseBLISAdapter(SimulatorAdapter):
         stage_cfg: dict,
     ) -> StageMetrics:
         """Compute percentile metrics for a single stage bucket."""
-        if not bucket:
-            zero_lat = LatencyDistribution(mean=0.0, p90=0.0, p99=0.0)
+        zero_lat = LatencyDistribution(mean=0.0, p90=0.0, p99=0.0)
+
+        # Filter out malformed request records that lack required keys.
+        valid = [r for r in bucket if self._REQUIRED_REQUEST_KEYS.issubset(r)]
+
+        if not valid:
             return StageMetrics(
                 stage_index=stage_index,
                 rate=float(stage_cfg.get("rate", 0)),
@@ -174,15 +229,16 @@ class BaseBLISAdapter(SimulatorAdapter):
                 throughput=ThroughputMetrics(0, 0, 0),
             )
 
-        e2e_vals = np.array([r["e2e_ms"] for r in bucket])
-        ttft_vals = np.array([r["ttft_ms"] for r in bucket])
-        itl_vals = np.array([r["itl_ms"] for r in bucket])
+        e2e_vals = np.array([r["e2e_ms"] for r in valid])
+        ttft_vals = np.array([r["ttft_ms"] for r in valid])
+        itl_vals = np.array([r["itl_ms"] for r in valid])
 
+        dur = max(1.0, stage_cfg.get("duration", 0))
         return StageMetrics(
             stage_index=stage_index,
             rate=float(stage_cfg.get("rate", 0)),
             duration=float(stage_cfg.get("duration", 0)),
-            num_requests=len(bucket),
+            num_requests=len(valid),
             e2e=LatencyDistribution(
                 mean=float(np.mean(e2e_vals)),
                 p90=float(np.percentile(e2e_vals, 90)),
@@ -199,8 +255,8 @@ class BaseBLISAdapter(SimulatorAdapter):
                 p99=float(np.percentile(itl_vals, 99)),
             ),
             throughput=ThroughputMetrics(
-                input_tokens_per_sec=sum(r["num_prefill_tokens"] for r in bucket) / stage_cfg["duration"],
-                output_tokens_per_sec=sum(r["num_decode_tokens"] for r in bucket) / stage_cfg["duration"],
-                requests_per_sec=len(bucket) / stage_cfg["duration"],
+                input_tokens_per_sec=sum(r["num_prefill_tokens"] for r in valid) / dur,
+                output_tokens_per_sec=sum(r["num_decode_tokens"] for r in valid) / dur,
+                requests_per_sec=len(valid) / dur,
             ),
         )

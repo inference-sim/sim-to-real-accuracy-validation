@@ -13,10 +13,13 @@ from __future__ import annotations
 
 import glob
 import json
+import logging
 import os
 import re
 
 import yaml
+
+logger = logging.getLogger(__name__)
 
 from experiment.data_model import (
     Experiment,
@@ -72,6 +75,11 @@ def parse_experiment(folder_path: str) -> Experiment:
     # 4. Parse stage lifecycle metrics
     perf_dir = os.path.join(folder_path, "inference-perf-data")
     stage_files = sorted(glob.glob(os.path.join(perf_dir, "stage_*_lifecycle_metrics.json")))
+    if len(stage_files) != len(stages_config):
+        logger.warning(
+            "Stage count mismatch in %s: %d files vs %d in profile.yaml",
+            folder_name, len(stage_files), len(stages_config),
+        )
     stages: list[StageMetrics] = []
     for i, stage_file in enumerate(stage_files):
         with open(stage_file) as fh:
@@ -132,7 +140,7 @@ def _parse_stage_metrics(
         rate = 0.0
         duration = 0.0
 
-    num_requests = load["count"]
+    num_requests = successes["count"]
 
     # Latencies: seconds → milliseconds
     e2e = _parse_latency_dist(latency["request_latency"])
