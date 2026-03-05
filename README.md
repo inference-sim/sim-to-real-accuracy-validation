@@ -50,9 +50,23 @@ sim-to-real-accuracy-validation/
 
 ### 1. Clone dependency repos and create symlinks
 
-This repo expects `inference-sim`, `llm-optimizer`, and `vidur` to be symlinks to their respective local clones. For example, if all repos live under the same parent directory:
+This repo expects `inference-sim`, `llm-optimizer`, and `vidur` to be symlinks to their respective local clones. The experiments in this repo were run against the following commits:
+
+| Repo | Commit | Description |
+|------|--------|-------------|
+| [inference-sim](https://github.com/inference-sim/inference-sim) | `b05154c` | hypothesis(H30-H32): BLIS replay vs real vLLM — three-way crossmodel validation |
+| [llm-optimizer](https://github.com/bentoml/llm-optimizer) | `bb82d22` | feat: add support for max workers |
+| [vidur](https://github.com/microsoft/vidur) | `8383d29` | [Bugfix]: Revert scheduler regression and introduce canary branch |
+
+Clone at the pinned versions and create symlinks (assuming repos live under the same parent directory):
 
 ```bash
+# Clone at pinned commits
+git clone git@github.com:inference-sim/inference-sim.git ../inference-sim && git -C ../inference-sim checkout b05154c
+git clone git@github.com:bentoml/llm-optimizer.git ../llm-optimizer && git -C ../llm-optimizer checkout bb82d22
+git clone git@github.com:microsoft/vidur.git ../vidur && git -C ../vidur checkout 8383d29
+
+# Symlink into this repo
 ln -s ../inference-sim inference-sim
 ln -s ../llm-optimizer llm-optimizer
 ln -s ../vidur vidur
