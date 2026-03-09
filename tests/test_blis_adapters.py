@@ -68,9 +68,23 @@ def _make_experiment(model="meta-llama/Llama-2-7b-hf", tp=1) -> Experiment:
     )
 
 
-def _write_defaults_yaml(tmpdir: str, models: list[str]) -> str:
-    """Write a synthetic defaults.yaml with given model IDs."""
-    data = {"defaults": {m: {"GPU": "H100", "tensor_parallelism": 1} for m in models}}
+def _write_defaults_yaml(tmpdir: str, models: list[str], tp: int = 1) -> str:
+    """Write a synthetic defaults.yaml with given model IDs and trained coefficients."""
+    data = {
+        "defaults": {m: {"GPU": "H100", "tensor_parallelism": tp} for m in models},
+        "models": [
+            {
+                "id": m,
+                "GPU": "H100",
+                "tensor_parallelism": tp,
+                "vllm_version": "vllm/vllm-openai:v0.8.4",
+                "alpha_coeffs": [1.0, 2.0, 3.0],
+                "beta_coeffs": [4.0, 5.0, 6.0],
+                "total_kv_blocks": 2537,
+            }
+            for m in models
+        ],
+    }
     path = os.path.join(tmpdir, "defaults.yaml")
     with open(path, "w") as fh:
         yaml.dump(data, fh)
@@ -118,6 +132,13 @@ class TestBlackboxCanRun:
         defaults = _write_defaults_yaml(str(tmp_path), ["meta-llama/llama-3.1-8b-instruct"])
         adapter = BLISBlackboxAdapter("/tmp/blis", defaults_yaml=defaults)
         exp = _make_experiment(model="meta-llama/Llama-2-7b-hf")
+        assert adapter.can_run(exp) is False
+
+    def test_tp_mismatch(self, tmp_path):
+        """Coefficients exist for TP=1 but experiment uses TP=2 — should reject."""
+        defaults = _write_defaults_yaml(str(tmp_path), ["codellama/codellama-34b-instruct-hf"], tp=1)
+        adapter = BLISBlackboxAdapter("/tmp/blis", defaults_yaml=defaults)
+        exp = _make_experiment(model="codellama/CodeLlama-34b-Instruct-hf", tp=2)
         assert adapter.can_run(exp) is False
 
     def test_missing_defaults_file(self):
