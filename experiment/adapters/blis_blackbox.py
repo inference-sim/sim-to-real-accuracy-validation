@@ -15,9 +15,8 @@ from experiment.data_model import Experiment, SimulatorResult
 class BLISBlackboxAdapter(BaseBLISAdapter):
     """BLIS simulator in blackbox mode (trained coefficients).
 
-    ``can_run()`` returns True only when the experiment's model appears in
-    ``defaults.yaml`` (case-insensitive match), meaning profiled coefficients
-    exist for it.
+    ``can_run()`` returns True only when ``defaults.yaml`` contains trained
+    coefficients matching the experiment's (model, TP) pair.
     """
 
     def __init__(self, blis_binary: str, defaults_yaml: str | None = None):
@@ -31,16 +30,22 @@ class BLISBlackboxAdapter(BaseBLISAdapter):
         return "blis-blackbox"
 
     def can_run(self, experiment: Experiment) -> bool:
-        """True if defaults.yaml has an entry for this model (case-insensitive)."""
+        """True if defaults.yaml has trained coefficients for this (model, TP) pair."""
         try:
             with open(self._defaults_yaml) as fh:
                 data = yaml.safe_load(fh)
         except (FileNotFoundError, PermissionError, yaml.YAMLError):
             return False
 
-        defaults = (data or {}).get("defaults", {})
         model_lower = experiment.model.lower()
-        return any(key.lower() == model_lower for key in defaults)
+        for entry in (data or {}).get("models", []):
+            if (
+                entry.get("id", "").lower() == model_lower
+                and entry.get("tensor_parallelism") == experiment.tp
+                and any(c != 0 for c in entry.get("alpha_coeffs", []))
+            ):
+                return True
+        return False
 
     def run(self, experiment: Experiment) -> SimulatorResult:
         with tempfile.TemporaryDirectory() as tmpdir:
