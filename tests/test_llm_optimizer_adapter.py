@@ -242,8 +242,8 @@ class TestRunWithMock:
 
     @patch("experiment.adapters.llm_optimizer_est.estimate_llm_performance")
     @patch("experiment.adapters.llm_optimizer_est.get_model_config_from_hf")
-    def test_heuristic_percentiles(self, mock_get_cfg, mock_estimate):
-        """P90 = mean * 1.2, P99 = mean * 1.6."""
+    def test_percentiles_are_none(self, mock_get_cfg, mock_estimate):
+        """P90/P99 should be None (point-estimate simulator)."""
         mock_get_cfg.return_value = MagicMock()
         mock_estimate.return_value = _FakePerformanceResult(
             ttft_ms=25.0,
@@ -260,12 +260,12 @@ class TestRunWithMock:
         result = adapter.run(exp)
 
         s0 = result.stages[0]
-        # E2E: mean=1800, p90=1800*1.2=2160, p99=1800*1.6=2880
-        assert abs(s0.e2e.p90 - 2160.0) < 0.01
-        assert abs(s0.e2e.p99 - 2880.0) < 0.01
-        # TTFT: mean=25, p90=30, p99=40
-        assert abs(s0.ttft.p90 - 30.0) < 0.01
-        assert abs(s0.ttft.p99 - 40.0) < 0.01
+        assert s0.e2e.p90 is None
+        assert s0.e2e.p99 is None
+        assert s0.ttft.p90 is None
+        assert s0.ttft.p99 is None
+        assert s0.itl.p90 is None
+        assert s0.itl.p99 is None
 
     @patch("experiment.adapters.llm_optimizer_est.estimate_llm_performance")
     @patch("experiment.adapters.llm_optimizer_est.get_model_config_from_hf")

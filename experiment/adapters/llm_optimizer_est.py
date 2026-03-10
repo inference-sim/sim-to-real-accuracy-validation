@@ -4,8 +4,9 @@ Calls ``estimate_llm_performance`` from the ``llm-optimizer`` package once
 per stage, deriving concurrency via Little's Law and mapping the roofline
 result to :class:`StageMetrics`.
 
-Since llm-optimizer produces only **mean** latency estimates, heuristic
-percentile multipliers (P90 = mean × 1.2, P99 = mean × 1.6) are applied.
+Since llm-optimizer produces only **mean** latency estimates, P90 and P99
+are left as ``None`` (the metrics layer skips comparisons where the
+simulator does not provide a value).
 """
 
 from __future__ import annotations
@@ -18,10 +19,6 @@ from experiment.data_model import (
     StageMetrics,
     ThroughputMetrics,
 )
-
-_P90_MULT = 1.2
-_P99_MULT = 1.6
-
 
 def get_model_config_from_hf(model_id: str):
     """Lazy import wrapper — allows mocking without requiring llm_optimizer installed."""
@@ -76,11 +73,7 @@ class LLMOptimizerEstimateAdapter(SimulatorAdapter):
 
     @staticmethod
     def _make_latency_dist(mean: float) -> LatencyDistribution:
-        return LatencyDistribution(
-            mean=mean,
-            p90=mean * _P90_MULT,
-            p99=mean * _P99_MULT,
-        )
+        return LatencyDistribution(mean=mean)
 
     # ------------------------------------------------------------------
     # Public API
@@ -142,7 +135,7 @@ class LLMOptimizerEstimateAdapter(SimulatorAdapter):
         total_reqs = sum(s.num_requests for s in stages)
         total_duration = sum(s.duration for s in stages)
         if total_reqs == 0:
-            zero = LatencyDistribution(0, 0, 0)
+            zero = LatencyDistribution(0)
             return StageMetrics(
                 stage_index=-1, rate=0, duration=0, num_requests=0,
                 e2e=zero, ttft=zero, itl=zero,
@@ -166,9 +159,9 @@ class LLMOptimizerEstimateAdapter(SimulatorAdapter):
             rate=0.0,
             duration=0.0,
             num_requests=total_reqs,
-            e2e=LatencyDistribution(e2e_mean, e2e_mean * _P90_MULT, e2e_mean * _P99_MULT),
-            ttft=LatencyDistribution(ttft_mean, ttft_mean * _P90_MULT, ttft_mean * _P99_MULT),
-            itl=LatencyDistribution(itl_mean, itl_mean * _P90_MULT, itl_mean * _P99_MULT),
+            e2e=LatencyDistribution(e2e_mean),
+            ttft=LatencyDistribution(ttft_mean),
+            itl=LatencyDistribution(itl_mean),
             throughput=ThroughputMetrics(
                 input_tokens_per_sec=_dur_wavg(lambda s: s.throughput.input_tokens_per_sec),
                 output_tokens_per_sec=_dur_wavg(lambda s: s.throughput.output_tokens_per_sec),

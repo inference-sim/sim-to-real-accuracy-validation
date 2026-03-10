@@ -1,11 +1,13 @@
+from __future__ import annotations
+
 from dataclasses import dataclass
 
 
 @dataclass
 class LatencyDistribution:
     mean: float  # milliseconds
-    p90: float
-    p99: float
+    p90: float | None = None
+    p99: float | None = None
 
 
 @dataclass

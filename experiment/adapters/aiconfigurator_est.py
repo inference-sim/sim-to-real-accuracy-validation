@@ -5,9 +5,8 @@ experiment, then looks up per-stage concurrency in the resulting Pareto
 DataFrame to extract TTFT and TPOT values.
 
 Since AIConfigurator produces only **mean** latency estimates (one row per
-concurrency level), the same heuristic percentile multipliers as
-:class:`LLMOptimizerEstimateAdapter` are applied (P90 = mean × 1.2,
-P99 = mean × 1.6).
+concurrency level), P90 and P99 are left as ``None`` (the metrics layer
+skips comparisons where the simulator does not provide a value).
 
 E2E latency is derived as ``ttft + tpot × output_length``.
 """
@@ -22,9 +21,6 @@ from experiment.data_model import (
     StageMetrics,
     ThroughputMetrics,
 )
-
-_P90_MULT = 1.2
-_P99_MULT = 1.6
 
 # ---------------------------------------------------------------------------
 # Model-name mapping: HuggingFace ID → AIConfigurator SupportedModels key
@@ -113,11 +109,7 @@ class AIConfiguratorEstimateAdapter(SimulatorAdapter):
 
     @staticmethod
     def _make_latency_dist(mean: float) -> LatencyDistribution:
-        return LatencyDistribution(
-            mean=mean,
-            p90=mean * _P90_MULT,
-            p99=mean * _P99_MULT,
-        )
+        return LatencyDistribution(mean=mean)
 
     @staticmethod
     def _find_nearest_concurrency(df, target: int):
@@ -211,7 +203,7 @@ class AIConfiguratorEstimateAdapter(SimulatorAdapter):
         total_reqs = sum(s.num_requests for s in stages)
         total_duration = sum(s.duration for s in stages)
         if total_reqs == 0:
-            zero = LatencyDistribution(0, 0, 0)
+            zero = LatencyDistribution(0)
             return StageMetrics(
                 stage_index=-1, rate=0, duration=0, num_requests=0,
                 e2e=zero, ttft=zero, itl=zero,
@@ -235,9 +227,9 @@ class AIConfiguratorEstimateAdapter(SimulatorAdapter):
             rate=0.0,
             duration=0.0,
             num_requests=total_reqs,
-            e2e=LatencyDistribution(e2e_mean, e2e_mean * _P90_MULT, e2e_mean * _P99_MULT),
-            ttft=LatencyDistribution(ttft_mean, ttft_mean * _P90_MULT, ttft_mean * _P99_MULT),
-            itl=LatencyDistribution(itl_mean, itl_mean * _P90_MULT, itl_mean * _P99_MULT),
+            e2e=LatencyDistribution(e2e_mean),
+            ttft=LatencyDistribution(ttft_mean),
+            itl=LatencyDistribution(itl_mean),
             throughput=ThroughputMetrics(
                 input_tokens_per_sec=_dur_wavg(lambda s: s.throughput.input_tokens_per_sec),
                 output_tokens_per_sec=_dur_wavg(lambda s: s.throughput.output_tokens_per_sec),

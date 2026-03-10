@@ -303,8 +303,8 @@ class TestRunWithMock:
 
     @patch("experiment.adapters.aiconfigurator_est._run_task")
     @patch("experiment.adapters.aiconfigurator_est._create_task_config")
-    def test_heuristic_percentiles(self, mock_create, mock_run):
-        """P90 = mean × 1.2, P99 = mean × 1.6."""
+    def test_percentiles_are_none(self, mock_create, mock_run):
+        """P90/P99 should be None (point-estimate simulator)."""
         mock_create.return_value = MagicMock()
         mock_run.return_value = {"pareto_df": _make_pareto_df(), "pareto_frontier_df": None}
 
@@ -313,12 +313,12 @@ class TestRunWithMock:
         result = adapter.run(exp)
 
         s0 = result.stages[0]
-        # TTFT: mean=25.0, p90=30.0, p99=40.0
-        assert abs(s0.ttft.p90 - 30.0) < 0.01
-        assert abs(s0.ttft.p99 - 40.0) < 0.01
-        # E2E: mean=1013.0, p90=1215.6, p99=1620.8
-        assert abs(s0.e2e.p90 - 1013.0 * 1.2) < 0.01
-        assert abs(s0.e2e.p99 - 1013.0 * 1.6) < 0.01
+        assert s0.e2e.p90 is None
+        assert s0.e2e.p99 is None
+        assert s0.ttft.p90 is None
+        assert s0.ttft.p99 is None
+        assert s0.itl.p90 is None
+        assert s0.itl.p99 is None
 
     @patch("experiment.adapters.aiconfigurator_est._run_task")
     @patch("experiment.adapters.aiconfigurator_est._create_task_config")
