@@ -116,7 +116,6 @@ task_config = TaskConfig(
     osl=output_length,
     ttft=5000.0,
     tpot=200.0,
-    yaml_config=_H100_VLLM_QUANT_CONFIG,
 )
 result = TaskRunner().run(task_config)
 pareto_df = result["pareto_df"]
@@ -182,16 +181,9 @@ From the selected row:
 | `output_tokens_per_sec` | `row["tokens/s"]` | Direct from DataFrame |
 | `input_tokens_per_sec` | `row["seq/s"] × isl` | Derived (requests × input length) |
 
-### 5.7 Heuristic Percentile Estimation
+### 5.7 Percentile Handling
 
-AIConfigurator produces only mean estimates per concurrency level. P90 and P99 are derived via fixed multipliers (identical to llm-optimizer):
-
-| Percentile | Multiplier | Rationale |
-|------------|------------|-----------|
-| P90 | mean × 1.2 | Conservative heuristic for moderate tail |
-| P99 | mean × 1.6 | Conservative heuristic for heavy tail |
-
-These multipliers are applied to E2E, TTFT, and ITL. They are **not** calibrated to any empirical tail distribution.
+AIConfigurator produces only **mean** estimates per concurrency level — it does not model latency distributions. P90 and P99 are left as `None` (not reported). The metrics layer skips comparisons where the simulator does not provide a value, and the report tables display **N/A** for those columns.
 
 ---
 
@@ -199,7 +191,7 @@ These multipliers are applied to E2E, TTFT, and ITL. They are **not** calibrated
 
 After all stages are evaluated, a weighted-average summary is computed:
 
-- **Latency metrics** (E2E, TTFT, ITL mean/P90/P99): **request-weighted** average across stages. This is correct because latency is a per-request quantity — stages with more requests contribute proportionally more.
+- **Latency metrics** (E2E, TTFT, ITL mean): **request-weighted** average across stages. This is correct because latency is a per-request quantity — stages with more requests contribute proportionally more.
 
   ```
   summary.e2e.mean = Σ(stage.e2e.mean × stage.num_requests) / Σ(stage.num_requests)
@@ -211,7 +203,7 @@ After all stages are evaluated, a weighted-average summary is computed:
   summary.throughput.rps = Σ(stage.rps × stage.duration) / Σ(stage.duration)
   ```
 
-Summary percentiles (P90, P99) also use the heuristic multipliers applied to the weighted-average mean, rather than aggregating per-stage percentiles.
+Summary P90 and P99 are `None` (not reported), consistent with per-stage handling.
 
 ---
 
@@ -229,7 +221,7 @@ All 12 non-Mixtral experiments satisfy both conditions.
 
 ## 8. Error Metrics
 
-For each (experiment, stage) pair, the following errors are computed on each of the 9 metric variants (E2E/TTFT/ITL × mean/P90/P99):
+For each (experiment, stage) pair, the following errors are computed on each metric variant where the simulator provides a value. Since AIConfigurator only produces mean estimates, errors are computed for 3 metrics (E2E/TTFT/ITL × mean). P90 and P99 columns show **N/A** in the report.
 
 | Metric | Formula | Interpretation |
 |--------|---------|----------------|
@@ -273,7 +265,7 @@ cp -r src/aiconfigurator/systems/data/ \
 |------------|---------------------|
 | **No batching simulation** | AIConfigurator models steady-state TTFT and TPOT at a given concurrency level. It does not simulate dynamic batch formation, continuous batching, or chunked prefill. Real vLLM batching decisions affect latency under load. |
 | **Oracle concurrency** | Concurrency is derived from ground-truth E2E latency. This gives AIConfigurator an advantage it would not have in practice. |
-| **Heuristic percentiles** | P90 and P99 are fixed multiples of the mean (×1.2, ×1.6). Workloads with heavy tails (e.g., reasoning with 1448 output tokens) will likely show large P99 errors. |
+| **No percentile modeling** | P90 and P99 are not produced — only mean estimates are available. The report shows N/A for these columns. |
 | **No KV cache pressure modeling** | AIConfigurator does not model GPU memory exhaustion, preemption, or CPU offloading. Under high KV pressure, real latencies spike but predictions remain flat. |
 | **No prefix caching modeling** | All ground-truth experiments have prefix caching enabled. AIConfigurator models full prefill for every request, likely over-predicting TTFT for workloads with high prefix reuse. |
 | **Discrete concurrency grid** | The Pareto DataFrame contains rows at specific concurrency levels. Derived concurrency values between grid points are snapped to the nearest available row, introducing quantization error. |
@@ -290,7 +282,7 @@ Based on the methodology's constraints:
 - **TTFT**: Should be reasonably accurate for compute-bound prefill. AIConfigurator uses profiled GEMM and attention kernel timings on H100, which should closely match real prefill latency. However, prefix caching (not modeled) causes over-prediction for workloads with high system prompt reuse.
 - **E2E mean**: The derived E2E (TTFT + TPOT × OSL) misses queuing, preemption, and scheduling overhead. Expect under-prediction under high load where real requests queue, and over-prediction under low load where real prefix caching reduces prefill time.
 - **ITL (TPOT)**: Should be the most accurate metric — TPOT directly models per-token decode latency from profiled kernel data. However, it represents steady-state decode throughput and does not capture per-token variance.
-- **P90/P99 (all metrics)**: Expected to be the least accurate due to heuristic multipliers. Real tail latencies are driven by scheduling jitter, preemption, and KV cache pressure — none of which are modeled.
+- **P90/P99 (all metrics)**: Not reported — AIConfigurator does not model latency distributions. The report shows N/A for these columns.
 
 ---
 
@@ -303,7 +295,7 @@ Based on the methodology's constraints:
 | **Concurrency handling** | Sweep all levels, look up nearest | Single concurrency per invocation |
 | **Parallelism** | Explores TP/PP/DP decompositions | Fixed TP only |
 | **E2E latency** | Derived: `TTFT + TPOT × OSL` | Direct: `e2e_latency_s` |
-| **Percentiles** | Heuristic (mean × multiplier) | Heuristic (mean × multiplier) |
+| **Percentiles** | Not reported (N/A) | Not reported (N/A) |
 | **Model coverage** | 3/4 models (no Mixtral via vLLM) | 4/4 models |
 | **GPU data source** | Profiled kernel CSVs (GEMM, attention, NCCL) | Theoretical peak FLOPs/bandwidth |
 | **Quantization** | Explicit quant mode per kernel type | Uses `inferred_precision` from model config |

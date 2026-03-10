@@ -2,7 +2,7 @@
 
 **Date**: 2026-03-04
 **Status**: Approved
-**Goal**: Evaluate BLIS (blackbox, roofline, cross-model), Vidur, and llm-optimizer estimate mode against ground-truth vLLM data, reporting mean/P90/P99 E2E, TTFT, and ITL errors across workloads and LLMs.
+**Goal**: Evaluate BLIS (blackbox, roofline, cross-model), Vidur, llm-optimizer estimate mode, and AIConfigurator estimate mode against ground-truth vLLM data, reporting mean/P90/P99 E2E, TTFT, and ITL errors across workloads and LLMs.
 
 ---
 
@@ -43,7 +43,8 @@ All experiments: vLLM v0.15.1, H100 GPU, max_model_len=4096, max_num_batched_tok
 | BLIS roofline | Analytical FLOPs/bandwidth | All 4 models | Requires HF config.json + hardware specs |
 | BLIS crossmodel | Physics-informed global coefficients | All 4 models | MoE-aware; 7 global coefficients |
 | Vidur | Discrete-event simulation with profiled execution times | Llama-2-7B, Llama-2-70B, CodeLlama-34b (no Mixtral profiling data) | vLLM scheduler mode; trace replay; MLSys'24 |
-| llm-optimizer estimate | Roofline analysis (no batching sim) | All 4 models | Single-point estimates per concurrency; heuristic percentiles |
+| llm-optimizer estimate | Roofline analysis (no batching sim) | All 4 models | Single-point mean estimates per concurrency; P90/P99 = N/A |
+| AIConfigurator estimate | Profiled kernel data + analytical model | Llama-2-7B, Llama-2-70B, CodeLlama-34b (no Mixtral — vLLM MoE unsupported) | Single-point mean estimates via concurrency sweep; P90/P99 = N/A |
 
 ---
 
@@ -72,9 +73,9 @@ class SimulatorAdapter(ABC):
 ```python
 @dataclass
 class LatencyDistribution:
-    mean: float   # milliseconds
-    p90: float
-    p99: float
+    mean: float              # milliseconds
+    p90: float | None = None # None for point-estimate simulators
+    p99: float | None = None # None for point-estimate simulators
 
 @dataclass
 class ThroughputMetrics:
@@ -251,7 +252,7 @@ concurrency = rate × mean_e2e_seconds
 
 Input/output lengths from profile config (question_len + system_prompt_len, output_len).
 
-**Percentile mapping**: Heuristic multipliers (p90≈1.2x, p95≈1.3x, p99≈1.6x of mean). Flagged in report as heuristic-based.
+**Percentile handling**: P90 and P99 are left as `None` (not reported). The report shows N/A for those columns.
 
 ---
 
@@ -280,11 +281,13 @@ Rows: simulators. Columns: MAPE for each metric variant.
 | blis-roofline       | ...      | ...     | ...     | ...       | ...      | ...      | ...      | ...     | ...     |
 | blis-crossmodel     | ...      | ...     | ...     | ...       | ...      | ...      | ...      | ...     | ...     |
 | vidur               | ...‡     | ...‡    | ...‡    | ...‡      | ...‡     | ...‡     | ...‡     | ...‡    | ...‡    |
-| llm-optimizer-est   | ...      | ...†    | ...†    | ...       | ...†     | ...†     | ...      | ...†    | ...†    |
+| llm-optimizer-est   | ...      | N/A     | N/A     | ...       | N/A      | N/A      | ...      | N/A     | N/A     |
+| aiconfigurator-est  | ...§     | N/A     | N/A     | ...§      | N/A      | N/A      | ...§     | N/A     | N/A     |
 ```
 
-`†` = heuristic percentile estimate
 `‡` = excludes Mixtral-8x7B (no profiling data); no CPU KV offloading or prefix caching modeled
+`§` = excludes Mixtral-8x7B (vLLM MoE backend unsupported)
+N/A = simulator produces only mean estimates; percentiles not available
 
 ### 8.2 Additional Views
 
@@ -314,6 +317,7 @@ sim-to-real-accuracy-validation/
       blis_crossmodel.py
       vidur.py             # VidurAdapter
       llm_optimizer_est.py
+      aiconfigurator_est.py # AIConfiguratorEstimateAdapter
     ground_truth.py        # Experiment dataclass, discover_experiments()
     trace_converter.py     # per_request_lifecycle_metrics.json → BLIS trace v2
     vidur_trace_converter.py  # per_request_lifecycle_metrics.json → Vidur CSV
@@ -324,6 +328,7 @@ sim-to-real-accuracy-validation/
   vllm_data/               # (existing ground-truth)
   inference-sim/            # (existing, cloned BLIS v0.6.7)
   llm-optimizer/            # (existing, cloned)
+  aiconfigurator/           # (existing, cloned — requires git lfs pull before pip install)
   vidur/                    # (existing, cloned)
   docs/plans/               # This design doc
 ```
@@ -338,6 +343,9 @@ cd inference-sim && go build -o blis main.go
 
 # Install llm-optimizer
 cd llm-optimizer && pip install -e .
+
+# Install AIConfigurator (requires Git LFS for kernel profiling data)
+cd aiconfigurator && git lfs pull && pip install -e .
 
 # Install Vidur
 cd vidur && pip install -e .
@@ -363,6 +371,6 @@ python -m experiment.run
 | Extract total_kv_blocks from vllm.log | Parse "GPU KV cache size: N tokens" and divide by block_size=16; critical for BLIS to match real GPU KV capacity |
 | Per-stage estimation for llm-optimizer | Multi-stage workloads have different load characteristics per stage |
 | Little's Law for concurrency derivation | llm-optimizer doesn't model arrivals; concurrency is the natural input |
-| Include heuristic percentiles (flagged) | User requested; clearly marked as heuristic in report |
+| N/A for missing percentiles | Point-estimate simulators (llm-optimizer, AIConfigurator) show N/A instead of fabricated values |
 | Signed error (MPE) alongside MAPE | Shows whether simulators systematically over- or under-predict |
 | Flag Vidur limitations in report | No prefix caching or CPU offloading modeled; readers need context for interpreting errors |
