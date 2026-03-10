@@ -34,7 +34,7 @@ def _group_and_average(
     records: list[ErrorRecord],
     group_key: str,
     value_attr: str,
-) -> dict[str, dict[str, float]]:
+) -> dict[str, dict[str, float | None]]:
     """Group records by (group_key, metric_name) and compute mean of value_attr.
 
     Returns ``{group_value: {metric_name: mean_value}}``.
@@ -52,7 +52,7 @@ def _group_and_average(
         result[key] = {}
         for m in _METRIC_COLS:
             c = counts[key].get(m, 0)
-            result[key][m] = sums[key][m] / c if c else None
+            result[key][m] = sums[key].get(m, 0) / c if c else None
     return result
 
 

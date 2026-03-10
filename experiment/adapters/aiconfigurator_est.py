@@ -149,7 +149,7 @@ class AIConfiguratorEstimateAdapter(SimulatorAdapter):
             )
 
         # Filter to rows matching the experiment's tensor parallelism.
-        tp_df = pareto_df[pareto_df["tp"] == experiment.tp]
+        tp_df = pareto_df[pareto_df["tp"] == experiment.tp].reset_index(drop=True)
         if tp_df.empty:
             raise RuntimeError(
                 f"No AIConfigurator results for tp={experiment.tp} "

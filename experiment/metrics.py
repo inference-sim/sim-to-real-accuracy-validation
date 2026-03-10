@@ -110,7 +110,7 @@ def _compare_stages(
     for metric_name, getter in _LATENCY_METRICS:
         p = getter(pred)
         a = getter(actual)
-        if p is None:
+        if p is None or a is None:
             continue
         records.append(ErrorRecord(
             simulator=simulator,
