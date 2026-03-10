@@ -57,7 +57,7 @@ def _group_and_average(
 
 
 def _format_table(
-    grouped: dict[str, dict[str, float]],
+    grouped: dict[str, dict[str, float | None]],
     row_label: str,
     value_fmt: str = "{:.2f}",
 ) -> str:

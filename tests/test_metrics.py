@@ -287,6 +287,45 @@ class TestComputeErrors:
             compute_errors(experiment, result)
         assert "Stage count mismatch" in caplog.text
 
+    def test_none_percentiles_skipped(self):
+        """When simulator produces None p90/p99, those metrics are skipped."""
+        gt_stage = _make_stage(0, 1800.0, 25.0, 3.6)  # has p90/p99
+        gt_summary = _make_stage(-1, 1800.0, 25.0, 3.6)
+        experiment = Experiment(
+            folder="/tmp/exp", model="m", tp=1, workload="w",
+            max_model_len=4096, max_num_batched_tokens=2048, max_num_seqs=128,
+            total_kv_blocks=100, cpu_kv_blocks=0,
+            stages=[gt_stage], summary=gt_summary,
+            profile_config={"load": {"stages": [{"duration": 600, "rate": 5}]}},
+        )
+
+        # Simulator stage with mean-only latencies (p90/p99 = None).
+        pred_stage = StageMetrics(
+            stage_index=0, rate=5.0, duration=600.0, num_requests=3000,
+            e2e=LatencyDistribution(mean=1900.0),
+            ttft=LatencyDistribution(mean=27.0),
+            itl=LatencyDistribution(mean=4.0),
+            throughput=ThroughputMetrics(100.0, 50.0, 5.0),
+        )
+        pred_summary = StageMetrics(
+            stage_index=-1, rate=5.0, duration=600.0, num_requests=3000,
+            e2e=LatencyDistribution(mean=1900.0),
+            ttft=LatencyDistribution(mean=27.0),
+            itl=LatencyDistribution(mean=4.0),
+            throughput=ThroughputMetrics(100.0, 50.0, 5.0),
+        )
+        result = SimulatorResult(
+            adapter_name="s", experiment_folder="/tmp/exp",
+            stages=[pred_stage], summary=pred_summary,
+        )
+
+        records = compute_errors(experiment, result)
+        names = {r.metric_name for r in records}
+        # Only mean metrics should be present — p90/p99 skipped.
+        assert names == {"e2e_mean", "ttft_mean", "itl_mean"}
+        # 3 metrics × 2 (stage + summary) = 6 records.
+        assert len(records) == 6
+
     def test_mismatched_stage_count_skips_extra(self):
         """Simulator has 2 stages but experiment has 1 — extra stage skipped."""
         gt = _make_stage(0, 100, 10, 1)

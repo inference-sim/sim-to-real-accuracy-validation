@@ -274,6 +274,27 @@ class TestSaveRuntimeCsv:
         assert set(row.keys()) == expected_cols
 
 
+class TestFormatTableNoneRendering:
+    def test_missing_metrics_render_as_na(self):
+        """When records only have mean metrics, p90/p99 columns show N/A."""
+        records = [
+            _make_record(simulator="sim-a", metric_name="e2e_mean", mape=10.0),
+        ]
+        table = format_aggregate_table(records)
+        assert "N/A" in table
+        assert "10.00" in table
+
+    def test_all_metrics_missing_show_na(self):
+        """A simulator with only one metric shows N/A for all others."""
+        records = [
+            _make_record(simulator="sim-a", metric_name="ttft_mean", mape=5.0),
+        ]
+        table = format_aggregate_table(records)
+        na_count = table.count("N/A")
+        # 9 metric columns, 1 has data → 8 show N/A.
+        assert na_count == 8
+
+
 class TestFormatTableEmpty:
     def test_empty_aggregate_table(self):
         """C3: format_aggregate_table on empty records should not crash."""
