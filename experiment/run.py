@@ -11,6 +11,7 @@ import argparse
 import time
 import traceback
 
+from experiment.adapters.aiconfigurator_est import AIConfiguratorEstimateAdapter
 from experiment.adapters.base import SimulatorAdapter
 from experiment.adapters.blis_blackbox import BLISBlackboxAdapter
 from experiment.adapters.blis_crossmodel import BLISCrossModelAdapter
@@ -27,6 +28,7 @@ ALL_ADAPTER_NAMES = [
     "blis-crossmodel",
     "vidur",
     "llm-optimizer-estimate",
+    "aiconfigurator-estimate",
 ]
 
 
@@ -45,6 +47,7 @@ def build_adapter_registry(
         "blis-crossmodel": lambda: BLISCrossModelAdapter(blis_binary),
         "vidur": lambda: VidurAdapter(vidur_dir),
         "llm-optimizer-estimate": lambda: LLMOptimizerEstimateAdapter(),
+        "aiconfigurator-estimate": lambda: AIConfiguratorEstimateAdapter(),
     }
     if adapter_names is None:
         adapter_names = list(factories.keys())
