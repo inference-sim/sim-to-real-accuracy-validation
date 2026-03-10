@@ -1,12 +1,14 @@
-"""LLM-Optimizer analytical estimate adapter.
+"""AIConfigurator analytical estimate adapter.
 
-Calls ``estimate_llm_performance`` from the ``llm-optimizer`` package once
-per stage, deriving concurrency via Little's Law and mapping the roofline
-result to :class:`StageMetrics`.
+Calls ``TaskConfig`` + ``TaskRunner`` from the ``aiconfigurator`` SDK once per
+experiment, then looks up per-stage concurrency in the resulting Pareto
+DataFrame to extract TTFT and TPOT values.
 
-Since llm-optimizer produces only **mean** latency estimates, P90 and P99
-are left as ``None`` (the metrics layer skips comparisons where the
-simulator does not provide a value).
+Since AIConfigurator produces only **mean** latency estimates (one row per
+concurrency level), P90 and P99 are left as ``None`` (the metrics layer
+skips comparisons where the simulator does not provide a value).
+
+E2E latency is derived as ``ttft + tpot × output_length``.
 """
 
 from __future__ import annotations
@@ -20,27 +22,52 @@ from experiment.data_model import (
     ThroughputMetrics,
 )
 
-def get_model_config_from_hf(model_id: str):
-    """Lazy import wrapper — allows mocking without requiring llm_optimizer installed."""
-    from llm_optimizer.common import get_model_config_from_hf as _fn
-    return _fn(model_id)
+# ---------------------------------------------------------------------------
+# Model-name mapping: HuggingFace ID → AIConfigurator SupportedModels key
+# ---------------------------------------------------------------------------
+_MODEL_MAP: dict[str, str] = {
+    "meta-llama/Llama-2-7b-hf": "LLAMA2_7B",
+    "meta-llama/Llama-2-70b-hf": "LLAMA2_70B",
+}
+
+# MoE models that cannot use the vllm backend in AIConfigurator.
+_MOE_MODELS: frozenset[str] = frozenset({
+    "mistralai/Mixtral-8x7B-v0.1",
+    "mistralai/Mixtral-8x22B-v0.1",
+})
 
 
-def estimate_llm_performance(**kwargs):
-    """Lazy import wrapper — allows mocking without requiring llm_optimizer installed."""
-    from llm_optimizer.performance import estimate_llm_performance as _fn
-    return _fn(**kwargs)
+# ---------------------------------------------------------------------------
+# Lazy-import wrappers (same pattern as llm_optimizer_est.py)
+# ---------------------------------------------------------------------------
+
+def _create_task_config(**kwargs):
+    """Lazy import wrapper — allows mocking without requiring aiconfigurator installed."""
+    from aiconfigurator.sdk.task import TaskConfig
+    return TaskConfig(**kwargs)
 
 
-class LLMOptimizerEstimateAdapter(SimulatorAdapter):
-    """Adapter wrapping the llm-optimizer roofline performance estimator."""
+def _run_task(task_config):
+    """Lazy import wrapper — allows mocking without requiring aiconfigurator installed."""
+    from aiconfigurator.sdk.task import TaskRunner
+    return TaskRunner().run(task_config)
+
+
+class AIConfiguratorEstimateAdapter(SimulatorAdapter):
+    """Adapter wrapping the AIConfigurator analytical performance estimator."""
 
     @property
     def name(self) -> str:
-        return "llm-optimizer-estimate"
+        return "aiconfigurator-estimate"
+
+    # ------------------------------------------------------------------
+    # Eligibility
+    # ------------------------------------------------------------------
 
     def can_run(self, experiment: Experiment) -> bool:
-        """True only when profile config uses ``shared_prefix`` data type with required keys."""
+        """True when profile config uses ``shared_prefix`` and model is not MoE."""
+        if experiment.model in _MOE_MODELS:
+            return False
         try:
             data = experiment.profile_config["data"]
             if data["type"] != "shared_prefix":
@@ -53,6 +80,15 @@ class LLMOptimizerEstimateAdapter(SimulatorAdapter):
     # ------------------------------------------------------------------
     # Internals
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def _resolve_model_name(hf_model_id: str) -> str:
+        """Map a HuggingFace model ID to AIConfigurator's model key.
+
+        Falls back to the raw HF ID for models not in the map (AIConfigurator
+        resolves them via ``get_model_config_from_hf_id``).
+        """
+        return _MODEL_MAP.get(hf_model_id, hf_model_id)
 
     @staticmethod
     def _derive_concurrency(stage: StageMetrics, max_num_seqs: int) -> int:
@@ -75,40 +111,72 @@ class LLMOptimizerEstimateAdapter(SimulatorAdapter):
     def _make_latency_dist(mean: float) -> LatencyDistribution:
         return LatencyDistribution(mean=mean)
 
+    @staticmethod
+    def _find_nearest_concurrency(df, target: int):
+        """Return the DataFrame row whose ``concurrency`` is closest to *target*."""
+        idx = (df["concurrency"] - target).abs().idxmin()
+        return df.loc[idx]
+
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
 
     def run(self, experiment: Experiment) -> SimulatorResult:
-        model_config = get_model_config_from_hf(experiment.model)
-        precision = getattr(model_config, "inferred_precision", "fp16")
+        model_name = self._resolve_model_name(experiment.model)
         input_length, output_length = self._extract_lengths(experiment)
+
+        # Run AIConfigurator once — it sweeps all concurrency levels.
+        task_config = _create_task_config(
+            serving_mode="agg",
+            model_name=model_name,
+            system_name="h100_sxm",
+            backend_name="vllm",
+            total_gpus=experiment.tp,
+            isl=input_length,
+            osl=output_length,
+            ttft=5000.0,
+            tpot=200.0,
+        )
+        result = _run_task(task_config)
+        if result is None:
+            raise RuntimeError(
+                f"AIConfigurator returned None for {model_name} (tp={experiment.tp})"
+            )
+        pareto_df = result["pareto_df"]
+        if pareto_df is None or pareto_df.empty:
+            raise RuntimeError(
+                f"AIConfigurator returned empty pareto_df for {model_name} (tp={experiment.tp})"
+            )
+
+        # Filter to rows matching the experiment's tensor parallelism.
+        tp_df = pareto_df[pareto_df["tp"] == experiment.tp].reset_index(drop=True)
+        if tp_df.empty:
+            raise RuntimeError(
+                f"No AIConfigurator results for tp={experiment.tp} "
+                f"(available tp values: {sorted(pareto_df['tp'].unique())})"
+            )
 
         stages: list[StageMetrics] = []
         for gt_stage in experiment.stages:
             concurrency = self._derive_concurrency(gt_stage, experiment.max_num_seqs)
-            perf = estimate_llm_performance(
-                num_gpus=experiment.tp,
-                gpu_name="H100",
-                model_config=model_config,
-                precision=precision,
-                concurrency=concurrency,
-                input_length=input_length,
-                output_length=output_length,
-            )
-            e2e_mean_ms = perf.e2e_latency_s * 1000
+            row = self._find_nearest_concurrency(tp_df, concurrency)
+
+            ttft_ms = float(row["ttft"])
+            tpot_ms = float(row["tpot"])
+            e2e_ms = ttft_ms + tpot_ms * output_length
+
             stages.append(StageMetrics(
                 stage_index=gt_stage.stage_index,
                 rate=gt_stage.rate,
                 duration=gt_stage.duration,
                 num_requests=gt_stage.num_requests,
-                e2e=self._make_latency_dist(e2e_mean_ms),
-                ttft=self._make_latency_dist(perf.ttft_ms),
-                itl=self._make_latency_dist(perf.itl_ms),
+                e2e=self._make_latency_dist(e2e_ms),
+                ttft=self._make_latency_dist(ttft_ms),
+                itl=self._make_latency_dist(tpot_ms),
                 throughput=ThroughputMetrics(
-                    input_tokens_per_sec=perf.input_throughput_tps,
-                    output_tokens_per_sec=perf.output_throughput_tps,
-                    requests_per_sec=perf.requests_per_sec,
+                    input_tokens_per_sec=float(row["seq/s"]) * input_length,
+                    output_tokens_per_sec=float(row["tokens/s"]),
+                    requests_per_sec=float(row["seq/s"]),
                 ),
             ))
 

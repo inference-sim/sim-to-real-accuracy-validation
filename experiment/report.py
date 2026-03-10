@@ -34,7 +34,7 @@ def _group_and_average(
     records: list[ErrorRecord],
     group_key: str,
     value_attr: str,
-) -> dict[str, dict[str, float]]:
+) -> dict[str, dict[str, float | None]]:
     """Group records by (group_key, metric_name) and compute mean of value_attr.
 
     Returns ``{group_value: {metric_name: mean_value}}``.
@@ -47,17 +47,17 @@ def _group_and_average(
         sums[key][r.metric_name] += getattr(r, value_attr)
         counts[key][r.metric_name] += 1
 
-    result: dict[str, dict[str, float]] = {}
+    result: dict[str, dict[str, float | None]] = {}
     for key in sorted(sums):
         result[key] = {}
         for m in _METRIC_COLS:
             c = counts[key].get(m, 0)
-            result[key][m] = sums[key].get(m, 0) / c if c else 0.0
+            result[key][m] = sums[key].get(m, 0) / c if c else None
     return result
 
 
 def _format_table(
-    grouped: dict[str, dict[str, float]],
+    grouped: dict[str, dict[str, float | None]],
     row_label: str,
     value_fmt: str = "{:.2f}",
 ) -> str:
@@ -78,7 +78,8 @@ def _format_table(
     for key, metrics in grouped.items():
         row = f"{key:<{col_widths[0]}}"
         for i, m in enumerate(_METRIC_COLS):
-            val = value_fmt.format(metrics.get(m, 0.0))
+            v = metrics.get(m)
+            val = "N/A" if v is None else value_fmt.format(v)
             row += f"  {val:>{col_widths[i + 1]}}"
         lines.append(row)
 

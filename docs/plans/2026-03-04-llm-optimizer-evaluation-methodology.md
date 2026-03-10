@@ -107,16 +107,9 @@ The function returns a single `PerformanceResult` object with mean latency and t
 | `itl_ms` | milliseconds | none | milliseconds |
 | Throughput fields | tokens/s or req/s | none | tokens/s or req/s |
 
-### 3.4 Heuristic Percentile Estimation
+### 3.4 Percentile Handling
 
-LLM-optimizer produces only mean estimates. P90 and P99 are derived via fixed multipliers:
-
-| Percentile | Multiplier | Rationale |
-|------------|------------|-----------|
-| P90 | mean × 1.2 | Conservative heuristic for moderate tail |
-| P99 | mean × 1.6 | Conservative heuristic for heavy tail |
-
-These multipliers are applied identically to E2E, TTFT, and ITL. They are **not** calibrated to any empirical tail distribution — they serve as rough approximations. In the final report, all P90/P99 values from llm-optimizer are flagged with `†` to indicate heuristic origin.
+LLM-optimizer produces only **mean** estimates — it does not model latency distributions. P90 and P99 are left as `None` (not reported). The metrics layer skips comparisons where the simulator does not provide a value, and the report tables display **N/A** for those columns.
 
 ---
 
@@ -124,7 +117,7 @@ These multipliers are applied identically to E2E, TTFT, and ITL. They are **not*
 
 After all stages are evaluated, a weighted-average summary is computed:
 
-- **Latency metrics** (E2E, TTFT, ITL mean/P90/P99): **request-weighted** average across stages. This is correct because latency is a per-request quantity — stages with more requests contribute proportionally more.
+- **Latency metrics** (E2E, TTFT, ITL mean): **request-weighted** average across stages. This is correct because latency is a per-request quantity — stages with more requests contribute proportionally more.
 
   ```
   summary.e2e.mean = Σ(stage.e2e.mean × stage.num_requests) / Σ(stage.num_requests)
@@ -136,7 +129,7 @@ After all stages are evaluated, a weighted-average summary is computed:
   summary.throughput.rps = Σ(stage.rps × stage.duration) / Σ(stage.duration)
   ```
 
-Summary percentiles (P90, P99) also use the heuristic multipliers applied to the weighted-average mean, rather than aggregating per-stage percentiles. This is a further approximation.
+Summary P90 and P99 are `None` (not reported), consistent with per-stage handling.
 
 ---
 
@@ -150,7 +143,7 @@ Experiments with non-`shared_prefix` data types (e.g., `random`) are skipped bec
 
 ## 6. Error Metrics
 
-For each (experiment, stage) pair, the following errors are computed on each of the 9 metric variants (E2E/TTFT/ITL × mean/P90/P99):
+For each (experiment, stage) pair, the following errors are computed on each metric variant where the simulator provides a value. Since llm-optimizer only produces mean estimates, errors are computed for 3 metrics (E2E/TTFT/ITL × mean). P90 and P99 columns show **N/A** in the report.
 
 | Metric | Formula | Interpretation |
 |--------|---------|----------------|
@@ -171,7 +164,7 @@ Aggregation across experiments:
 |------------|---------------------|
 | **No batching simulation** | LLM-optimizer models a single concurrency level, not dynamic batch formation. Real vLLM batching decisions (continuous batching, chunked prefill) are not captured. Expect over-prediction of TTFT under high load. |
 | **Oracle concurrency** | Concurrency is derived from ground-truth E2E latency. This gives llm-optimizer an advantage it would not have in practice. |
-| **Heuristic percentiles** | P90 and P99 are not modeled — they are fixed multiples of the mean. Workloads with heavy tails (e.g., reasoning with 1448 output tokens) will likely show large P99 errors. |
+| **No percentile modeling** | P90 and P99 are not produced — only mean estimates are available. The report shows N/A for these columns. |
 | **No KV cache pressure modeling** | LLM-optimizer does not model GPU memory, KV block exhaustion, preemption, or CPU offloading. Under high KV pressure, real latencies spike but llm-optimizer predictions remain flat. |
 | **No prefix caching modeling** | All ground-truth experiments have prefix caching enabled. LLM-optimizer models full prefill for every request, likely over-predicting TTFT for workloads with high prefix reuse. |
 | **Fixed input/output lengths** | The adapter uses configured distribution parameters, not actual per-request token counts. Variance in real request sizes is not captured. |
@@ -186,4 +179,4 @@ Based on the methodology's constraints, the expected error pattern is:
 - **TTFT**: Likely the most accurate metric — roofline prefill latency estimation is well-grounded in compute/bandwidth analysis.
 - **E2E mean**: Moderate accuracy — captures the roofline decode throughput but misses queuing, preemption, and batching effects.
 - **ITL**: Should be close for compute-bound decoding but may diverge under memory-bandwidth-bound regimes or high batch sizes.
-- **P90/P99 (all metrics)**: Expected to be the least accurate due to heuristic multipliers. Real tail latencies are driven by scheduling jitter, preemption, and KV cache pressure — none of which are modeled.
+- **P90/P99 (all metrics)**: Not reported — llm-optimizer does not model latency distributions. The report shows N/A for these columns.
