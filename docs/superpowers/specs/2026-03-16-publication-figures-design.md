@@ -7,15 +7,6 @@
 
 ---
 
-## Data Source
-
-All figures read from CSV files produced by `python -m experiment.run`:
-
-- **`results/error_records.csv`** — columns: `simulator`, `experiment_folder`, `model`, `workload`, `stage_index`, `metric_name`, `predicted`, `actual`, `mape`, `mpe`, `absolute_error`
-- **`results/runtime.csv`** — columns: `simulator`, `experiment_folder`, `model`, `workload`, `wall_clock_seconds`
-
-The figure code must be robust to varying numbers of simulators, models, workloads, and metrics depending on which adapters ran. Missing combinations (e.g., a simulator that skips certain models) produce absent bars, not errors.
-
 ### Simulator Name Mapping
 
 CSV identifiers map to display names in figures:
