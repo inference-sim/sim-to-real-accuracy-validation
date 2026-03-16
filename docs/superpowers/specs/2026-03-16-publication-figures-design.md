@@ -54,21 +54,21 @@ CSV identifiers map to display names in figures:
 
 ## Experiment Matrix
 
-Based on the [60-experiment benchmark plan](https://github.com/inference-sim/inference-sim/discussions/598).
+Based on the [55-experiment benchmark plan](https://github.com/inference-sim/inference-sim/discussions/598).
 
 ### Dimensions
 
 - **Models (8):** Llama-2-7B, Llama-3.1-8B, Qwen3-14B, CodeLlama-34B, Llama-2-70B, Mixtral-8x7B, Mixtral-8x22B, Llama-4-Scout-17B-16E (FP8)
 - **Hardware (3):** H100-80GB SXM, A100-80GB SXM, L40S
-- **Workloads (4+1):** General-Purpose, Code Generation, Roleplay, Reasoning, General-Lite (L40S only)
+- **Workloads (4+1):** General-Purpose, Code Generation, Roleplay, Reasoning, General-Lite (same token distributions as General at 6 rps peak; used for models whose safe rate is below General's 20 rps peak)
 - **Config knobs (5):** max_num_batched_tokens, cpu_offloading, gpu_memory_utilization, TP, DP/EP
 
-### Collection Status (54 experiments)
+### Collection Status (55 experiments)
 
 | Phase | Scope | Experiments | Status |
 |-------|-------|-------------|--------|
 | 0 | Existing H100 data (4 models x 3 workloads) | 12 | Done |
-| 0.5 | Default-config baselines for Phase 0 models (cpu_offload=Disabled) | 3 | Pending |
+| 0.5 | Default-config baselines + workload consistency (rows 56-59) | 4 | Pending |
 | 1-3 | H100 new model baselines + workloads | 9 | Done |
 | 4-5 | H100 config sweeps (Llama-3.1-8b + Mixtral-8x7B) | 11 | Done |
 | 6-7 | H100 EP + DP experiments | 3 | Partial (2/3 done) |
@@ -84,7 +84,7 @@ Each figure applies a filter to the full matrix, then groups by one dimension:
 | Figure | Filter | Group By |
 |--------|--------|----------|
 | Fig 1 | HW=H100, Workload=General/General-Lite, config=defaults | Model (7 models) |
-| Fig 2 | Workload=General, config=defaults, TP=default, DP<=1 | Hardware (3 GPUs) |
+| Fig 2 | Workload=General/General-Lite (per-model consistent across HW), config=defaults, TP=default, DP<=1 | Hardware (3 GPUs) |
 | Fig 3 | HW=H100, config=defaults, TP=default, DP<=1, 4 models only | Workload (4 workloads) |
 | Fig 4a | HW=H100, Workload=General, Model=Llama-3.1-8b | Config variant |
 | Fig 4b | HW=H100, Workload=General, Model=Mixtral-8x7B | Config variant |
@@ -183,9 +183,9 @@ When a figure's x-axis dimension has multiple underlying variations (e.g., Figur
 #### Figure 2 — Hardware Portability
 
 - **X-axis:** 3 GPU types: H100, A100-80GB, L40S
-- **Filter:** Workload=General, config=defaults, TP=default, DP<=1 (from discussion: 16 experiments across all HW)
-- **Aggregation:** H100 aggregates across all viable models (median + IQR). A100 aggregates across its viable models (up to 7). L40S has 2-3 models (overlay dots). Not all models run on all hardware — L40S excludes CodeLlama-34B, Llama-2-70B, Mixtral-8x22B due to VRAM constraints.
-- **Caption:** "Hardware portability. MAPE across three GPU types (General-Purpose workload, default config). Each bar aggregates across all viable models for that GPU. BLIS variants generalize across GPU generations using only datasheet specifications."
+- **Filter:** Workload=General or General-Lite (per-model consistent across all HW), config=defaults, TP=default, DP<=1. General-Lite models: Qwen3-14B (rows 59/36/54), Codellama-34b (rows 57/40), Llama-2-70b (rows 58/41). General models: Llama-3.1-8b, Mixtral-8x7B, Scout, Mixtral-8x22B. Llama-3.1-8b L40S (row 55) uses General-Lite by necessity — the only cross-hardware workload mismatch.
+- **Aggregation:** H100 aggregates across 7 models (median + IQR). A100 aggregates across up to 7 models. L40S has 2 models (overlay dots). Not all models run on all hardware — L40S excludes CodeLlama-34B, Llama-2-70B, Mixtral-8x22B due to VRAM constraints.
+- **Caption:** "Hardware portability. MAPE across three GPU types (default config). Each bar aggregates across all viable models for that GPU. BLIS variants generalize across GPU generations using only datasheet specifications."
 
 #### Figure 3 — Workload Sensitivity
 
