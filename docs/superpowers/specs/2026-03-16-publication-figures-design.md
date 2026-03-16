@@ -192,7 +192,7 @@ When a figure's x-axis dimension has multiple underlying variations (e.g., Figur
 - **X-axis:** 4 workloads: General-Purpose, Code Generation, Roleplay, Reasoning
 - **Filter:** HW=H100, config=defaults, TP=default, DP<=1, Model IN (Llama-3.1-8b, Qwen3-14B, Llama-4-Scout-17B-16E, Mixtral-8x22B) (from discussion: rows 13–21, 46–51, 53; up to 15 experiments)
 - **Models:** 4 models with multi-workload data at defaults. Phase 0 models (Mixtral-8x7B, Codellama-34b, Llama-2-70b) excluded — their workload data uses cpu_offload=Enabled.
-- **Aggregation:** Each workload aggregates across the 4 models (median + IQR error bars; overlay dots when n <= 3). Reasoning may have fewer models (deprioritized in collection).
+- **Aggregation:** Each workload aggregates across the 4 models (median + IQR error bars; overlay dots when n <= 3). Reasoning has 3 models (Qwen3-14B excluded — row 47 is ⚠️ unsafe).
 - **Caption:** "Workload sensitivity. MAPE across four workload types, aggregated over four models spanning dense and MoE architectures (H100, default config). BLIS-Trained shows the smallest degradation across workload diversity."
 
 #### Figure 4(a) — Config Sensitivity: Dense Model (Llama-3.1-8B)
@@ -290,6 +290,10 @@ The CSV schema currently encodes model and workload but not hardware, TP, DP, or
 2. **Infer from experiment folder names** using a naming convention (e.g., `YYYYMMDD-HHMMSS-<model>-tp<N>-<workload>-<hw>-<config_tag>`)
 
 Option 1 is more robust and recommended. The `experiment.run` pipeline should propagate these dimensions through to the CSV output.
+
+### Data Quality Policy
+
+- **Exclude unsafe experiments:** Any experiment marked ⚠️ unsafe in the collection matrix (safe rate below workload peak RPS) is excluded from all figures. Only ✅ safe experiments contribute data.
 
 ### Robustness
 
