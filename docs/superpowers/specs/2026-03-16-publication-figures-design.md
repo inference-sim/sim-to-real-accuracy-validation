@@ -2,7 +2,7 @@
 
 **Date:** 2026-03-16
 **Goal:** Generate best-paper-quality figures from `experiment.run` output (`results/error_records.csv`, `results/runtime.csv`) for a systems paper at NSDI/EuroSys.
-**Protagonist:** BLIS simulator (3 variants). Baselines: Vidur, LLM-Optimizer, AIConfigurator.
+**Protagonist:** BLIS simulator (2 variants: Trained, Roofline). Baselines: Vidur, LLM-Optimizer, AIConfigurator.
 **Data collection plan:** [inference-sim/inference-sim#598](https://github.com/inference-sim/inference-sim/discussions/598)
 
 ---
@@ -23,13 +23,12 @@ CSV identifiers map to display names in figures:
 | CSV Identifier | Display Name |
 |----------------|-------------|
 | `blis-trained-roofline` | BLIS-Trained |
-| `blis-crossmodel` | BLIS-CrossModel |
 | `blis-roofline` | BLIS-Roofline |
 | `vidur` | Vidur |
 | `llm-optimizer-estimate` | LLM-Optimizer |
 | `aiconfigurator-estimate` | AIConfigurator |
 
-`blis-blackbox` is excluded from all figures (it has no matching coefficients for any current model and produces zero results).
+`blis-blackbox` and `blis-crossmodel` are excluded from all figures.
 
 ### Model Short Labels
 
@@ -126,7 +125,6 @@ BLIS variants use a blue/teal gradient (dark = most sophisticated). Baselines us
 | Simulator | Hex | Fill | Visual Role |
 |-----------|-----|------|-------------|
 | BLIS-Trained | `#0077B6` | Solid | Hero (darkest, most prominent) |
-| BLIS-CrossModel | `#00B4D8` | Solid | BLIS family |
 | BLIS-Roofline | `#90E0EF` | Solid | BLIS family |
 | Vidur | `#6C757D` | Hatched `//` | Baseline |
 | LLM-Optimizer | `#ADB5BD` | Hatched `\\` | Baseline |
@@ -171,10 +169,10 @@ Each figure (including 4a and 4b) is a **2-row x 3-column** subplot grid:
 
 ### Bar Layout
 
-- 6 bars per x-tick group (one per simulator), computed dynamically from the number of simulators present in the data
+- 5 bars per x-tick group (one per simulator), computed dynamically from the number of simulators present in the data
 - Bar widths and group spacing are proportional to figure width and x-tick count (the `_bar_chart_grid()` helper computes `bar_width` and offsets from `n_simulators` and `n_groups`)
 - BLIS bars always appear first (left) in each group, baselines to the right
-- Simulator ordering is fixed: BLIS-Trained, BLIS-CrossModel, BLIS-Roofline, Vidur, LLM-Optimizer, AIConfigurator
+- Simulator ordering is fixed: BLIS-Trained, BLIS-Roofline, Vidur, LLM-Optimizer, AIConfigurator
 
 ### Aggregation
 
@@ -188,7 +186,7 @@ When a figure's x-axis dimension has multiple underlying variations (e.g., Figur
 - **Filter:** HW=H100, Workload=General, config=defaults (from discussion: rows 1, 5, 9, 13, 16, 17, 49)
 - **Aggregation:** 1 variation per (model, simulator) — no aggregation, no error bars
 - **Note:** Llama-2-7B excluded because its default config uses DP=2 (router datapoint), making it non-comparable to single-replica baselines.
-- **Caption:** "Prediction accuracy across model architectures. MAPE of six simulators across seven LLM models spanning dense (7B-70B) and MoE (47B-141B) architectures on H100 (General-Purpose workload, default vLLM config). Top row: mean latency; bottom row: P99 tail latency. BLIS-Trained (dark blue) maintains low MAPE across all architectures. LLM-Optimizer and AIConfigurator produce only mean estimates (tail-latency bars absent)."
+- **Caption:** "Prediction accuracy across model architectures. MAPE of five simulators across seven LLM models spanning dense (7B-70B) and MoE (47B-141B) architectures on H100 (General-Purpose workload, default vLLM config). Top row: mean latency; bottom row: P99 tail latency. BLIS-Trained (dark blue) maintains low MAPE across all architectures. LLM-Optimizer and AIConfigurator produce only mean estimates (tail-latency bars absent)."
 
 #### Figure 2 — Hardware Portability
 
@@ -244,7 +242,6 @@ Single-panel scatter plot.
 | Simulator | Median Runtime (s) | Speedup vs. Real |
 |-----------|-------------------:|------------------:|
 | BLIS-Trained | — | — |
-| BLIS-CrossModel | — | — |
 | BLIS-Roofline | — | — |
 | Vidur | — | — |
 | AIConfigurator | — | — |
@@ -271,7 +268,7 @@ Single-panel scatter plot.
 A single module `experiment/figures.py` that:
 
 1. Reads `results/error_records.csv` and `results/runtime.csv` via pandas
-2. Exposes one function per figure: `plot_model_sensitivity()`, `plot_hardware_portability()`, `plot_workload_sensitivity()`, `plot_config_sensitivity_dense()`, `plot_config_sensitivity_moe()`, `plot_pareto()`, `format_runtime_table()`
+2. Exposes one function per figure: `plot_model_sensitivity()`, `plot_hardware_portability()`, `plot_workload_sensitivity()`, `plot_config_sensitivity_dense()`, `plot_config_sensitivity_moe()`, `plot_pareto()`, `format_runtime_table()`. Each function filters out excluded simulators (`blis-blackbox`, `blis-crossmodel`).
 3. Shares a common `_bar_chart_grid()` helper for the 2x3 grouped bar layout (Figures 1-4)
 4. Uses a shared style configuration dict for colors, hatching, fonts, and the 20% threshold line
 5. Outputs to `results/figures/` directory
