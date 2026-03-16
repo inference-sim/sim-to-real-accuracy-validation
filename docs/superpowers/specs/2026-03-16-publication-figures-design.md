@@ -3,6 +3,7 @@
 **Date:** 2026-03-16
 **Goal:** Generate best-paper-quality figures from `experiment.run` output (`results/error_records.csv`, `results/runtime.csv`) for a systems paper at NSDI/EuroSys.
 **Protagonist:** BLIS simulator (3 variants). Baselines: Vidur, LLM-Optimizer, AIConfigurator.
+**Data collection plan:** [inference-sim/inference-sim#598](https://github.com/inference-sim/inference-sim/discussions/598)
 
 ---
 
@@ -30,6 +31,19 @@ CSV identifiers map to display names in figures:
 
 `blis-blackbox` is excluded from all figures (it has no matching coefficients for any current model and produces zero results).
 
+### Model Short Labels
+
+| CSV Model ID | Short Label | Type |
+|-------------|------------|------|
+| `meta-llama/Llama-2-7b-hf` | Ll-2-7B | Dense |
+| `meta-llama/Llama-3.1-8B-Instruct` | Ll-3.1-8B | Dense |
+| `Qwen/Qwen3-14B` | Qw-14B | Dense |
+| `codellama/CodeLlama-34b-Instruct-hf` | CL-34B | Dense |
+| `meta-llama/Llama-2-70b-hf` | Ll-2-70B | Dense |
+| `mistralai/Mixtral-8x7B-v0.1` | Mx-8x7B | MoE |
+| `mistralai/Mixtral-8x22B-Instruct-v0.1` | Mx-8x22B | MoE |
+| `RedHatAI/Llama-4-Scout-17B-16E-Instruct-FP8-dynamic` | Scout-17B | MoE, FP8 |
+
 ### Workload Display Names
 
 | CSV Value | Display Name |
@@ -38,62 +52,68 @@ CSV identifiers map to display names in figures:
 | `codegen` | Code Generation |
 | `roleplay` | Roleplay |
 | `reasoning` | Reasoning |
-
-### Model Short Labels
-
-| CSV Model ID | Short Label |
-|-------------|------------|
-| `meta-llama/Llama-2-7b-hf` | Ll-7B |
-| `meta-llama/Llama-2-70b-hf` | Ll-70B |
-| `mistralai/Mixtral-8x7B-v0.1` | Mx-8x7B |
-| `codellama/CodeLlama-34b-Instruct-hf` | CL-34B |
-
-Additional models will be added to this table as data is collected.
+| `general-lite` | General-Lite |
 
 ### Known Simulator Limitations
 
-- **AIConfigurator:** Excludes MoE architectures (Mixtral-8x7B). Bars for this simulator will be absent on Mixtral per the missing-data rule.
-- **Vidur:** Requires pre-profiled GPU kernel timings. Currently supports Llama-2-7B, Llama-2-70B, and CodeLlama-34B but not Mixtral.
+- **AIConfigurator:** Excludes MoE architectures (Mixtral-8x7B, Mixtral-8x22B, Scout-17B-16E). Bars absent per the missing-data rule.
+- **Vidur:** Requires pre-profiled GPU kernel timings. Model and hardware coverage may be incomplete; absent bars where profiles are unavailable.
 - **LLM-Optimizer and AIConfigurator:** Produce only mean estimates. P99 (tail) bars are absent for these simulators in all figures.
 
 ---
 
 ## Experiment Matrix
 
-### Data Available Today (12 variations)
+Based on the [60-experiment benchmark plan](https://github.com/inference-sim/inference-sim/discussions/598).
 
-| Slice | Variations | Status |
-|-------|-----------|--------|
-| Core benchmark | 4 models x 3 workloads = 12 | Available (H100, default vLLM config) |
+### Dimensions
 
-Models: Llama-2-7B, Llama-2-70B, Mixtral-8x7B, CodeLlama-34B-Instruct.
-Workloads: General-Purpose, Code Generation, Roleplay.
+- **Models (8):** Llama-2-7B, Llama-3.1-8B, Qwen3-14B, CodeLlama-34B, Llama-2-70B, Mixtral-8x7B, Mixtral-8x22B, Llama-4-Scout-17B-16E (FP8)
+- **Hardware (3):** H100-80GB SXM, A100-80GB SXM, L40S
+- **Workloads (4+1):** General-Purpose, Code Generation, Roleplay, Reasoning, General-Lite (L40S only)
+- **Config knobs (5):** max_num_batched_tokens, cpu_offloading, gpu_memory_utilization, TP, DP/EP
 
-### Full Target (21 variations, pending data collection)
+### Collection Status (51 experiments)
 
-| Slice | Variations | Fixed Dimensions | Status |
-|-------|-----------|------------------|--------|
-| Core benchmark (Figs 1, 3) | 7 models x 4 workloads = 28, deduplicated with current = 16 | H100, default vLLM config | Partial: 12 of 16 available (3 models + reasoning TBD) |
-| Hardware portability (Fig 2) | 2 on A100 + 2 on L40 = 4 | Selected anchor (model, workload) pairs | Not yet collected |
-| Config generalization (Fig 4) | 3 alternative vLLM knobs | Llama-2-70B, General-Purpose, H100 | Not yet collected |
-| **Total** | **21 unique variations** | | **12 available today** |
+| Phase | Scope | Experiments | Status |
+|-------|-------|-------------|--------|
+| 0 | Existing H100 data (4 models x 3 workloads) | 12 | Done |
+| 1-3 | H100 new model baselines + workloads | 9 | Done |
+| 4-5 | H100 config sweeps (Llama-3.1-8b + Mixtral-8x7B) | 11 | Done |
+| 6-7 | H100 EP + DP experiments | 3 | Partial (2/3 done) |
+| 8 | Hardware variation (A100, L40S) | 9 | Pending |
+| 9 | H100 Reasoning workloads | 4 | Partial |
 
-The figure code renders whatever data is present in the CSVs. When new experiments are collected and `experiment.run` is re-executed, the figures will automatically incorporate the new data points. Figures 2 and 4 will produce empty outputs until their respective data is collected.
+The figure code renders whatever data is present in the CSVs. As new experiments complete, re-running `experiment.run` and the figure generator will incorporate them automatically.
+
+### Figure Derivation from Experiment Matrix
+
+Each figure applies a filter to the full matrix, then groups by one dimension:
+
+| Figure | Filter | Group By |
+|--------|--------|----------|
+| Fig 1 | HW=H100, Workload=General, config=defaults | Model (7 models) |
+| Fig 2 | Workload=General, config=defaults, TP=default, DP<=1 | Hardware (3 GPUs) |
+| Fig 3 | HW=H100, config=defaults, TP=default, DP<=1 | Workload (4 workloads) |
+| Fig 4a | HW=H100, Workload=General, Model=Llama-3.1-8b | Config variant |
+| Fig 4b | HW=H100, Workload=General, Model=Mixtral-8x7B | Config variant |
+| Fig 5 | All available variations | Simulator (aggregate) |
 
 ---
 
 ## Deliverables
 
-**5 figures + 1 table.**
+**5 figures (4a/4b count as one) + 1 table.**
 
-| # | Title | Type | Purpose | Data Ready? |
-|---|-------|------|---------|-------------|
-| Fig 1 | Model Sensitivity | 2x3 grouped bar grid | Accuracy across model architectures | Yes (4 models today, 7 target) |
-| Fig 2 | Hardware Portability | 2x3 grouped bar grid | Accuracy across GPU types | No (requires A100/L40 data) |
-| Fig 3 | Workload Sensitivity | 2x3 grouped bar grid | Accuracy across workload types | Yes (3 workloads today, 4 target) |
-| Fig 4 | Config Generalization | 2x3 grouped bar grid | Accuracy under vLLM config changes | No (requires config variant data) |
-| Fig 5 | Accuracy-Speed Pareto | Scatter plot | Tradeoff frontier (the money shot) | Yes (uses available variations) |
-| Table 1 | Runtime Comparison | LaTeX/text table | Simulator runtime + speedup vs real | Yes |
+| # | Title | Type | Purpose |
+|---|-------|------|---------|
+| Fig 1 | Model Sensitivity | 2x3 grouped bar grid | Accuracy across 7 model architectures |
+| Fig 2 | Hardware Portability | 2x3 grouped bar grid | Accuracy across 3 GPU types |
+| Fig 3 | Workload Sensitivity | 2x3 grouped bar grid | Accuracy across 4 workload types |
+| Fig 4(a) | Config Sensitivity — Dense | 2x3 grouped bar grid | Llama-3.1-8b config sweeps (5 knobs) |
+| Fig 4(b) | Config Sensitivity — MoE | 2x3 grouped bar grid | Mixtral-8x7B config sweeps (6 knobs incl. EP) |
+| Fig 5 | Accuracy-Speed Pareto | Scatter plot | Tradeoff frontier (the money shot) |
+| Table 1 | Runtime Comparison | LaTeX/text table | Simulator runtime + speedup vs real |
 
 ---
 
@@ -132,7 +152,7 @@ BLIS variants use a blue/teal gradient (dark = most sophisticated). Baselines us
 
 ### Layout
 
-Each figure is a **2-row x 3-column** subplot grid:
+Each figure (including 4a and 4b) is a **2-row x 3-column** subplot grid:
 
 ```
               E2E Latency       TTFT              ITL
@@ -158,39 +178,45 @@ Each figure is a **2-row x 3-column** subplot grid:
 
 ### Aggregation
 
-When a figure's x-axis dimension has multiple underlying variations (e.g., Figure 3 aggregates across 4 models per workload), the bar height is the **median MAPE** across those variations, with **IQR error bars**. When n <= 3 (e.g., A100 with 2 anchors in Figure 2), overlay **individual data points** as semi-transparent dots instead of error bars for statistical honesty.
+When a figure's x-axis dimension has multiple underlying variations (e.g., Figure 2's H100 group spans many models, Figure 3 aggregates across models per workload), the bar height is the **median MAPE** across those variations, with **IQR error bars**. When n <= 3 (e.g., L40S with 2 anchors in Figure 2), overlay **individual data points** as semi-transparent dots instead of error bars for statistical honesty.
 
 ### Per-Figure Specifics
 
 #### Figure 1 — Model Sensitivity
 
-- **X-axis:** All models present in the CSV, filtered to `workload == "general"`. Currently 4 models; scales to 7 as data is collected. Short labels derived from model names (e.g., `Ll-7B`, `Ll-70B`, `Mx-8x7B`, `CL-34B`).
-- **Fixed:** H100, General-Purpose workload, default vLLM config
-- **Aggregation:** 1 variation per (model, simulator) — no aggregation needed, no error bars
-- **Caption:** "Prediction accuracy across model architectures. MAPE of six simulators across LLM models (H100, General-Purpose workload, default vLLM config). Top row: mean latency; bottom row: P99 tail latency. BLIS-Trained (dark blue) maintains low MAPE across all architectures. LLM-Optimizer and AIConfigurator produce only mean estimates (tail-latency bars absent)."
+- **X-axis:** 7 models: Llama-3.1-8B, Qwen3-14B, CodeLlama-34B, Llama-2-70B, Mixtral-8x7B, Mixtral-8x22B, Scout-17B-16E. Ordered by parameter count within type (dense first, then MoE).
+- **Filter:** HW=H100, Workload=General, config=defaults (from discussion: rows 1, 5, 9, 13, 16, 17, 49)
+- **Aggregation:** 1 variation per (model, simulator) — no aggregation, no error bars
+- **Note:** Llama-2-7B excluded because its default config uses DP=2 (router datapoint), making it non-comparable to single-replica baselines.
+- **Caption:** "Prediction accuracy across model architectures. MAPE of six simulators across seven LLM models spanning dense (7B-70B) and MoE (47B-141B) architectures on H100 (General-Purpose workload, default vLLM config). Top row: mean latency; bottom row: P99 tail latency. BLIS-Trained (dark blue) maintains low MAPE across all architectures. LLM-Optimizer and AIConfigurator produce only mean estimates (tail-latency bars absent)."
 
 #### Figure 2 — Hardware Portability
 
-- **X-axis:** GPU types present in the CSV (target: `H100`, `A100`, `L40`). Requires a `hardware` dimension in the CSV or a mapping from experiment folder names to GPU type.
-- **Fixed:** Selected anchor (model, workload) pairs per hardware
-- **Aggregation:** H100 aggregates all core-benchmark variations (median + IQR). A100 and L40 have 2 anchors each (overlay individual dots).
-- **Data dependency:** Requires A100/L40 ground truth collection and a way to identify GPU type from the CSV. The experiment schema may need a `hardware` column, or GPU type can be inferred from experiment folder naming convention.
-- **Caption:** "Hardware portability. MAPE across GPU types. H100 bars show median over core-benchmark variations (error bars: IQR); other GPUs show individual anchor results as overlaid dots. BLIS variants generalize across GPU generations using only datasheet specifications."
+- **X-axis:** 3 GPU types: H100, A100-80GB, L40S
+- **Filter:** Workload=General, config=defaults, TP=default, DP<=1 (from discussion: 16 experiments across all HW)
+- **Aggregation:** H100 aggregates across all viable models (median + IQR). A100 aggregates across its viable models (up to 7). L40S has 2-3 models (overlay dots). Not all models run on all hardware — L40S excludes CodeLlama-34B, Llama-2-70B, Mixtral-8x22B due to VRAM constraints.
+- **Caption:** "Hardware portability. MAPE across three GPU types (General-Purpose workload, default config). Each bar aggregates across all viable models for that GPU. BLIS variants generalize across GPU generations using only datasheet specifications."
 
 #### Figure 3 — Workload Sensitivity
 
-- **X-axis:** All workloads present in the CSV. Currently 3 (`general`, `codegen`, `roleplay`); target is 4 (+ `reasoning`).
-- **Fixed:** H100, default config
-- **Aggregation:** Each workload aggregates across all models (median + IQR error bars)
-- **Caption:** "Workload sensitivity. MAPE across workload types, aggregated over models (H100, default config). BLIS-Trained shows the smallest degradation across workload diversity."
+- **X-axis:** 4 workloads: General-Purpose, Code Generation, Roleplay, Reasoning
+- **Filter:** HW=H100, config=defaults, TP=default, DP<=1 (from discussion: 28 experiments)
+- **Aggregation:** Each workload aggregates across all models that ran it (median + IQR error bars). General has the most models; Reasoning may have fewer (deprioritized in collection).
+- **Caption:** "Workload sensitivity. MAPE across four workload types, aggregated over models (H100, default config). BLIS-Trained shows the smallest degradation across workload diversity."
 
-#### Figure 4 — Configuration Generalization
+#### Figure 4(a) — Config Sensitivity: Dense Model (Llama-3.1-8B)
 
-- **X-axis:** vLLM configurations present in the CSV (target: `Default`, `BatchTok-2K`, `No-Offload`, `GPU-0.8`). Requires a `config` dimension in the CSV or a mapping from experiment folder names to config variant.
-- **Fixed:** Llama-2-70B, General-Purpose, H100
-- **Aggregation:** 1 variation per (config, simulator) — no aggregation needed
-- **Data dependency:** Requires running experiments with alternative vLLM configurations and encoding the config variant in the CSV.
-- **Caption:** "Sensitivity to serving configuration. MAPE under vLLM configurations for Llama-2-70B on H100 (General-Purpose workload). Varying serving knobs has minimal impact on BLIS prediction error, demonstrating robustness without per-config tuning."
+- **X-axis:** 6 configs: `Default`, `mbt=1024`, `mbt=8192`, `CPU-Offload`, `GPU-0.95`, `TP=2`
+- **Filter:** HW=H100, Workload=General, Model=Llama-3.1-8B (from discussion: rows 16, 22-26)
+- **Aggregation:** 1 variation per (config, simulator) — no aggregation
+- **Caption:** "Configuration sensitivity for a dense model (Llama-3.1-8B-Instruct, H100, General-Purpose). Each group varies one vLLM knob from the default. BLIS prediction error remains stable across configuration changes."
+
+#### Figure 4(b) — Config Sensitivity: MoE Model (Mixtral-8x7B)
+
+- **X-axis:** 7 configs: `Default`, `mbt=1024`, `mbt=8192`, `CPU-Offload`, `GPU-0.95`, `TP=4`, `EP=4 (DP=2)`
+- **Filter:** HW=H100, Workload=General, Model=Mixtral-8x7B (from discussion: rows 9, 27-32)
+- **Aggregation:** 1 variation per (config, simulator) — no aggregation
+- **Caption:** "Configuration sensitivity for an MoE model (Mixtral-8x7B, H100, General-Purpose). Includes expert parallelism (EP=4 via DP=2). BLIS handles both standard knobs and MoE-specific parallelism without accuracy degradation."
 
 ---
 
@@ -205,11 +231,11 @@ Single-panel scatter plot.
 - **Points:** One per simulator, using the color palette above. Marker size larger for BLIS-Trained (hero).
 - **Error bars:** Horizontal = IQR of MAPE; Vertical = IQR of runtime
 - **Pareto shading:** Light blue shaded region from BLIS-Trained toward the origin, marking the dominated region
-- **Annotations:** Each point labeled with simulator name + median values
+- **Annotations:** Each point labeled with simulator name + "(n=X)" showing the number of variations
 
 ### Caption
 
-"Accuracy-speed Pareto frontier. Each point shows a simulator's median MAPE (x-axis) and median simulation runtime (y-axis, log scale) across N available variations. Error bars show interquartile range. BLIS-Trained achieves the best accuracy-speed tradeoff."
+"Accuracy-speed Pareto frontier. Each point shows a simulator's median MAPE (x-axis) and median simulation runtime (y-axis, log scale) across all available variations. Error bars show interquartile range. BLIS-Trained achieves the best accuracy-speed tradeoff."
 
 ---
 
@@ -245,7 +271,7 @@ Single-panel scatter plot.
 A single module `experiment/figures.py` that:
 
 1. Reads `results/error_records.csv` and `results/runtime.csv` via pandas
-2. Exposes one function per figure: `plot_model_sensitivity()`, `plot_hardware_portability()`, `plot_workload_sensitivity()`, `plot_config_generalization()`, `plot_pareto()`, `format_runtime_table()`
+2. Exposes one function per figure: `plot_model_sensitivity()`, `plot_hardware_portability()`, `plot_workload_sensitivity()`, `plot_config_sensitivity_dense()`, `plot_config_sensitivity_moe()`, `plot_pareto()`, `format_runtime_table()`
 3. Shares a common `_bar_chart_grid()` helper for the 2x3 grouped bar layout (Figures 1-4)
 4. Uses a shared style configuration dict for colors, hatching, fonts, and the 20% threshold line
 5. Outputs to `results/figures/` directory
@@ -257,13 +283,23 @@ Output files follow a consistent convention for LaTeX `\includegraphics` referen
 - `results/figures/fig1_model_sensitivity.pdf` (and `.png`)
 - `results/figures/fig2_hardware_portability.pdf`
 - `results/figures/fig3_workload_sensitivity.pdf`
-- `results/figures/fig4_config_generalization.pdf`
+- `results/figures/fig4a_config_dense.pdf`
+- `results/figures/fig4b_config_moe.pdf`
 - `results/figures/fig5_pareto.pdf`
 - `results/figures/table1_runtime.tex` (LaTeX tabular for direct inclusion)
 
 ### CLI Integration
 
 Add a `--figures` flag to `experiment/run.py` (or a separate `python -m experiment.figures` CLI entry point) so figures can be regenerated from existing CSVs without re-running simulations.
+
+### Data Filtering
+
+The CSV schema currently encodes model and workload but not hardware, TP, DP, or config knobs. To support Figures 2 and 4, either:
+
+1. **Extend the CSV schema** to include `hardware`, `tp`, `dp`, `max_num_batched_tokens`, `cpu_offloading`, `gpu_memory_utilization`, `precision` columns in both `error_records.csv` and `runtime.csv`, OR
+2. **Infer from experiment folder names** using a naming convention (e.g., `YYYYMMDD-HHMMSS-<model>-tp<N>-<workload>-<hw>-<config_tag>`)
+
+Option 1 is more robust and recommended. The `experiment.run` pipeline should propagate these dimensions through to the CSV output.
 
 ### Robustness
 
@@ -274,6 +310,7 @@ Add a `--figures` flag to `experiment/run.py` (or a separate `python -m experime
 
 ### Figure Sizing
 
-- Figures 1-4: full-page width in two-column format (~7.0" x 3.5")
+- Figures 1-3: full-page width in two-column format (~7.0" x 3.5")
+- Figure 4(a), 4(b): full-page width each (~7.0" x 3.5"); presented as sub-figures in the paper
 - Figure 5: single-column width (~3.5" x 3.0")
 - All saved at 300 DPI for PNG, vector for PDF
