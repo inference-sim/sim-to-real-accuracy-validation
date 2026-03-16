@@ -13,6 +13,7 @@ import yaml
 from experiment.adapters.blis_blackbox import BLISBlackboxAdapter
 from experiment.adapters.blis_crossmodel import BLISCrossModelAdapter
 from experiment.adapters.blis_roofline import BLISRooflineAdapter
+from experiment.adapters.blis_trained_roofline import BLISTrainedRooflineAdapter
 from experiment.data_model import (
     Experiment,
     LatencyDistribution,
@@ -109,6 +110,10 @@ class TestAdapterNames:
         adapter = BLISCrossModelAdapter("/tmp/blis")
         assert adapter.name == "blis-crossmodel"
 
+    def test_trained_roofline_name(self):
+        adapter = BLISTrainedRooflineAdapter("/tmp/blis")
+        assert adapter.name == "blis-trained-roofline"
+
 
 # ---------------------------------------------------------------------------
 # Tests: can_run()
@@ -157,6 +162,13 @@ class TestRooflineCanRun:
 class TestCrossModelCanRun:
     def test_always_true(self):
         adapter = BLISCrossModelAdapter("/tmp/blis")
+        exp = _make_experiment()
+        assert adapter.can_run(exp) is True
+
+
+class TestTrainedRooflineCanRun:
+    def test_always_true(self):
+        adapter = BLISTrainedRooflineAdapter("/tmp/blis")
         exp = _make_experiment()
         assert adapter.can_run(exp) is True
 
@@ -213,6 +225,22 @@ class TestBLISCLIArgs:
         called_args = mock_run.call_args[0][0]
         idx = called_args.index("--latency-model")
         assert called_args[idx + 1] == "crossmodel"
+
+    @patch("experiment.adapters.blis_trained_roofline.subprocess.run")
+    def test_trained_roofline_latency_model_flag(self, mock_run):
+        """Trained-roofline adapter should pass --latency-model trained-roofline."""
+        mock_run.return_value = MagicMock()
+
+        adapter = BLISTrainedRooflineAdapter("/usr/local/bin/blis")
+        exp = _make_experiment()
+
+        with patch.object(adapter, "_parse_blis_results") as mock_parse:
+            mock_parse.return_value = MagicMock()
+            adapter.run(exp)
+
+        called_args = mock_run.call_args[0][0]
+        idx = called_args.index("--latency-model")
+        assert called_args[idx + 1] == "trained-roofline"
 
     @patch("experiment.adapters.blis_roofline.subprocess.run")
     def test_kv_offloading_flags_present(self, mock_run):
@@ -325,6 +353,16 @@ class TestBLISSubprocessErrors:
         adapter = BLISCrossModelAdapter("/tmp/blis")
         exp = _make_experiment()
         with pytest.raises(RuntimeError, match="BLIS crossmodel failed.*OOM"):
+            adapter.run(exp)
+
+    @patch("experiment.adapters.blis_trained_roofline.subprocess.run")
+    def test_trained_roofline_wraps_subprocess_error(self, mock_run):
+        mock_run.side_effect = subprocess.CalledProcessError(
+            returncode=1, cmd=["blis"], stderr=b"coefficients missing"
+        )
+        adapter = BLISTrainedRooflineAdapter("/tmp/blis")
+        exp = _make_experiment()
+        with pytest.raises(RuntimeError, match="BLIS trained-roofline failed.*coefficients missing"):
             adapter.run(exp)
 
     @patch("experiment.adapters.blis_blackbox.subprocess.run")
