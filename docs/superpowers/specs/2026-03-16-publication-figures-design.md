@@ -30,6 +30,32 @@ CSV identifiers map to display names in figures:
 
 `blis-blackbox` is excluded from all figures (it has no matching coefficients for any current model and produces zero results).
 
+### Workload Display Names
+
+| CSV Value | Display Name |
+|-----------|-------------|
+| `general` | General-Purpose |
+| `codegen` | Code Generation |
+| `roleplay` | Roleplay |
+| `reasoning` | Reasoning |
+
+### Model Short Labels
+
+| CSV Model ID | Short Label |
+|-------------|------------|
+| `meta-llama/Llama-2-7b-hf` | Ll-7B |
+| `meta-llama/Llama-2-70b-hf` | Ll-70B |
+| `mistralai/Mixtral-8x7B-v0.1` | Mx-8x7B |
+| `codellama/CodeLlama-34b-Instruct-hf` | CL-34B |
+
+Additional models will be added to this table as data is collected.
+
+### Known Simulator Limitations
+
+- **AIConfigurator:** Excludes MoE architectures (Mixtral-8x7B). Bars for this simulator will be absent on Mixtral per the missing-data rule.
+- **Vidur:** Requires pre-profiled GPU kernel timings. Currently supports Llama-2-7B, Llama-2-70B, and CodeLlama-34B but not Mixtral.
+- **LLM-Optimizer and AIConfigurator:** Produce only mean estimates. P99 (tail) bars are absent for these simulators in all figures.
+
 ---
 
 ## Experiment Matrix
@@ -40,7 +66,7 @@ CSV identifiers map to display names in figures:
 |-------|-----------|--------|
 | Core benchmark | 4 models x 3 workloads = 12 | Available (H100, default vLLM config) |
 
-Models: Llama-2-7B, Llama-2-70B, Mixtral-8x7B, CodeLlama-34B.
+Models: Llama-2-7B, Llama-2-70B, Mixtral-8x7B, CodeLlama-34B-Instruct.
 Workloads: General-Purpose, Code Generation, Roleplay.
 
 ### Full Target (21 variations, pending data collection)
@@ -132,7 +158,7 @@ Each figure is a **2-row x 3-column** subplot grid:
 
 ### Aggregation
 
-When a figure's x-axis dimension has multiple underlying variations (e.g., Figure 3 aggregates across 4 models per workload), the bar height is the **median MAPE** across those variations, with **IQR error bars**. When n <= 4 (e.g., A100 with 2 anchors in Figure 2), overlay **individual data points** as semi-transparent dots instead of error bars for statistical honesty.
+When a figure's x-axis dimension has multiple underlying variations (e.g., Figure 3 aggregates across 4 models per workload), the bar height is the **median MAPE** across those variations, with **IQR error bars**. When n <= 3 (e.g., A100 with 2 anchors in Figure 2), overlay **individual data points** as semi-transparent dots instead of error bars for statistical honesty.
 
 ### Per-Figure Specifics
 
@@ -141,7 +167,7 @@ When a figure's x-axis dimension has multiple underlying variations (e.g., Figur
 - **X-axis:** All models present in the CSV, filtered to `workload == "general"`. Currently 4 models; scales to 7 as data is collected. Short labels derived from model names (e.g., `Ll-7B`, `Ll-70B`, `Mx-8x7B`, `CL-34B`).
 - **Fixed:** H100, General-Purpose workload, default vLLM config
 - **Aggregation:** 1 variation per (model, simulator) — no aggregation needed, no error bars
-- **Caption:** "Prediction accuracy across model architectures. MAPE of six simulators across LLM models (H100, General-Purpose workload, default vLLM config). Top row: mean latency; bottom row: P99 tail latency. BLIS-Trained (dark blue) maintains low MAPE across all architectures. LLM-Optimizer and AIConfigurator produce only mean estimates (P99 bars absent)."
+- **Caption:** "Prediction accuracy across model architectures. MAPE of six simulators across LLM models (H100, General-Purpose workload, default vLLM config). Top row: mean latency; bottom row: P99 tail latency. BLIS-Trained (dark blue) maintains low MAPE across all architectures. LLM-Optimizer and AIConfigurator produce only mean estimates (tail-latency bars absent)."
 
 #### Figure 2 — Hardware Portability
 
@@ -199,6 +225,7 @@ Single-panel scatter plot.
 | LLM-Optimizer | — | — |
 
 - Values computed from `runtime.csv`; dashes above are placeholders showing table structure
+- Median is computed over all variations each simulator ran; sample sizes differ because some simulators exclude certain models (see Known Simulator Limitations)
 - Sorted by BLIS family first, then baselines by descending runtime
 - "Speedup vs. Real" = median real vLLM experiment duration / median simulator runtime. Real experiment duration is derived from the ground-truth experiment's total wall-clock time (sum of stage durations from the experiment metadata, or estimated from the trace as `max(request_end_time) - min(request_start_time)` per experiment).
 - **Caption:** "Simulator runtime and speedup. Median wall-clock time per variation and speedup relative to running the actual vLLM experiment. BLIS variants complete in seconds, enabling rapid exploration of the model-hardware-config design space."
