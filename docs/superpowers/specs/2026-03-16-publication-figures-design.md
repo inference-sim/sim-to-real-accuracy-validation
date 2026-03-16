@@ -63,11 +63,12 @@ Based on the [60-experiment benchmark plan](https://github.com/inference-sim/inf
 - **Workloads (4+1):** General-Purpose, Code Generation, Roleplay, Reasoning, General-Lite (L40S only)
 - **Config knobs (5):** max_num_batched_tokens, cpu_offloading, gpu_memory_utilization, TP, DP/EP
 
-### Collection Status (51 experiments)
+### Collection Status (54 experiments)
 
 | Phase | Scope | Experiments | Status |
 |-------|-------|-------------|--------|
 | 0 | Existing H100 data (4 models x 3 workloads) | 12 | Done |
+| 0.5 | Default-config baselines for Phase 0 models (cpu_offload=Disabled) | 3 | Pending |
 | 1-3 | H100 new model baselines + workloads | 9 | Done |
 | 4-5 | H100 config sweeps (Llama-3.1-8b + Mixtral-8x7B) | 11 | Done |
 | 6-7 | H100 EP + DP experiments | 3 | Partial (2/3 done) |
@@ -82,9 +83,9 @@ Each figure applies a filter to the full matrix, then groups by one dimension:
 
 | Figure | Filter | Group By |
 |--------|--------|----------|
-| Fig 1 | HW=H100, Workload=General, config=defaults | Model (7 models) |
+| Fig 1 | HW=H100, Workload=General/General-Lite, config=defaults | Model (7 models) |
 | Fig 2 | Workload=General, config=defaults, TP=default, DP<=1 | Hardware (3 GPUs) |
-| Fig 3 | HW=H100, config=defaults, TP=default, DP<=1 | Workload (4 workloads) |
+| Fig 3 | HW=H100, config=defaults, TP=default, DP<=1, 4 models only | Workload (4 workloads) |
 | Fig 4a | HW=H100, Workload=General, Model=Llama-3.1-8b | Config variant |
 | Fig 4b | HW=H100, Workload=General, Model=Mixtral-8x7B | Config variant |
 | Fig 5 | All available variations | Simulator (aggregate) |
@@ -174,7 +175,7 @@ When a figure's x-axis dimension has multiple underlying variations (e.g., Figur
 #### Figure 1 — Model Sensitivity
 
 - **X-axis:** 7 models: Llama-3.1-8B, Qwen3-14B, CodeLlama-34B, Llama-2-70B, Mixtral-8x7B, Mixtral-8x22B, Scout-17B-16E. Ordered by parameter count within type (dense first, then MoE).
-- **Filter:** HW=H100, Workload=General, config=defaults (from discussion: rows 1, 5, 9, 13, 16, 17, 49)
+- **Filter:** HW=H100, Workload=General or General-Lite, config=defaults (from discussion: rows 13, 16, 17, 49, 56, 57, 58; rows 57-58 use General-Lite for safe rate)
 - **Aggregation:** 1 variation per (model, simulator) — no aggregation, no error bars
 - **Note:** Llama-2-7B excluded because its default config uses DP=2 (router datapoint), making it non-comparable to single-replica baselines.
 - **Caption:** "Prediction accuracy across model architectures. MAPE of five simulators across seven LLM models spanning dense (7B-70B) and MoE (47B-141B) architectures on H100 (General-Purpose workload, default vLLM config). Top row: mean latency; bottom row: P99 tail latency. BLIS-Trained (dark blue) maintains low MAPE across all architectures. LLM-Optimizer and AIConfigurator produce only mean estimates (tail-latency bars absent)."
@@ -189,9 +190,10 @@ When a figure's x-axis dimension has multiple underlying variations (e.g., Figur
 #### Figure 3 — Workload Sensitivity
 
 - **X-axis:** 4 workloads: General-Purpose, Code Generation, Roleplay, Reasoning
-- **Filter:** HW=H100, config=defaults, TP=default, DP<=1 (from discussion: 28 experiments)
-- **Aggregation:** Each workload aggregates across all models that ran it (median + IQR error bars). General has the most models; Reasoning may have fewer (deprioritized in collection).
-- **Caption:** "Workload sensitivity. MAPE across four workload types, aggregated over models (H100, default config). BLIS-Trained shows the smallest degradation across workload diversity."
+- **Filter:** HW=H100, config=defaults, TP=default, DP<=1, Model IN (Llama-3.1-8b, Qwen3-14B, Llama-4-Scout-17B-16E, Mixtral-8x22B) (from discussion: rows 13–21, 46–51, 53; up to 15 experiments)
+- **Models:** 4 models with multi-workload data at defaults. Phase 0 models (Mixtral-8x7B, Codellama-34b, Llama-2-70b) excluded — their workload data uses cpu_offload=Enabled.
+- **Aggregation:** Each workload aggregates across the 4 models (median + IQR error bars; overlay dots when n <= 3). Reasoning may have fewer models (deprioritized in collection).
+- **Caption:** "Workload sensitivity. MAPE across four workload types, aggregated over four models spanning dense and MoE architectures (H100, default config). BLIS-Trained shows the smallest degradation across workload diversity."
 
 #### Figure 4(a) — Config Sensitivity: Dense Model (Llama-3.1-8B)
 
@@ -203,7 +205,7 @@ When a figure's x-axis dimension has multiple underlying variations (e.g., Figur
 #### Figure 4(b) — Config Sensitivity: MoE Model (Mixtral-8x7B)
 
 - **X-axis:** 7 configs: `Default`, `mbt=1024`, `mbt=8192`, `CPU-Offload`, `GPU-0.95`, `TP=4`, `EP=4 (DP=2)`
-- **Filter:** HW=H100, Workload=General, Model=Mixtral-8x7B (from discussion: rows 9, 27-32)
+- **Filter:** HW=H100, Workload=General, Model=Mixtral-8x7B (from discussion: rows 56, 27-32; row 56 is the Disabled-default baseline)
 - **Aggregation:** 1 variation per (config, simulator) — no aggregation
 - **Caption:** "Configuration sensitivity for an MoE model (Mixtral-8x7B, H100, General-Purpose). Includes expert parallelism (EP=4 via DP=2). BLIS handles both standard knobs and MoE-specific parallelism without accuracy degradation."
 
