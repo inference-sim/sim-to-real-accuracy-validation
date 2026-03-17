@@ -113,6 +113,12 @@ def run_pipeline(
                     model=exp.model,
                     workload=exp.workload,
                     wall_clock_seconds=elapsed,
+                    exp_id=exp.exp_id,
+                    hardware=exp.hardware,
+                    dp=exp.dp,
+                    cpu_offload=exp.cpu_offload,
+                    gpu_mem_util=exp.gpu_mem_util,
+                    precision=exp.precision,
                 ))
                 print(f"  OK: {adapter_name} × {exp.model} ({exp.workload}) [{elapsed:.2f}s]")
             except Exception:

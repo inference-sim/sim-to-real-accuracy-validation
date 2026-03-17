@@ -66,6 +66,29 @@ class TestRuntimeRecord:
         assert rec.model == "model"
         assert rec.workload == "wl"
 
+    def test_metadata_fields(self):
+        rec = RuntimeRecord(
+            simulator="sim", experiment_folder="/exp", model="m",
+            workload="w", wall_clock_seconds=1.0,
+            exp_id=10, hardware="A100-80GB", dp=4,
+            cpu_offload=True, gpu_mem_util=0.85, precision="FP8",
+        )
+        assert rec.exp_id == 10
+        assert rec.hardware == "A100-80GB"
+        assert rec.dp == 4
+        assert rec.cpu_offload is True
+        assert rec.gpu_mem_util == 0.85
+        assert rec.precision == "FP8"
+
+    def test_metadata_defaults(self):
+        rec = RuntimeRecord("sim", "/exp", "m", "w", 1.0)
+        assert rec.exp_id == 0
+        assert rec.hardware == "H100"
+        assert rec.dp is None
+        assert rec.cpu_offload is False
+        assert rec.gpu_mem_util == 0.9
+        assert rec.precision == "FP16"
+
 
 class TestComputeMAPE:
     def test_exact_match(self):
@@ -325,6 +348,62 @@ class TestComputeErrors:
         assert names == {"e2e_mean", "ttft_mean", "itl_mean"}
         # 3 metrics × 2 (stage + summary) = 6 records.
         assert len(records) == 6
+
+    def test_metadata_propagated_to_error_records(self):
+        """New manifest metadata fields propagate from Experiment to ErrorRecord."""
+        gt = _make_stage(0, 100, 10, 1)
+        experiment = Experiment(
+            folder="/data/exp-1", model="llama-7b", tp=2, workload="codegen",
+            max_model_len=4096, max_num_batched_tokens=2048, max_num_seqs=128,
+            total_kv_blocks=100, cpu_kv_blocks=0,
+            stages=[gt], summary=_make_stage(-1, 0, 0, 0),
+            profile_config={"load": {"stages": [{"duration": 600, "rate": 5}]}},
+            exp_id=42,
+            hardware="A100-80GB",
+            dp=2,
+            cpu_offload=True,
+            gpu_mem_util=0.85,
+            precision="FP8",
+        )
+        result = SimulatorResult(
+            adapter_name="test-sim", experiment_folder="/data/exp-1",
+            stages=[_make_stage(0, 110, 11, 1.1)],
+            summary=_make_stage(-1, 0, 0, 0),
+        )
+
+        records = compute_errors(experiment, result)
+        for r in records:
+            assert r.exp_id == 42
+            assert r.hardware == "A100-80GB"
+            assert r.dp == 2
+            assert r.cpu_offload is True
+            assert r.gpu_mem_util == 0.85
+            assert r.precision == "FP8"
+
+    def test_metadata_defaults_when_not_set(self):
+        """ErrorRecord gets default metadata when Experiment uses defaults."""
+        gt = _make_stage(0, 100, 10, 1)
+        experiment = Experiment(
+            folder="/tmp/exp", model="m", tp=1, workload="w",
+            max_model_len=4096, max_num_batched_tokens=2048, max_num_seqs=128,
+            total_kv_blocks=100, cpu_kv_blocks=0,
+            stages=[gt], summary=_make_stage(-1, 0, 0, 0),
+            profile_config={"load": {"stages": [{"duration": 600, "rate": 5}]}},
+        )
+        result = SimulatorResult(
+            adapter_name="s", experiment_folder="/tmp/exp",
+            stages=[_make_stage(0, 110, 11, 1.1)],
+            summary=_make_stage(-1, 0, 0, 0),
+        )
+
+        records = compute_errors(experiment, result)
+        r = records[0]
+        assert r.exp_id == 0
+        assert r.hardware == "H100"
+        assert r.dp is None
+        assert r.cpu_offload is False
+        assert r.gpu_mem_util == 0.9
+        assert r.precision == "FP16"
 
     def test_mismatched_stage_count_skips_extra(self):
         """Simulator has 2 stages but experiment has 1 — extra stage skipped."""

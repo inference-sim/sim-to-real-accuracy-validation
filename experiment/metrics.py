@@ -39,6 +39,14 @@ class ErrorRecord:
     mpe: float
     absolute_error: float
 
+    # Metadata from experiments.json manifest
+    exp_id: int = 0
+    hardware: str = "H100"
+    dp: int | None = None
+    cpu_offload: bool = False
+    gpu_mem_util: float = 0.9
+    precision: str = "FP16"
+
 
 @dataclass
 class RuntimeRecord:
@@ -49,6 +57,14 @@ class RuntimeRecord:
     model: str
     workload: str
     wall_clock_seconds: float
+
+    # Metadata from experiments.json manifest
+    exp_id: int = 0
+    hardware: str = "H100"
+    dp: int | None = None
+    cpu_offload: bool = False
+    gpu_mem_util: float = 0.9
+    precision: str = "FP16"
 
 
 def compute_mape(predicted: float, actual: float) -> float:
@@ -124,6 +140,12 @@ def _compare_stages(
             mape=compute_mape(p, a),
             mpe=compute_mpe(p, a),
             absolute_error=compute_absolute_error(p, a),
+            exp_id=experiment.exp_id,
+            hardware=experiment.hardware,
+            dp=experiment.dp,
+            cpu_offload=experiment.cpu_offload,
+            gpu_mem_util=experiment.gpu_mem_util,
+            precision=experiment.precision,
         ))
     return records
 
