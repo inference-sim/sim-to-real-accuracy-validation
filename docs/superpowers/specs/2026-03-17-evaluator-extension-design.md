@@ -64,19 +64,17 @@ def discover_experiments(
     base_dir: str,
     *,
     safe_only: bool = True,
-    done_only: bool = True,
 ) -> list[tuple[dict, str]]:
     """Return (manifest_entry, dir_path) pairs for runnable experiments.
 
-    Filters by done=True and safe="safe" by default. Each manifest_entry
-    is a dict with keys: id, model, precision, hw, workload, mbt,
-    cpu_offload, gpu_mem, tp, dp, safe, done, notes.
+    Filters by safe="safe" by default. Experiments without a directory
+    on disk are skipped with a warning. Each manifest_entry is a dict
+    with keys: id, model, precision, hw, workload, mbt, cpu_offload,
+    gpu_mem, tp, dp, safe, done, notes.
     """
     manifest = load_manifest(base_dir)
     results = []
     for entry in manifest:
-        if done_only and not entry.get("done", False):
-            continue
         if safe_only and entry.get("safe") != "safe":
             continue
         dir_path = resolve_experiment_dir(base_dir, entry["id"])
