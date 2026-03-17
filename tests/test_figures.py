@@ -151,9 +151,9 @@ class TestConstants:
         assert "meta-llama/Llama-2-7b-hf" not in MODEL_ORDER
         assert len(MODEL_ORDER) == 7
 
-    def test_metrics_grid_is_2x3(self):
+    def test_metrics_grid_is_1x3(self):
         from experiment.figures import METRICS_GRID
-        assert len(METRICS_GRID) == 2
+        assert len(METRICS_GRID) == 1
         assert all(len(row) == 3 for row in METRICS_GRID)
 
 
@@ -228,13 +228,13 @@ class TestBarChartGrid:
             "Group-B": {"blis-trained-roofline": dict(d)},
         }
 
-    def test_returns_2x3_axes(self):
+    def test_returns_1x3_axes(self):
         from experiment.figures import _bar_chart_grid
         fig, axes = _bar_chart_grid(
             data=self._make_data(), group_order=["Group-A", "Group-B"],
             title="Test", output_path=None,
         )
-        assert axes.shape == (2, 3)
+        assert axes.shape == (1, 3)
         plt.close(fig)
 
     def test_threshold_line_present(self):
@@ -268,7 +268,7 @@ class TestBarChartGrid:
         fig, axes = _bar_chart_grid(
             data={}, group_order=[], title="Empty", output_path=None,
         )
-        assert axes.shape == (2, 3)
+        assert axes.shape == (1, 3)
         plt.close(fig)
 
     def test_na_annotation_for_missing_metric(self):

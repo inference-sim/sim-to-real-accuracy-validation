@@ -88,11 +88,10 @@ WORKLOAD_DISPLAY_NAMES = {
 
 METRICS_GRID = [
     [("e2e_mean", "E2E Mean"), ("ttft_mean", "TTFT Mean"), ("itl_mean", "ITL Mean")],
-    [("e2e_p99", "E2E P99"), ("ttft_p99", "TTFT P99"), ("itl_p99", "ITL P99")],
 ]
 
 MAPE_THRESHOLD = 20.0
-FIGURE_SIZES = {"bar_grid": (7.0, 3.5), "pareto": (5.0, 3.5)}
+FIGURE_SIZES = {"bar_grid": (7.0, 2.2), "pareto": (5.5, 4.5)}
 
 RC_PARAMS = {
     "font.family": "serif",
@@ -151,26 +150,11 @@ _METADATA_COLUMNS = [
 # ---------------------------------------------------------------------------
 
 
-def load_error_data(csv_path: str, mape_cap: float | None = 500.0) -> pd.DataFrame:
-    """Load error_records.csv, exclude blacklisted simulators, keep summary rows.
-
-    Parameters
-    ----------
-    mape_cap : float or None
-        Drop rows where MAPE exceeds this value. Defaults to 500.0 to
-        exclude broken predictions (e.g., cpu_offloading experiments where
-        simulators produce wildly inaccurate results). Set to None to keep
-        all values.
-    """
+def load_error_data(csv_path: str) -> pd.DataFrame:
+    """Load error_records.csv, exclude blacklisted simulators, keep summary rows."""
     df = pd.read_csv(csv_path)
     df = df[~df["simulator"].isin(EXCLUDED_SIMULATORS)]
     df = df[df["stage_index"] == -1]
-    if mape_cap is not None:
-        n_before = len(df)
-        df = df[df["mape"] <= mape_cap]
-        n_dropped = n_before - len(df)
-        if n_dropped:
-            logger.info("Dropped %d rows with MAPE > %.0f%%", n_dropped, mape_cap)
     return df.reset_index(drop=True)
 
 
@@ -285,10 +269,13 @@ def _bar_chart_grid(
     error_data: dict | None = None,
     dot_data: dict | None = None,
 ) -> tuple[plt.Figure, np.ndarray]:
-    """Render a 2x3 grouped-bar grid (shared layout for Figures 1-4)."""
+    """Render a grouped-bar grid (shared layout for Figures 1-4)."""
     _apply_rc_params()
+    n_rows = len(METRICS_GRID)
     figsize = figsize or FIGURE_SIZES["bar_grid"]
-    fig, axes = plt.subplots(2, 3, figsize=figsize, sharey="row")
+    fig, axes = plt.subplots(n_rows, 3, figsize=figsize, sharey="row")
+    if n_rows == 1:
+        axes = axes[np.newaxis, :]  # ensure 2D indexing
 
     # Determine which simulators have data in any group
     all_sims: set[str] = set()
@@ -388,9 +375,8 @@ def _bar_chart_grid(
             ]
             ax.set_xticklabels(tick_labels, rotation=45, ha="right")
             if col_idx == 0:
-                row_label = "Mean" if row_idx == 0 else "P99"
                 pct = r"\%" if matplotlib.rcParams.get("text.usetex") else "%"
-                ax.set_ylabel(f"MAPE ({pct}) \u2014 {row_label}")
+                ax.set_ylabel(f"MAPE ({pct})")
 
     # Shared legend below bottom row
     handles, labels = axes[0, 0].get_legend_handles_labels()
@@ -641,11 +627,11 @@ def plot_pareto(
     # Per-simulator annotation offsets: hand-tuned to avoid overlap in the
     # typical cluster layout (BLIS/LLM-Opt/AIC cluster low-MAPE, Vidur far right).
     _annotation_offsets = {
-        "blis-trained-roofline": (-12, -18),
-        "blis-roofline": (12, 14),
-        "vidur": (10, -16),
-        "llm-optimizer-estimate": (14, -14),
-        "aiconfigurator-estimate": (14, 6),
+        "blis-trained-roofline": (-14, -20),
+        "blis-roofline": (14, 16),
+        "vidur": (12, -18),
+        "llm-optimizer-estimate": (14, -18),
+        "aiconfigurator-estimate": (-14, 16),
     }
 
     for sim in SIMULATOR_ORDER:
@@ -677,7 +663,15 @@ def plot_pareto(
             arrowprops={"arrowstyle": "-", "color": "gray", "linewidth": 0.4},
         )
 
-    # Pareto-dominated shading
+    ax.set_xscale("log")
+    ax.set_yscale("log")
+    # Tight limits for better spread
+    all_mapes = [s["mape_med"] for s in sim_stats.values()]
+    ax.set_xlim(min(all_mapes) * 0.5, max(all_mapes) * 3)
+    all_rts = [s["rt_med"] for s in sim_stats.values()]
+    ax.set_ylim(min(all_rts) * 0.4, max(all_rts) * 4)
+
+    # Pareto-dominated shading (after limits are set)
     if "blis-trained-roofline" in sim_stats:
         bt = sim_stats["blis-trained-roofline"]
         xlim = ax.get_xlim()
@@ -686,17 +680,11 @@ def plot_pareto(
             [bt["mape_med"], xlim[1]], bt["rt_med"], ylim[1],
             color="#90E0EF", alpha=0.15, zorder=0,
         )
-        ax.set_xlim(xlim)
-        ax.set_ylim(ylim)
 
-    ax.set_yscale("log")
-    # Tight y-limits: 60% of minimum to 3x maximum for better spread
-    all_rts = [s["rt_med"] for s in sim_stats.values()]
-    ax.set_ylim(min(all_rts) * 0.4, max(all_rts) * 4)
     pct = r"\%" if matplotlib.rcParams.get("text.usetex") else "%"
     ax.set_xlabel(f"Median MAPE ({pct})")
     ax.set_ylabel("Median Runtime (s)")
-    ax.legend(fontsize=6, loc="lower right", framealpha=0.9)
+    ax.legend(fontsize=7.5, loc="lower right", framealpha=0.9)
     fig.tight_layout()
 
     if output_path:
