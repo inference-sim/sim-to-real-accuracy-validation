@@ -211,12 +211,12 @@ blis_hw = _HW_TO_BLIS.get(experiment.hardware)
 "--hardware", blis_hw,
 ```
 
-**DP/multi-instance support:**
+**Multi-instance support (DP and EP):**
 ```python
 if experiment.dp and experiment.dp > 1:
     args.extend(["--num-instances", str(experiment.dp)])
 ```
-BLIS CLI flag is `--num-instances` (not `--data-parallel-size`).
+BLIS has a single `--num-instances` flag — no separate DP or EP flags. It models N identical instances with cluster-level request routing. For EP experiments (e.g., 32, 33, 34 where vLLM uses `--enable-expert-parallel`), BLIS still uses `--num-instances` since it has no expert-distribution awareness. The EP dimension is approximated as DP replicas only.
 
 **`can_run()` guard for L40S** (until BLIS adds the profile):
 ```python
