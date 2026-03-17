@@ -1,8 +1,18 @@
-# Evaluator Extension Design: 55-Experiment Ground Truth Support
+# Evaluator Extension Design: Full Ground Truth Support
 
 **Date:** 2026-03-17
-**Goal:** Extend the `experiment.run` pipeline to discover, parse, and evaluate all 55 experiments in `vllm_data/ground_truth/` using the manifest-driven approach with `experiments.json` as the source of truth.
+**Goal:** Extend the `experiment.run` pipeline to discover, parse, and evaluate all experiments in `vllm_data/ground_truth/` using the manifest-driven approach with `experiments.json` as the source of truth.
 **Prerequisite:** [Publication Figures Spec](./2026-03-16-publication-figures-design.md), [Data Collection Plan (Discussion #598)](https://github.com/inference-sim/inference-sim/discussions/598)
+
+### Experiment Counts
+
+| Subset | Count | Notes |
+|--------|------:|-------|
+| Manifest entries (`experiments.json`) | 56 | IDs 1–59, gaps at 37, 39, 43, 45 |
+| Directories on disk | 53 | 3 manifest entries lack directories (IDs 47, 52, and one other) |
+| `done=true` | 54 | IDs 47, 52 are `done=false` |
+| `safe="safe"` AND `done=true` | 50 | **Default filter** — what the pipeline runs |
+| Unsafe but done | 4 | IDs 1, 4, 5, 8 |
 
 ---
 
@@ -80,6 +90,30 @@ def discover_experiments(
 
 **Return type change:** `list[str]` → `list[tuple[dict, str]]`. Metadata travels with the path.
 
+**Backward compatibility with `other_gt/`:** The `other_gt/` directory has no `experiments.json`. When `load_manifest()` raises `FileNotFoundError`, `discover_experiments()` falls back to the existing timestamp-regex discovery. In this fallback path, `manifest_entry` is `None` in each returned tuple:
+
+```python
+def discover_experiments(base_dir, *, safe_only=True, done_only=True):
+    try:
+        manifest = load_manifest(base_dir)
+    except FileNotFoundError:
+        # Legacy path: regex-based discovery for other_gt/
+        return _discover_legacy(base_dir)
+    # ... manifest-driven path ...
+
+def _discover_legacy(base_dir: str) -> list[tuple[None, str]]:
+    """Fallback: timestamp-regex discovery (other_gt/ format)."""
+    results = []
+    for entry in os.listdir(base_dir):
+        full_path = os.path.join(base_dir, entry)
+        if os.path.isdir(full_path) and _EXPERIMENT_DIR_RE.match(entry):
+            results.append((None, os.path.abspath(full_path)))
+    results.sort(key=lambda x: x[1])
+    return results
+```
+
+This preserves `--data-dir vllm_data/other_gt` workflows. The `run_pipeline()` loop already handles `manifest_entry=None` via the `parse_experiment()` fallback described in section 2c.
+
 ### 2. Parsing Fixes (`ground_truth.py`)
 
 **2a. Auto-detect results subfolder:**
@@ -99,7 +133,22 @@ cpu_kv_blocks = extract_cpu_kv_blocks(kv_events_path) if os.path.exists(kv_event
 ```python
 def parse_experiment(folder_path: str, manifest_entry: dict | None = None) -> Experiment:
 ```
-Populate new `Experiment` fields from `manifest_entry` when provided.
+When `manifest_entry` is provided, populate `Experiment` fields from the manifest:
+
+| `Experiment` field | Source | Notes |
+|--------------------|--------|-------|
+| `model` | `exp-config.yaml` `model` field | **Always** the HuggingFace ID (e.g., `codellama/CodeLlama-34b-Instruct-hf`). Never from manifest — the manifest `model` is a short display name only. |
+| `workload` | `manifest_entry["workload"]` | **Must** come from manifest, not folder-name parsing. Folder names have suffixes like `-1`, `-2-2` that corrupt the workload (e.g., `general-1` instead of `general`). |
+| `tp` | `exp-config.yaml` `tensor_parallelism` | Unchanged — already parsed from YAML |
+| `exp_id` | `manifest_entry["id"]` | Primary key for the experiment |
+| `hardware` | `manifest_entry["hw"]` | `"H100"`, `"A100-80GB"`, `"L40S"` |
+| `dp` | `manifest_entry["dp"]` | `null` → `None` |
+| `cpu_offload` | `manifest_entry["cpu_offload"]` | |
+| `gpu_mem_util` | `manifest_entry["gpu_mem"]` | |
+| `precision` | `manifest_entry["precision"]` | `"FP16"` or `"FP8"` |
+| `safe` | `manifest_entry["safe"]` | `"safe"`, `"unsafe"`, `"uncalibrated"` |
+
+When `manifest_entry` is `None` (legacy `other_gt/` path), the existing folder-name parsing logic remains as fallback, and new fields get their dataclass defaults.
 
 ### 3. Enriched Data Model (`data_model.py`)
 
@@ -170,7 +219,7 @@ These propagate into `error_records.csv` and `runtime.csv` as new columns.
 
 ## Adapter Changes
 
-### BLIS Adapters (`adapters/base.py`)
+### BLIS Adapters (`adapters/base.py` — shared by all 4 variants)
 
 **Hardware mapping:**
 ```python
@@ -210,7 +259,7 @@ def can_run(self, experiment: Experiment) -> bool:
 
 Remove the L40S guard when `hardware_config.json` adds the L40S entry.
 
-**Coverage:** All H100 + A100 experiments (~51 experiments). L40S blocked until profile added.
+**Coverage:** All H100 + A100 experiments (~48 of 50 safe+done; 2 L40S blocked until profile added). Applies to all 4 BLIS adapters: blackbox, crossmodel, roofline, trained-roofline.
 
 ### Vidur Adapter (`adapters/vidur.py`)
 
@@ -283,12 +332,12 @@ _HW_TO_AICONFIG: dict[str, str] = {"H100": "h100_sxm"}
 # L40S: "l40s" exists but has NO vllm backend perf data
 ```
 
-**Updated `_MOE_MODELS`:**
+**Updated `_MOE_MODELS`:** The current set uses `Mixtral-8x22B-v0.1` (base variant) but the ground truth experiments use the Instruct variant. Update to match actual HuggingFace IDs from `exp-config.yaml`:
 ```python
 _MOE_MODELS: frozenset[str] = frozenset({
     "mistralai/Mixtral-8x7B-v0.1",
-    "mistralai/Mixtral-8x22B-Instruct-v0.1",
-    "RedHatAI/Llama-4-Scout-17B-16E-Instruct-FP8-dynamic",
+    "mistralai/Mixtral-8x22B-Instruct-v0.1",   # Was Mixtral-8x22B-v0.1 (wrong)
+    "RedHatAI/Llama-4-Scout-17B-16E-Instruct-FP8-dynamic",  # New: MoE with 16 experts
 })
 ```
 
@@ -313,12 +362,15 @@ system_name = _HW_TO_AICONFIG[experiment.hardware]
 
 ## Adapter Coverage Matrix
 
+All 4 BLIS adapters (blackbox, crossmodel, roofline, trained-roofline) inherit from `BaseBLISAdapter` and share the same hardware routing in `_build_common_args()`. Hardware fix in `base.py` covers all 4.
+
+Counts below are of the 50 safe+done experiments (default filter).
+
 | Adapter | H100 Dense | H100 MoE | A100 Dense | A100 FP8 | L40S | Total (approx) |
 |---------|:---:|:---:|:---:|:---:|:---:|:---:|
-| BLIS-Trained | Yes | Yes | Yes | Yes | Pending | ~51 |
-| BLIS-Roofline | Yes | Yes | Yes | Yes | Pending | ~51 |
+| BLIS (all 4) | Yes | Yes | Yes | Yes | Pending | ~48 |
 | Vidur | 3 models | No | 3 models | No | No | ~12 |
-| LLM-Optimizer | Yes | Yes* | Yes | No | No | ~45 |
+| LLM-Optimizer | Yes | Yes* | Yes | No | No | ~43 |
 | AIConfigurator | Dense only | No | No | No | No | ~20-25 |
 
 *MoE results will be inaccurate (dense-only roofline).
