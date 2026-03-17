@@ -165,6 +165,25 @@ class TestCanRun:
         exp = _make_experiment(model="codellama/CodeLlama-34b-Instruct-hf")
         assert adapter.can_run(exp) is True
 
+    def test_can_run_rejects_non_h100(self):
+        exp = _make_experiment()
+        exp.hardware = "A100-80GB"
+        assert AIConfiguratorEstimateAdapter().can_run(exp) is False
+
+    def test_can_run_rejects_l40s(self):
+        exp = _make_experiment()
+        exp.hardware = "L40S"
+        assert AIConfiguratorEstimateAdapter().can_run(exp) is False
+
+    def test_can_run_rejects_mixtral_8x22b_instruct(self):
+        """_MOE_MODELS should include the Instruct variant."""
+        exp = _make_experiment(model="mistralai/Mixtral-8x22B-Instruct-v0.1")
+        assert AIConfiguratorEstimateAdapter().can_run(exp) is False
+
+    def test_can_run_rejects_llama4_scout(self):
+        exp = _make_experiment(model="RedHatAI/Llama-4-Scout-17B-16E-Instruct-FP8-dynamic")
+        assert AIConfiguratorEstimateAdapter().can_run(exp) is False
+
 
 class TestModelNameMapping:
     def test_known_model_mapped(self):
@@ -280,6 +299,7 @@ class TestRunWithMock:
             osl=247,
             ttft=5000.0,
             tpot=200.0,
+            profiles=["float16_default"],
         )
 
     @patch("experiment.adapters.aiconfigurator_est._run_task")
