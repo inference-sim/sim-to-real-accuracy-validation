@@ -92,7 +92,7 @@ METRICS_GRID = [
 ]
 
 MAPE_THRESHOLD = 20.0
-FIGURE_SIZES = {"bar_grid": (7.0, 3.5), "pareto": (3.5, 3.0)}
+FIGURE_SIZES = {"bar_grid": (7.0, 3.5), "pareto": (5.0, 3.5)}
 
 RC_PARAMS = {
     "font.family": "serif",
@@ -151,11 +151,26 @@ _METADATA_COLUMNS = [
 # ---------------------------------------------------------------------------
 
 
-def load_error_data(csv_path: str) -> pd.DataFrame:
-    """Load error_records.csv, exclude blacklisted simulators, keep summary rows."""
+def load_error_data(csv_path: str, mape_cap: float | None = 500.0) -> pd.DataFrame:
+    """Load error_records.csv, exclude blacklisted simulators, keep summary rows.
+
+    Parameters
+    ----------
+    mape_cap : float or None
+        Drop rows where MAPE exceeds this value. Defaults to 500.0 to
+        exclude broken predictions (e.g., cpu_offloading experiments where
+        simulators produce wildly inaccurate results). Set to None to keep
+        all values.
+    """
     df = pd.read_csv(csv_path)
     df = df[~df["simulator"].isin(EXCLUDED_SIMULATORS)]
     df = df[df["stage_index"] == -1]
+    if mape_cap is not None:
+        n_before = len(df)
+        df = df[df["mape"] <= mape_cap]
+        n_dropped = n_before - len(df)
+        if n_dropped:
+            logger.info("Dropped %d rows with MAPE > %.0f%%", n_dropped, mape_cap)
     return df.reset_index(drop=True)
 
 
@@ -374,7 +389,8 @@ def _bar_chart_grid(
             ax.set_xticklabels(tick_labels, rotation=45, ha="right")
             if col_idx == 0:
                 row_label = "Mean" if row_idx == 0 else "P99"
-                ax.set_ylabel(f"MAPE (%) \u2014 {row_label}")
+                pct = r"\%" if matplotlib.rcParams.get("text.usetex") else "%"
+                ax.set_ylabel(f"MAPE ({pct}) \u2014 {row_label}")
 
     # Shared legend below bottom row
     handles, labels = axes[0, 0].get_legend_handles_labels()
@@ -595,8 +611,9 @@ def plot_pareto(
     _apply_rc_params()
     fig, ax = plt.subplots(figsize=FIGURE_SIZES["pareto"])
 
-    # Per-experiment mean MAPE, then per-simulator median + IQR
-    exp_mape = error_df.groupby(["simulator", "experiment_folder"])["mape"].mean()
+    # Per-experiment median MAPE (robust to outlier metrics like Vidur's
+    # 2.4M% TTFT on Llama-2-70b), then per-simulator median + IQR
+    exp_mape = error_df.groupby(["simulator", "experiment_folder"])["mape"].median()
 
     sim_stats: dict = {}
     for sim in SIMULATOR_ORDER:
@@ -621,16 +638,30 @@ def plot_pareto(
         plt.close(fig)
         return None
 
+    # Per-simulator annotation offsets: hand-tuned to avoid overlap in the
+    # typical cluster layout (BLIS/LLM-Opt/AIC cluster low-MAPE, Vidur far right).
+    _annotation_offsets = {
+        "blis-trained-roofline": (-12, -18),
+        "blis-roofline": (12, 14),
+        "vidur": (10, -16),
+        "llm-optimizer-estimate": (14, -14),
+        "aiconfigurator-estimate": (14, 6),
+    }
+
     for sim in SIMULATOR_ORDER:
         if sim not in sim_stats:
             continue
         s = sim_stats[sim]
         marker_size = 120 if sim == "blis-trained-roofline" else 60
 
+        # Clamp error bars to avoid negative values on log scale
+        yerr_lo = min(s["rt_med"] - s["rt_q1"], s["rt_med"] * 0.9)
+        yerr_hi = s["rt_q3"] - s["rt_med"]
+
         ax.errorbar(
             s["mape_med"], s["rt_med"],
             xerr=[[s["mape_med"] - s["mape_q1"]], [s["mape_q3"] - s["mape_med"]]],
-            yerr=[[s["rt_med"] - s["rt_q1"]], [s["rt_q3"] - s["rt_med"]]],
+            yerr=[[max(yerr_lo, 0)], [yerr_hi]],
             fmt="none", ecolor=COLOR_PALETTE[sim], elinewidth=1, capsize=3,
         )
         ax.scatter(
@@ -638,10 +669,12 @@ def plot_pareto(
             color=COLOR_PALETTE[sim], edgecolor="black", linewidth=0.5,
             zorder=5, label=SIMULATOR_DISPLAY_NAMES[sim],
         )
+        ox, oy = _annotation_offsets.get(sim, (10, 8))
         ax.annotate(
             f"{SIMULATOR_DISPLAY_NAMES[sim]} (n={s['n']})",
             (s["mape_med"], s["rt_med"]),
-            textcoords="offset points", xytext=(8, 4), fontsize=5,
+            textcoords="offset points", xytext=(ox, oy), fontsize=5.5,
+            arrowprops={"arrowstyle": "-", "color": "gray", "linewidth": 0.4},
         )
 
     # Pareto-dominated shading
@@ -657,9 +690,13 @@ def plot_pareto(
         ax.set_ylim(ylim)
 
     ax.set_yscale("log")
-    ax.set_xlabel("Median MAPE (%)")
+    # Tight y-limits: 60% of minimum to 3x maximum for better spread
+    all_rts = [s["rt_med"] for s in sim_stats.values()]
+    ax.set_ylim(min(all_rts) * 0.4, max(all_rts) * 4)
+    pct = r"\%" if matplotlib.rcParams.get("text.usetex") else "%"
+    ax.set_xlabel(f"Median MAPE ({pct})")
     ax.set_ylabel("Median Runtime (s)")
-    ax.legend(fontsize=6, loc="upper left")
+    ax.legend(fontsize=6, loc="lower right", framealpha=0.9)
     fig.tight_layout()
 
     if output_path:
