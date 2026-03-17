@@ -72,20 +72,20 @@ def run_pipeline(
         adapter_names = ALL_ADAPTER_NAMES
 
     # 1. Discover experiments
-    experiment_dirs = discover_experiments(data_dir)
-    if not experiment_dirs:
+    discovered = discover_experiments(data_dir)
+    if not discovered:
         print(f"No experiments found in {data_dir}")
         return [], []
 
-    print(f"Found {len(experiment_dirs)} experiments")
+    print(f"Found {len(discovered)} experiments")
 
     # 2. Parse experiments
     experiments = []
-    for d in experiment_dirs:
+    for manifest_entry, dir_path in discovered:
         try:
-            experiments.append(parse_experiment(d))
+            experiments.append(parse_experiment(dir_path, manifest_entry=manifest_entry))
         except Exception:
-            print(f"  SKIP (parse error): {d}")
+            print(f"  SKIP (parse error): {dir_path}")
             traceback.print_exc()
 
     print(f"Parsed {len(experiments)} experiments successfully")
