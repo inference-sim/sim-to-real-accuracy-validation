@@ -28,7 +28,12 @@ def _zero_lat():
 def _zero_tp():
     return ThroughputMetrics(0.0, 0.0, 0.0)
 
-def _make_experiment(model="meta-llama/Llama-2-7b-hf", tp=1) -> Experiment:
+def _make_experiment(
+    model="meta-llama/Llama-2-7b-hf",
+    tp=1,
+    hardware="H100",
+    precision="FP16",
+) -> Experiment:
     return Experiment(
         folder="/tmp/test-exp",
         model=model,
@@ -52,6 +57,8 @@ def _make_experiment(model="meta-llama/Llama-2-7b-hf", tp=1) -> Experiment:
         profile_config={
             "load": {"stages": [{"duration": 600, "rate": 5}]},
         },
+        hardware=hardware,
+        precision=precision,
     )
 
 
@@ -192,6 +199,22 @@ class TestVidurCLIArgs:
 # ---------------------------------------------------------------------------
 # Tests: subprocess error handling
 # ---------------------------------------------------------------------------
+
+
+class TestVidurRunGuard:
+    def test_run_rejects_unsupported_hardware(self):
+        """run() should raise ValueError for unsupported hardware."""
+        adapter = VidurAdapter("/tmp/vidur")
+        exp = _make_experiment(hardware="L40S")
+        with pytest.raises(ValueError, match="Unsupported hardware"):
+            adapter.run(exp)
+
+    def test_run_rejects_fp8(self):
+        """run() should raise ValueError for FP8 precision."""
+        adapter = VidurAdapter("/tmp/vidur")
+        exp = _make_experiment(precision="FP8")
+        with pytest.raises(ValueError, match="Unsupported precision"):
+            adapter.run(exp)
 
 
 class TestVidurSubprocessError:

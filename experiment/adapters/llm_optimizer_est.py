@@ -86,6 +86,16 @@ class LLMOptimizerEstimateAdapter(SimulatorAdapter):
     # ------------------------------------------------------------------
 
     def run(self, experiment: Experiment) -> SimulatorResult:
+        if experiment.hardware not in _HW_TO_LLM_OPT:
+            raise ValueError(
+                f"Unsupported hardware '{experiment.hardware}' for {self.name} "
+                f"(supported: {sorted(_HW_TO_LLM_OPT)})"
+            )
+        if experiment.precision == "FP8" and experiment.hardware == "A100-80GB":
+            raise ValueError(
+                f"Unsupported precision '{experiment.precision}' on "
+                f"'{experiment.hardware}' for {self.name} (A100 has no FP8 TFLOPS)"
+            )
         model_config = get_model_config_from_hf(experiment.model)
         precision = experiment.precision.lower()  # "fp16" or "fp8"
         input_length, output_length = self._extract_lengths(experiment)

@@ -30,10 +30,10 @@ Which of these parameters each adapter actually sends to the simulator:
 |-----------|:-----:|:-------------:|:--------------:|
 | `mbt` | **Yes** (`max_tokens_in_batch`) | No | No |
 | `cpu_offload` | No (no CPU memory tier) | No (not a roofline input) | No (not a TaskConfig input) |
-| `gpu_mem` | No (adapter bypasses memory planner with explicit `num_blocks`) | No (not a roofline input) | No (not a TaskConfig input) |
+| `gpu_mem` | No (no memory parameter passed; Vidur uses its internal planner) | No (not a roofline input) | No (not a TaskConfig input) |
 | `tp` | **Yes** | **Yes** (`num_gpus`) | **Yes** (`total_gpus`) |
 | `dp` | **Yes** (`num_replicas`, see methodology for caveats) | No (not in roofline) | No |
-| `precision` | No (hardcoded FP16) | **Yes** (`experiment.precision`) | **Yes** (`profiles=["float16_default"]`) |
+| `precision` | No (hardcoded FP16) | **Yes** (`experiment.precision`) | **Yes** (FP16: `profiles=["float16_default"]`; FP8: `profiles=[]`) |
 
 **Bottom line:** `tp` and `precision` are now passed by LLM-Optimizer and AIConfigurator. `mbt` is passed only by Vidur. `dp` is passed only by Vidur. `cpu_offload` and `gpu_mem` are true limitations for all three — no simulator models them.
 
@@ -56,7 +56,7 @@ Which of these parameters each adapter actually sends to the simulator:
 | Parameter | Effect | Affected experiments |
 |-----------|--------|----------------------|
 | `cpu_offload` ignored | No CPU memory tier; simulates as GPU-only even when real vLLM offloads KV cache to CPU | IDs 2, 3, 6, 7 |
-| `gpu_mem` ignored | Adapter passes explicit `num_blocks`, bypassing Vidur's memory planner; `memory_margin_fraction` is unused | IDs 25, 30 |
+| `gpu_mem` ignored | No GPU memory parameter passed; Vidur uses its own internal memory planner regardless of the vLLM `gpu_mem` setting | IDs 25, 30 |
 
 ### Structural limitations
 
@@ -69,7 +69,7 @@ Which of these parameters each adapter actually sends to the simulator:
 
 ## LLM-Optimizer (BentoML)
 
-**Coverage: ~46 of 49 experiments** (H100 + A100, excluding L40S and A100 FP8)
+**Coverage: ~40 of 49 experiments** (H100 + A100, excluding L40S, A100 FP8, and Llama-4-Scout; `shared_prefix` workloads only)
 
 ### Cannot run at all
 
@@ -77,6 +77,7 @@ Which of these parameters each adapter actually sends to the simulator:
 |--------|----------------------|
 | No L40S GPU spec | IDs 54, 55 |
 | A100 has `FP8_TFLOPS=None` | ID 44 (Scout FP8 on A100) |
+| Llama-4-Scout config incompatible | `get_model_config_from_hf` fails — missing `hidden_size` in MoE config | IDs 17, 20, 21, 33, 34, 48 |
 
 ### Runs but blind to variation
 
@@ -98,14 +99,14 @@ Which of these parameters each adapter actually sends to the simulator:
 
 ## AIConfigurator
 
-**Coverage: ~20 of 49 experiments** (H100 dense models only)
+**Coverage: ~20 of 49 experiments** (H100 dense models, FP16 and FP8; `shared_prefix` workloads only)
 
 ### Cannot run at all
 
 | Reason | Affected experiments |
 |--------|----------------------|
 | No A100/L40S vLLM perf data | IDs 36, 38, 40, 41, 42, 44, 54, 55 |
-| MoE excluded | IDs 9–12, 17, 20, 21, 27–34, 42, 44, 48, 49–51, 53, 56 |
+| MoE excluded (Mixtral-8x7B, Mixtral-8x22B base & Instruct, Llama-4-Scout) | IDs 9–12, 17, 20, 21, 27–34, 42, 44, 48, 49–51, 53, 56 |
 
 ### Runs but blind to variation
 

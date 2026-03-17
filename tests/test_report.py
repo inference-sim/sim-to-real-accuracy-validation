@@ -150,6 +150,7 @@ class TestSaveCsv:
             "stage_index", "metric_name", "predicted", "actual",
             "mape", "mpe", "absolute_error",
             "exp_id", "hardware", "dp", "cpu_offload", "gpu_mem_util", "precision",
+            "tp", "max_num_batched_tokens",
         }
         assert set(row.keys()) == expected_cols
 
@@ -274,6 +275,7 @@ class TestSaveRuntimeCsv:
         expected_cols = {
             "simulator", "experiment_folder", "model", "workload", "wall_clock_seconds",
             "exp_id", "hardware", "dp", "cpu_offload", "gpu_mem_util", "precision",
+            "tp", "max_num_batched_tokens",
         }
         assert set(row.keys()) == expected_cols
 

@@ -46,6 +46,8 @@ class ErrorRecord:
     cpu_offload: bool = False
     gpu_mem_util: float = 0.9
     precision: str = "FP16"
+    tp: int = 1
+    max_num_batched_tokens: int = 2048
 
 
 @dataclass
@@ -65,6 +67,8 @@ class RuntimeRecord:
     cpu_offload: bool = False
     gpu_mem_util: float = 0.9
     precision: str = "FP16"
+    tp: int = 1
+    max_num_batched_tokens: int = 2048
 
 
 def compute_mape(predicted: float, actual: float) -> float:
@@ -146,6 +150,8 @@ def _compare_stages(
             cpu_offload=experiment.cpu_offload,
             gpu_mem_util=experiment.gpu_mem_util,
             precision=experiment.precision,
+            tp=experiment.tp,
+            max_num_batched_tokens=experiment.max_num_batched_tokens,
         ))
     return records
 

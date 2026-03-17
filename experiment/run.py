@@ -8,8 +8,12 @@ Usage::
 from __future__ import annotations
 
 import argparse
+import logging
 import time
-import traceback
+
+import yaml
+
+logger = logging.getLogger(__name__)
 
 from experiment.adapters.aiconfigurator_est import AIConfiguratorEstimateAdapter
 from experiment.adapters.base import SimulatorAdapter
@@ -84,11 +88,12 @@ def run_pipeline(
     for manifest_entry, dir_path in discovered:
         try:
             experiments.append(parse_experiment(dir_path, manifest_entry=manifest_entry))
-        except Exception:
-            print(f"  SKIP (parse error): {dir_path}")
-            traceback.print_exc()
+        except (OSError, KeyError, ValueError, yaml.YAMLError) as exc:
+            logger.error("SKIP (parse error): %s — %s", dir_path, exc)
 
     print(f"Parsed {len(experiments)} experiments successfully")
+    if discovered and not experiments:
+        logger.warning("All %d experiments failed to parse", len(discovered))
 
     # 3. Build adapter registry (only requested adapters)
     adapters = build_adapter_registry(blis_binary, vidur_dir, adapter_names)
@@ -96,9 +101,12 @@ def run_pipeline(
     # 4. Run all (experiment, adapter) pairs
     all_records: list[ErrorRecord] = []
     runtime_records: list[RuntimeRecord] = []
+    fail_count = 0
+    skip_count = 0
     for exp in experiments:
         for adapter_name, adapter in adapters.items():
             if not adapter.can_run(exp):
+                skip_count += 1
                 continue
             try:
                 t0 = time.perf_counter()
@@ -119,11 +127,20 @@ def run_pipeline(
                     cpu_offload=exp.cpu_offload,
                     gpu_mem_util=exp.gpu_mem_util,
                     precision=exp.precision,
+                    tp=exp.tp,
+                    max_num_batched_tokens=exp.max_num_batched_tokens,
                 ))
                 print(f"  OK: {adapter_name} × {exp.model} ({exp.workload}) [{elapsed:.2f}s]")
-            except Exception:
-                print(f"  FAIL: {adapter_name} × {exp.model} ({exp.workload})")
-                traceback.print_exc()
+            except Exception as exc:
+                fail_count += 1
+                logger.error(
+                    "FAIL: %s × %s (%s): %s", adapter_name, exp.model, exp.workload, exc,
+                )
+
+    if skip_count:
+        logger.info("Skipped %d (experiment, adapter) pairs via can_run()", skip_count)
+    if fail_count:
+        logger.warning("%d adapter runs failed", fail_count)
 
     # 5. Generate report
     generate_report(all_records, output_dir, runtime_records=runtime_records)
@@ -162,29 +179,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         choices=ALL_ADAPTER_NAMES,
         help="Which adapters to run.",
     )
-    parser.add_argument(
-        "--figures",
-        action="store_true",
-        help="Generate publication figures from existing CSVs (skip simulation).",
-    )
-    parser.add_argument(
-        "--metadata",
-        default=None,
-        help="Path to experiment_metadata.csv (used with --figures).",
-    )
     return parser.parse_args(argv)
 
 
 def main(argv: list[str] | None = None) -> None:
     args = parse_args(argv)
-
-    if args.figures:
-        from experiment.figures import main as figures_main
-        fig_argv = ["--results-dir", args.output_dir]
-        if args.metadata:
-            fig_argv += ["--metadata", args.metadata]
-        figures_main(fig_argv)
-        return
 
     run_pipeline(
         data_dir=args.data_dir,

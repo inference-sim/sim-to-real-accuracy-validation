@@ -26,6 +26,8 @@ def _make_experiment(
     stages=None,
     summary=None,
     profile_config=None,
+    hardware="H100",
+    precision="FP16",
 ) -> Experiment:
     """Build a minimal Experiment for testing."""
     zero_lat = LatencyDistribution(mean=0.0, p90=0.0, p99=0.0)
@@ -84,6 +86,8 @@ def _make_experiment(
         stages=stages,
         summary=summary,
         profile_config=profile_config,
+        hardware=hardware,
+        precision=precision,
     )
 
 
@@ -180,8 +184,17 @@ class TestCanRun:
         exp = _make_experiment(model="mistralai/Mixtral-8x22B-Instruct-v0.1")
         assert AIConfiguratorEstimateAdapter().can_run(exp) is False
 
+    def test_can_run_rejects_mixtral_8x22b_base(self):
+        """_MOE_MODELS should include the base variant."""
+        exp = _make_experiment(model="mistralai/Mixtral-8x22B-v0.1")
+        assert AIConfiguratorEstimateAdapter().can_run(exp) is False
+
     def test_can_run_rejects_llama4_scout(self):
         exp = _make_experiment(model="RedHatAI/Llama-4-Scout-17B-16E-Instruct-FP8-dynamic")
+        assert AIConfiguratorEstimateAdapter().can_run(exp) is False
+
+    def test_can_run_rejects_unknown_precision(self):
+        exp = _make_experiment(precision="INT8")
         assert AIConfiguratorEstimateAdapter().can_run(exp) is False
 
 
@@ -439,4 +452,32 @@ class TestRunWithMock:
         adapter = AIConfiguratorEstimateAdapter()
         exp = _make_experiment(tp=4)
         with pytest.raises(RuntimeError, match="No AIConfigurator results for tp=4"):
+            adapter.run(exp)
+
+    @patch("experiment.adapters.aiconfigurator_est._run_task")
+    @patch("experiment.adapters.aiconfigurator_est._create_task_config")
+    def test_fp8_passes_empty_profiles(self, mock_create, mock_run):
+        """FP8 experiments should pass profiles=[] to AIConfigurator."""
+        mock_create.return_value = MagicMock()
+        mock_run.return_value = {"pareto_df": _make_pareto_df(), "pareto_frontier_df": None}
+
+        adapter = AIConfiguratorEstimateAdapter()
+        exp = _make_experiment(precision="FP8")
+        adapter.run(exp)
+
+        call_kwargs = mock_create.call_args[1]
+        assert call_kwargs["profiles"] == []
+
+    def test_run_rejects_unsupported_hardware(self):
+        """run() should raise ValueError for unsupported hardware."""
+        adapter = AIConfiguratorEstimateAdapter()
+        exp = _make_experiment(hardware="L40S")
+        with pytest.raises(ValueError, match="Unsupported hardware"):
+            adapter.run(exp)
+
+    def test_run_rejects_unknown_precision(self):
+        """run() should raise ValueError for unknown precision values."""
+        adapter = AIConfiguratorEstimateAdapter()
+        exp = _make_experiment(precision="INT8")
+        with pytest.raises(ValueError, match="Unsupported precision"):
             adapter.run(exp)

@@ -44,10 +44,12 @@ class Experiment:
     summary: StageMetrics
     profile_config: dict  # Raw parsed profile.yaml
 
-    # New fields from experiments.json manifest
+    # Manifest metadata (from experiments.json).  Defaults match the original
+    # 7-experiment H100/FP16 dataset so that legacy callers without a manifest
+    # still produce valid Experiment objects.
     exp_id: int = 0             # Experiment number (1-59)
     hardware: str = "H100"      # "H100", "A100-80GB", "L40S"
-    dp: int | None = None       # Data parallelism degree
+    dp: int | None = None       # Data parallelism degree; None = not set
     cpu_offload: bool = False
     gpu_mem_util: float = 0.9
     precision: str = "FP16"     # "FP16", "FP8"

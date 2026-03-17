@@ -19,6 +19,7 @@ from experiment.data_model import (
     StageMetrics,
     ThroughputMetrics,
 )
+from experiment.ground_truth import resolve_perf_dir
 from experiment.vidur_trace_converter import convert_to_vidur_trace
 
 _SUPPORTED_MODELS = {
@@ -60,11 +61,19 @@ class VidurAdapter(SimulatorAdapter):
                 and experiment.precision != "FP8")
 
     def run(self, experiment: Experiment) -> SimulatorResult:
+        if experiment.hardware not in _HW_TO_VIDUR:
+            raise ValueError(
+                f"Unsupported hardware '{experiment.hardware}' for {self.name} "
+                f"(supported: {sorted(_HW_TO_VIDUR)})"
+            )
+        if experiment.precision == "FP8":
+            raise ValueError(
+                f"Unsupported precision '{experiment.precision}' for {self.name} "
+                f"(Vidur has no FP8 device profiles)"
+            )
         with tempfile.TemporaryDirectory() as tmpdir:
             # 1. Convert trace
-            perf_dir = os.path.join(experiment.folder, "results")
-            if not os.path.isdir(perf_dir):
-                perf_dir = os.path.join(experiment.folder, "inference-perf-data")
+            perf_dir = resolve_perf_dir(experiment.folder)
             per_req_path = os.path.join(perf_dir, "per_request_lifecycle_metrics.json")
             trace_csv = os.path.join(tmpdir, "trace.csv")
             convert_to_vidur_trace(per_req_path, trace_csv)
@@ -107,7 +116,7 @@ class VidurAdapter(SimulatorAdapter):
             "--trace_request_generator_config_trace_file", trace_csv,
             "--metrics_config_output_dir", output_dir,
         ]
-        num_replicas = str(experiment.dp) if experiment.dp and experiment.dp > 1 else "1"
+        num_replicas = str(int(experiment.dp)) if experiment.dp and experiment.dp > 1 else "1"
         args += ["--cluster_config_num_replicas", num_replicas]
         if experiment.dp and experiment.dp > 1:
             args += ["--global_scheduler_config_type", "round_robin"]

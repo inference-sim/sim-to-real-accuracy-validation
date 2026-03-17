@@ -11,7 +11,10 @@ from experiment.data_model import Experiment, LatencyDistribution, StageMetrics,
 from experiment.ground_truth import (
     _discover_experiments_legacy,
     discover_experiments,
+    load_manifest,
     parse_experiment,
+    resolve_experiment_dir,
+    resolve_perf_dir,
 )
 
 
@@ -438,3 +441,80 @@ class TestManifestDiscovery:
         result = discover_experiments(str(tmp_path))
         assert result[0][0]["id"] == 3
         assert result[1][0]["id"] == 20
+
+
+# ---------------------------------------------------------------------------
+# Tests: load_manifest error handling
+# ---------------------------------------------------------------------------
+
+class TestLoadManifest:
+    def test_missing_file_raises_file_not_found(self, tmp_path):
+        with pytest.raises(FileNotFoundError, match="Manifest not found"):
+            load_manifest(str(tmp_path))
+
+    def test_malformed_json_raises_value_error(self, tmp_path):
+        (tmp_path / "experiments.json").write_text("{bad json")
+        with pytest.raises(ValueError, match="Malformed JSON"):
+            load_manifest(str(tmp_path))
+
+    def test_valid_manifest(self, tmp_path):
+        (tmp_path / "experiments.json").write_text('[{"id": 1}]')
+        result = load_manifest(str(tmp_path))
+        assert len(result) == 1
+        assert result[0]["id"] == 1
+
+
+# ---------------------------------------------------------------------------
+# Tests: resolve_experiment_dir
+# ---------------------------------------------------------------------------
+
+class TestResolveExperimentDir:
+    def test_finds_matching_dir(self, tmp_path):
+        (tmp_path / "13-qwen3-14b-tp1-general").mkdir()
+        result = resolve_experiment_dir(str(tmp_path), 13)
+        assert result is not None
+        assert "13-qwen3-14b" in result
+
+    def test_returns_none_for_no_match(self, tmp_path):
+        (tmp_path / "other-dir").mkdir()
+        result = resolve_experiment_dir(str(tmp_path), 99)
+        assert result is None
+
+    def test_warns_on_duplicate_dirs(self, tmp_path, caplog):
+        (tmp_path / "5-model-a-tp1-general").mkdir()
+        (tmp_path / "5-model-b-tp2-codegen").mkdir()
+        import logging
+        with caplog.at_level(logging.WARNING):
+            result = resolve_experiment_dir(str(tmp_path), 5)
+        assert result is not None
+        assert "Multiple directories" in caplog.text
+
+
+# ---------------------------------------------------------------------------
+# Tests: resolve_perf_dir
+# ---------------------------------------------------------------------------
+
+class TestResolvePerfDir:
+    def test_prefers_results_subdir(self, tmp_path):
+        (tmp_path / "results").mkdir()
+        (tmp_path / "inference-perf-data").mkdir()
+        assert resolve_perf_dir(str(tmp_path)).endswith("results")
+
+    def test_falls_back_to_inference_perf_data(self, tmp_path):
+        (tmp_path / "inference-perf-data").mkdir()
+        assert resolve_perf_dir(str(tmp_path)).endswith("inference-perf-data")
+
+
+# ---------------------------------------------------------------------------
+# Tests: manifest key validation in parse_experiment
+# ---------------------------------------------------------------------------
+
+class TestManifestKeyValidation:
+    def test_missing_manifest_key_raises_key_error(self, tmp_path):
+        exp_dir = _make_exp_dir(tmp_path, folder_name="1-model-tp1-general",
+                                perf_subdir="results")
+        incomplete_manifest = {"id": 1, "hw": "H100"}  # missing many keys
+        with pytest.raises(KeyError, match="missing keys"):
+            parse_experiment(exp_dir, manifest_entry=incomplete_manifest)
+
+

@@ -67,17 +67,45 @@ def _discover_experiments_legacy(base_dir: str) -> list[str]:
 def load_manifest(base_dir: str) -> list[dict]:
     """Load experiments.json from base_dir."""
     path = os.path.join(base_dir, "experiments.json")
-    with open(path) as fh:
-        return json.load(fh)
+    try:
+        with open(path) as fh:
+            return json.load(fh)
+    except FileNotFoundError:
+        raise FileNotFoundError(f"Manifest not found: {path}") from None
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Malformed JSON in {path}: {exc}") from exc
 
 
 def resolve_experiment_dir(base_dir: str, exp_id: int) -> str | None:
     """Find the directory matching '<id>-*' in base_dir."""
     prefix = f"{exp_id}-"
-    for entry in os.listdir(base_dir):
-        if entry.startswith(prefix) and os.path.isdir(os.path.join(base_dir, entry)):
-            return os.path.abspath(os.path.join(base_dir, entry))
-    return None
+    matches = [
+        entry for entry in os.listdir(base_dir)
+        if entry.startswith(prefix) and os.path.isdir(os.path.join(base_dir, entry))
+    ]
+    if not matches:
+        return None
+    if len(matches) > 1:
+        logger.warning(
+            "Multiple directories for id=%d in %s: %s (using first)",
+            exp_id, base_dir, matches,
+        )
+    return os.path.abspath(os.path.join(base_dir, sorted(matches)[0]))
+
+
+def resolve_perf_dir(folder_path: str) -> str:
+    """Return the performance-data subdirectory for an experiment.
+
+    Prefers ``results/`` (numbered experiments) and falls back to
+    ``inference-perf-data/`` (legacy layout).
+    """
+    perf_dir = os.path.join(folder_path, "results")
+    if not os.path.isdir(perf_dir):
+        perf_dir = os.path.join(folder_path, "inference-perf-data")
+    return perf_dir
+
+
+_REQUIRED_MANIFEST_KEYS = {"id", "hw", "dp", "cpu_offload", "gpu_mem", "precision", "safe"}
 
 
 def discover_experiments(
@@ -105,11 +133,20 @@ def discover_experiments(
     for entry in manifest:
         if safe_only and entry.get("safe") != "safe":
             continue
-        dir_path = resolve_experiment_dir(base_dir, entry["id"])
+        exp_id = entry.get("id")
+        if exp_id is None:
+            logger.warning("Manifest entry missing 'id' key, skipping: %s", entry)
+            continue
+        dir_path = resolve_experiment_dir(base_dir, exp_id)
         if dir_path is not None:
             results.append((entry, dir_path))
         else:
-            logger.warning("No directory found for experiment id=%d", entry["id"])
+            logger.warning(
+                "No directory found for experiment id=%d model=%s",
+                exp_id, entry.get("model", "?"),
+            )
+    if manifest and not results:
+        logger.warning("No experiment directories resolved from %d manifest entries", len(manifest))
     results.sort(key=lambda x: x[0]["id"])
     return results
 
@@ -118,6 +155,15 @@ def parse_experiment(folder_path: str, manifest_entry: dict | None = None) -> Ex
     """Parse a single experiment directory into an :class:`Experiment`."""
     folder_path = os.path.abspath(folder_path)
     folder_name = os.path.basename(folder_path)
+
+    # 0. Validate manifest keys up-front (before any access)
+    if manifest_entry is not None:
+        required = _REQUIRED_MANIFEST_KEYS | {"workload"}
+        missing = required - manifest_entry.keys()
+        if missing:
+            raise KeyError(
+                f"Manifest entry for {folder_path} missing keys: {sorted(missing)}"
+            )
 
     # 1. Parse exp-config.yaml
     with open(os.path.join(folder_path, "exp-config.yaml")) as fh:
@@ -142,9 +188,7 @@ def parse_experiment(folder_path: str, manifest_entry: dict | None = None) -> Ex
     stages_config = profile_config["load"]["stages"]
 
     # 4. Parse stage lifecycle metrics — auto-detect results dir
-    perf_dir = os.path.join(folder_path, "results")
-    if not os.path.isdir(perf_dir):
-        perf_dir = os.path.join(folder_path, "inference-perf-data")
+    perf_dir = resolve_perf_dir(folder_path)
     stage_files = sorted(glob.glob(os.path.join(perf_dir, "stage_*_lifecycle_metrics.json")))
     if len(stage_files) != len(stages_config):
         logger.warning(

@@ -124,6 +124,7 @@ def save_csv(records: list[ErrorRecord], output_path: str) -> str:
         "stage_index", "metric_name", "predicted", "actual",
         "mape", "mpe", "absolute_error",
         "exp_id", "hardware", "dp", "cpu_offload", "gpu_mem_util", "precision",
+        "tp", "max_num_batched_tokens",
     ]
     with open(output_path, "w", newline="") as fh:
         writer = csv.DictWriter(fh, fieldnames=fieldnames)
@@ -143,10 +144,12 @@ def save_csv(records: list[ErrorRecord], output_path: str) -> str:
                 "absolute_error": r.absolute_error,
                 "exp_id": r.exp_id,
                 "hardware": r.hardware,
-                "dp": r.dp if r.dp is not None else "",
+                "dp": r.dp if r.dp is not None else "",  # None → "" → NaN in pandas
                 "cpu_offload": r.cpu_offload,
                 "gpu_mem_util": r.gpu_mem_util,
                 "precision": r.precision,
+                "tp": r.tp,
+                "max_num_batched_tokens": r.max_num_batched_tokens,
             })
     return output_path
 
@@ -202,6 +205,7 @@ def save_runtime_csv(runtime_records: list[RuntimeRecord], output_path: str) -> 
     fieldnames = [
         "simulator", "experiment_folder", "model", "workload", "wall_clock_seconds",
         "exp_id", "hardware", "dp", "cpu_offload", "gpu_mem_util", "precision",
+        "tp", "max_num_batched_tokens",
     ]
     with open(output_path, "w", newline="") as fh:
         writer = csv.DictWriter(fh, fieldnames=fieldnames)
@@ -219,6 +223,8 @@ def save_runtime_csv(runtime_records: list[RuntimeRecord], output_path: str) -> 
                 "cpu_offload": r.cpu_offload,
                 "gpu_mem_util": r.gpu_mem_util,
                 "precision": r.precision,
+                "tp": r.tp,
+                "max_num_batched_tokens": r.max_num_batched_tokens,
             })
     return output_path
 

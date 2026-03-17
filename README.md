@@ -1,6 +1,6 @@
 # Sim-to-Real Accuracy Validation
 
-Compare 5 inference-serving simulators against ground-truth latency data collected from vLLM, producing MAPE/MPE error tables and a flat CSV for further analysis.
+Compare 7 inference-serving simulators against ground-truth latency data collected from vLLM, producing MAPE/MPE error tables, CSV exports, and publication figures.
 
 ## Simulators
 
@@ -9,8 +9,10 @@ Compare 5 inference-serving simulators against ground-truth latency data collect
 | `blis-blackbox` | Subprocess (Go) | BLIS with trained alpha/beta regression coefficients per model |
 | `blis-roofline` | Subprocess (Go) | BLIS with hardware roofline latency model |
 | `blis-crossmodel` | Subprocess (Go) | BLIS with globally-fitted cross-model coefficients |
+| `blis-trained-roofline` | Subprocess (Go) | BLIS with trained roofline coefficients |
 | `vidur` | Subprocess (Python) | Discrete-event simulator with vLLM scheduler emulation |
 | `llm-optimizer-estimate` | In-process (Python) | Analytical roofline estimator from llm-optimizer |
+| `aiconfigurator-estimate` | In-process (Python) | Analytical estimator from AIConfigurator SDK |
 
 ## Project Structure
 
@@ -24,14 +26,17 @@ sim-to-real-accuracy-validation/
 │   ├── vidur_trace_converter.py# Convert per-request JSON → Vidur trace CSV
 │   ├── metrics.py              # MAPE, MPE, absolute error computation
 │   ├── report.py               # Formatted tables and CSV export
-│   ├── run.py                  # Orchestrator (CLI entry point)
+│   ├── run.py                  # Pipeline orchestrator (CLI entry point)
+│   ├── figures.py              # Publication figures (independent CLI entry point)
 │   └── adapters/
 │       ├── base.py             # SimulatorAdapter ABC + shared BLIS logic
 │       ├── blis_blackbox.py
 │       ├── blis_roofline.py
 │       ├── blis_crossmodel.py
+│       ├── blis_trained_roofline.py
 │       ├── vidur.py
-│       └── llm_optimizer_est.py
+│       ├── llm_optimizer_est.py
+│       └── aiconfigurator_est.py
 ├── tests/                      # Unit + integration tests (pytest)
 ├── vllm_data/ground_truth/     # 16 ground-truth experiment directories (not tracked, see below)
 ├── inference-sim -> ../inference-sim   # Symlink to BLIS simulator repo
@@ -92,9 +97,10 @@ cd ..
 ### 4. Install Python dependencies
 
 ```bash
-pip install numpy pyyaml            # experiment package deps
-pip install -e vidur/                # Vidur simulator
-pip install -e llm-optimizer/        # LLM optimizer estimator
+pip install numpy pyyaml pandas matplotlib   # experiment package deps (pandas/matplotlib for figures)
+pip install -e vidur/                         # Vidur simulator
+pip install -e llm-optimizer/                 # LLM optimizer estimator
+pip install aiconfigurator                    # AIConfigurator SDK
 ```
 
 ### 5. (Optional) HuggingFace authentication
@@ -117,13 +123,39 @@ python -m experiment.run \
   --output-dir results
 ```
 
+### Run only the non-BLIS adapters
+
+```bash
+python -m experiment.run \
+  --data-dir vllm_data/ground_truth \
+  --output-dir results \
+  --adapters vidur llm-optimizer-estimate aiconfigurator-estimate
+```
+
 ### Run a subset of adapters
 
 ```bash
 python -m experiment.run --adapters blis-roofline vidur
 ```
 
-### CLI options
+### Generate publication figures
+
+Figures are generated independently from the pipeline, reading the CSVs it produces:
+
+```bash
+# Basic — reads error_records.csv and runtime.csv from results/
+python -m experiment.figures --results-dir results
+
+# With metadata enrichment (adds hardware/config breakdowns)
+python -m experiment.figures --results-dir results --metadata experiment_metadata.csv
+
+# Custom output directory
+python -m experiment.figures --results-dir results --output-dir results/figures
+```
+
+This produces 5 PDF figures and 1 LaTeX table under `results/figures/`.
+
+### Pipeline CLI options
 
 | Flag | Default | Description |
 |------|---------|-------------|
@@ -131,15 +163,23 @@ python -m experiment.run --adapters blis-roofline vidur
 | `--blis-binary` | `inference-sim/blis` | Path to compiled BLIS binary |
 | `--vidur-dir` | `vidur` | Path to cloned Vidur repository |
 | `--output-dir` | `results` | Where reports and CSV are saved |
-| `--adapters` | all 5 | Space-separated list of adapters to run |
+| `--adapters` | all 7 | Space-separated list of adapters to run |
 
-Valid adapter names: `blis-blackbox`, `blis-roofline`, `blis-crossmodel`, `vidur`, `llm-optimizer-estimate`.
+### Figures CLI options
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--results-dir` | `results` | Directory containing `error_records.csv` and `runtime.csv` |
+| `--output-dir` | `results/figures` | Where figures are saved |
+| `--metadata` | *(none)* | Path to `experiment_metadata.csv` for hardware/config enrichment |
+
+Valid adapter names: `blis-blackbox`, `blis-roofline`, `blis-crossmodel`, `blis-trained-roofline`, `vidur`, `llm-optimizer-estimate`, `aiconfigurator-estimate`.
 
 ## Pipeline
 
 The orchestrator (`experiment.run`) executes this sequence:
 
-1. **Discover** — scan `--data-dir` for experiment directories matching `YYYYMMDD-HHMMSS-*-tp<N>-<workload>`
+1. **Discover** — load `experiments.json` from `--data-dir` and resolve each entry to its directory
 2. **Parse** — load each experiment's configs, metrics, and KV cache data into `Experiment` dataclasses
 3. **Run** — for each (experiment, adapter) pair, check `adapter.can_run()`, then `adapter.run()` to produce a `SimulatorResult`
 4. **Compare** — compute MAPE, MPE, and absolute error across 9 latency metrics (e2e/ttft/itl × mean/p90/p99)
@@ -149,26 +189,42 @@ Failures at any step are logged and skipped — the pipeline does not abort on i
 
 ## Adapter Compatibility
 
-Not every adapter can run every experiment. The `can_run()` method filters:
+Not every adapter can run every experiment. The `can_run()` method filters incompatible pairs, and the pipeline skips them automatically. See [docs/simulator-limitations.md](docs/simulator-limitations.md) for full details.
 
-| Adapter | Filter | Expected coverage (16 experiments) |
-|---------|--------|------------------------------------|
-| `blis-blackbox` | Model must have coefficients in `inference-sim/defaults.yaml` | Low — current defaults target newer models (Llama-3.x) |
-| `blis-roofline` | Always runs | All 16 |
-| `blis-crossmodel` | Always runs | All 16 |
-| `vidur` | Model must be Llama-2-7b, Llama-2-70b, or CodeLlama-34b | 12 of 16 (excludes Mixtral) |
-| `llm-optimizer-estimate` | Workload must be `shared_prefix` type with `question_len`, `system_prompt_len`, `output_len` | All 16 |
+| Adapter | Key filters | Coverage (49 experiments) |
+|---------|-------------|--------------------------|
+| `blis-blackbox` | Model must have coefficients in `inference-sim/defaults.yaml` | Varies |
+| `blis-roofline` | Always runs | All 49 |
+| `blis-crossmodel` | Always runs | All 49 |
+| `blis-trained-roofline` | Model must have trained coefficients | Varies |
+| `vidur` | 3 pre-profiled models, H100/A100 only, no FP8 | ~9 |
+| `llm-optimizer-estimate` | H100/A100, `shared_prefix` workloads, no Llama-4-Scout | ~40 |
+| `aiconfigurator-estimate` | H100 only, dense models, `shared_prefix` workloads | ~20 |
 
 ## Output
 
-Results are written to `--output-dir` (default: `results/`):
+### Pipeline output (`results/`)
 
-- **`error_records.csv`** — one row per (simulator, experiment, stage, metric) with columns: `simulator`, `experiment_folder`, `model`, `workload`, `stage_index`, `metric_name`, `predicted`, `actual`, `mape`, `mpe`, `absolute_error`
-- **Stdout tables** — MAPE by simulator, MAPE by model, MAPE by workload, MPE by simulator (signed)
+- **`error_records.csv`** — one row per (simulator, experiment, stage, metric) with columns: `simulator`, `experiment_folder`, `model`, `workload`, `stage_index`, `metric_name`, `predicted`, `actual`, `mape`, `mpe`, `absolute_error`, plus metadata (`exp_id`, `hardware`, `dp`, `cpu_offload`, `gpu_mem_util`, `precision`, `config_tag`)
+- **`runtime.csv`** — one row per (simulator, experiment) with wall-clock time and metadata
+- **Stdout tables** — MAPE by simulator, MAPE by model, MAPE by workload, MPE by simulator (signed), runtime summary
+
+### Figures output (`results/figures/`)
+
+Generated separately via `python -m experiment.figures`:
+
+- **`fig1_model_sensitivity.pdf`** — MAPE by model across simulators
+- **`fig2_hardware_portability.pdf`** — MAPE by hardware platform
+- **`fig3_workload_sensitivity.pdf`** — MAPE by workload type
+- **`fig4a_config_dense.pdf`** / **`fig4b_config_moe.pdf`** — Config sensitivity (mbt, cpu-offload, gpu-mem, dp)
+- **`fig5_pareto.pdf`** — Accuracy vs. runtime Pareto frontier
+- **`table1_runtime.tex`** — LaTeX runtime comparison table
 
 ## Ground-Truth Data
 
-Each experiment directory under `vllm_data/ground_truth/` contains:
+Experiments are discovered via `experiments.json` (a manifest file in `vllm_data/ground_truth/`). Each entry maps an experiment ID to its metadata (hardware, precision, dp, etc.). Directories are named `<id>-<slug>` and resolved by prefix matching.
+
+Each experiment directory contains:
 
 | File | Purpose |
 |------|---------|
@@ -176,9 +232,11 @@ Each experiment directory under `vllm_data/ground_truth/` contains:
 | `profile.yaml` | Load stages (rate, duration), data type config |
 | `vllm.log` | GPU KV cache block count |
 | `kv_events.jsonl` | CPU KV cache offloading events |
-| `inference-perf-data/summary_lifecycle_metrics.json` | Aggregate latency and throughput |
-| `inference-perf-data/stage_N_lifecycle_metrics.json` | Per-stage latency and throughput |
-| `inference-perf-data/per_request_lifecycle_metrics.json` | Per-request timings (used for trace replay) |
+| `results/summary_lifecycle_metrics.json` | Aggregate latency and throughput |
+| `results/stage_N_lifecycle_metrics.json` | Per-stage latency and throughput |
+| `results/per_request_lifecycle_metrics.json` | Per-request timings (used for trace replay) |
+
+The perf data directory is auto-detected: `results/` is preferred, with `inference-perf-data/` as a legacy fallback.
 
 ## Tests
 
