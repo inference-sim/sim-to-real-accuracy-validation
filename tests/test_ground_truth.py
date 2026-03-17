@@ -8,7 +8,11 @@ import pytest
 import yaml
 
 from experiment.data_model import Experiment, LatencyDistribution, StageMetrics, ThroughputMetrics
-from experiment.ground_truth import discover_experiments, parse_experiment
+from experiment.ground_truth import (
+    _discover_experiments_legacy,
+    discover_experiments,
+    parse_experiment,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -168,13 +172,15 @@ def _make_stage_metrics(count, rate, duration, e2e_mean, ttft_mean, itl_mean, is
 # ---------------------------------------------------------------------------
 
 class TestDiscoverExperiments:
+    """Tests for the legacy regex-based discovery (now _discover_experiments_legacy)."""
+
     def test_discovers_matching_dirs(self, tmp_path):
         (tmp_path / "20260217-155451-llama-2-7b-tp1-codegen").mkdir()
         (tmp_path / "20260218-120914-mixtral-8x7b-v0-1-tp2-codegen").mkdir()
         (tmp_path / "SCHEMA.md").write_text("schema docs")
         (tmp_path / "random_file.txt").write_text("noise")
 
-        result = discover_experiments(str(tmp_path))
+        result = _discover_experiments_legacy(str(tmp_path))
 
         assert len(result) == 2
         assert all(os.path.isabs(p) for p in result)
@@ -184,12 +190,12 @@ class TestDiscoverExperiments:
 
     def test_returns_empty_for_no_matches(self, tmp_path):
         (tmp_path / "SCHEMA.md").write_text("schema docs")
-        result = discover_experiments(str(tmp_path))
+        result = _discover_experiments_legacy(str(tmp_path))
         assert result == []
 
     def test_excludes_non_directory(self, tmp_path):
         (tmp_path / "20260217-155451-llama-2-7b-tp1-codegen").write_text("file, not dir")
-        result = discover_experiments(str(tmp_path))
+        result = _discover_experiments_legacy(str(tmp_path))
         assert result == []
 
 
@@ -296,3 +302,79 @@ class TestParseExperiment:
 
         assert "load" in exp.profile_config
         assert exp.profile_config["load"]["stages"][0]["rate"] == 5
+
+
+# ---------------------------------------------------------------------------
+# Tests: manifest-driven discover_experiments
+# ---------------------------------------------------------------------------
+
+class TestManifestDiscovery:
+    """Tests for the new manifest-driven discover_experiments."""
+
+    def test_discovers_safe_experiments(self, tmp_path):
+        """Only safe experiments with directories should be returned."""
+        manifest = [
+            {"id": 13, "model": "Qwen3-14B", "precision": "FP16", "hw": "H100",
+             "workload": "general", "mbt": 2048, "cpu_offload": False,
+             "gpu_mem": 0.9, "tp": 1, "dp": None, "safe": "safe", "done": True, "notes": ""},
+            {"id": 1, "model": "Codellama-34b", "precision": "FP16", "hw": "H100",
+             "workload": "general", "mbt": 2048, "cpu_offload": True,
+             "gpu_mem": 0.9, "tp": 2, "dp": None, "safe": "unsafe", "done": True, "notes": ""},
+        ]
+        (tmp_path / "experiments.json").write_text(json.dumps(manifest))
+        (tmp_path / "13-qwen3-14b-tp1-general").mkdir()
+        (tmp_path / "1-codellama-34b-tp2-general").mkdir()
+
+        result = discover_experiments(str(tmp_path))
+        assert len(result) == 1
+        entry, path = result[0]
+        assert entry["id"] == 13
+        assert "13-qwen3-14b" in path
+
+    def test_discovers_all_when_safe_only_false(self, tmp_path):
+        """safe_only=False returns all experiments with directories."""
+        manifest = [
+            {"id": 1, "safe": "unsafe", "done": True, "model": "m", "precision": "FP16",
+             "hw": "H100", "workload": "general", "mbt": 2048, "cpu_offload": False,
+             "gpu_mem": 0.9, "tp": 1, "dp": None, "notes": ""},
+            {"id": 2, "safe": "safe", "done": True, "model": "m", "precision": "FP16",
+             "hw": "H100", "workload": "codegen", "mbt": 2048, "cpu_offload": False,
+             "gpu_mem": 0.9, "tp": 1, "dp": None, "notes": ""},
+        ]
+        (tmp_path / "experiments.json").write_text(json.dumps(manifest))
+        (tmp_path / "1-model-tp1-general").mkdir()
+        (tmp_path / "2-model-tp1-codegen").mkdir()
+
+        result = discover_experiments(str(tmp_path), safe_only=False)
+        assert len(result) == 2
+
+    def test_skips_missing_directories(self, tmp_path):
+        """Experiments without directories are skipped with warning."""
+        manifest = [
+            {"id": 47, "safe": "safe", "done": False, "model": "m", "precision": "FP16",
+             "hw": "H100", "workload": "general", "mbt": 2048, "cpu_offload": False,
+             "gpu_mem": 0.9, "tp": 1, "dp": None, "notes": ""},
+        ]
+        (tmp_path / "experiments.json").write_text(json.dumps(manifest))
+        # No directory for id=47
+
+        result = discover_experiments(str(tmp_path))
+        assert len(result) == 0
+
+    def test_sorted_by_id(self, tmp_path):
+        """Results are sorted by experiment id."""
+        manifest = [
+            {"id": 20, "safe": "safe", "done": True, "model": "m", "precision": "FP16",
+             "hw": "H100", "workload": "a", "mbt": 2048, "cpu_offload": False,
+             "gpu_mem": 0.9, "tp": 1, "dp": None, "notes": ""},
+            {"id": 3, "safe": "safe", "done": True, "model": "m", "precision": "FP16",
+             "hw": "H100", "workload": "b", "mbt": 2048, "cpu_offload": False,
+             "gpu_mem": 0.9, "tp": 1, "dp": None, "notes": ""},
+        ]
+        (tmp_path / "experiments.json").write_text(json.dumps(manifest))
+        (tmp_path / "20-model-tp1-a").mkdir()
+        (tmp_path / "3-model-tp1-b").mkdir()
+
+        result = discover_experiments(str(tmp_path))
+        assert result[0][0]["id"] == 3
+        assert result[1][0]["id"] == 20

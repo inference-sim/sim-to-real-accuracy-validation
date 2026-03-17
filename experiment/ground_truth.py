@@ -2,8 +2,14 @@
 
 Functions
 ---------
-discover_experiments(base_dir)
-    Scan for experiment directories matching the naming convention.
+discover_experiments(base_dir, *, safe_only=True)
+    Manifest-driven discovery: load ``experiments.json`` and resolve each
+    entry to its directory on disk.  Returns ``(manifest_entry, dir_path)``
+    pairs sorted by experiment id.
+load_manifest(base_dir)
+    Load ``experiments.json`` from *base_dir*.
+resolve_experiment_dir(base_dir, exp_id)
+    Find the directory matching ``<id>-*`` in *base_dir*.
 parse_experiment(folder_path)
     Load all config/metrics from a single experiment directory into an
     ``Experiment`` dataclass.
@@ -32,12 +38,18 @@ from experiment.kv_cache_extractor import extract_cpu_kv_blocks, extract_total_k
 _EXPERIMENT_DIR_RE = re.compile(r"^\d{8}-\d{6}-.+-tp\d+-\w+$")
 
 
-def discover_experiments(base_dir: str) -> list[str]:
+# ---------------------------------------------------------------------------
+# Legacy discovery (kept for backward compatibility with parse_experiment)
+# ---------------------------------------------------------------------------
+
+def _discover_experiments_legacy(base_dir: str) -> list[str]:
     """Return sorted absolute paths of experiment directories under *base_dir*.
 
     Matches directories whose name follows the pattern
     ``YYYYMMDD-HHMMSS-*-tp<N>-<workload>``.  Non-directory entries and files
     like ``SCHEMA.md`` are excluded.
+
+    .. deprecated:: Use :func:`discover_experiments` (manifest-driven) instead.
     """
     results: list[str] = []
     for entry in os.listdir(base_dir):
@@ -45,6 +57,60 @@ def discover_experiments(base_dir: str) -> list[str]:
         if os.path.isdir(full_path) and _EXPERIMENT_DIR_RE.match(entry):
             results.append(os.path.abspath(full_path))
     results.sort()
+    return results
+
+
+# ---------------------------------------------------------------------------
+# Manifest-driven discovery
+# ---------------------------------------------------------------------------
+
+def load_manifest(base_dir: str) -> list[dict]:
+    """Load experiments.json from base_dir."""
+    path = os.path.join(base_dir, "experiments.json")
+    with open(path) as fh:
+        return json.load(fh)
+
+
+def resolve_experiment_dir(base_dir: str, exp_id: int) -> str | None:
+    """Find the directory matching '<id>-*' in base_dir."""
+    prefix = f"{exp_id}-"
+    for entry in os.listdir(base_dir):
+        if entry.startswith(prefix) and os.path.isdir(os.path.join(base_dir, entry)):
+            return os.path.abspath(os.path.join(base_dir, entry))
+    return None
+
+
+def discover_experiments(
+    base_dir: str,
+    *,
+    safe_only: bool = True,
+) -> list[tuple[dict, str]]:
+    """Return (manifest_entry, dir_path) pairs for runnable experiments.
+
+    Reads ``experiments.json`` from *base_dir* and resolves each experiment
+    to its directory on disk.  Experiments whose directory is missing are
+    skipped with a warning.
+
+    Parameters
+    ----------
+    base_dir:
+        Root directory containing ``experiments.json`` and experiment
+        sub-directories named ``<id>-<slug>``.
+    safe_only:
+        When *True* (default), only experiments marked ``"safe": "safe"``
+        in the manifest are included.
+    """
+    manifest = load_manifest(base_dir)
+    results: list[tuple[dict, str]] = []
+    for entry in manifest:
+        if safe_only and entry.get("safe") != "safe":
+            continue
+        dir_path = resolve_experiment_dir(base_dir, entry["id"])
+        if dir_path is not None:
+            results.append((entry, dir_path))
+        else:
+            logger.warning("No directory found for experiment id=%d", entry["id"])
+    results.sort(key=lambda x: x[0]["id"])
     return results
 
 
