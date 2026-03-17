@@ -212,9 +212,18 @@ def can_run(self, experiment: Experiment) -> bool:
             and experiment.hardware in _HW_TO_VIDUR)
 ```
 
+**Hardware-to-network-device mapping:** Vidur uses separate device and network_device parameters. The current adapter does NOT pass `--replica_config_network_device`, defaulting to `a100_pairwise_nvlink` even for H100 — this uses wrong network profiling data for all TP>1 experiments.
+```python
+_HW_TO_VIDUR_NETWORK: dict[str, str] = {
+    "H100": "h100_pairwise_nvlink",
+    "A100-80GB": "a100_pairwise_nvlink",
+}
+```
+
 **Updated `_build_args()`:**
 ```python
 "--replica_config_device", _HW_TO_VIDUR[experiment.hardware],
+"--replica_config_network_device", _HW_TO_VIDUR_NETWORK[experiment.hardware],
 ```
 
 **Auto-detect per-request metrics path:**
@@ -292,7 +301,15 @@ def can_run(self, experiment: Experiment) -> bool:
 system_name = _HW_TO_AICONFIG[experiment.hardware]
 ```
 
-**Coverage:** ~20-25 experiments (H100, dense models only).
+**Known limitations:**
+
+1. **Precision mismatch:** On H100 (sm_version=90), AIConfigurator auto-selects FP8 quant mode for its GEMM kernel estimates. Most ground truth experiments are FP16 — this means estimates will be based on FP8 kernel performance, producing systematically optimistic predictions for FP16 experiments. AIConfigurator's `_get_quant_mode()` does not accept an external precision override. This is documented but not fixable without AIConfigurator SDK changes.
+
+2. **HuggingFace download dependency:** `Qwen/Qwen3-14B`, `meta-llama/Llama-3.1-8B-Instruct`, and `codellama/CodeLlama-34b-Instruct-hf` are NOT in AIConfigurator's `SupportedModels` or `CachedHFModels`. They require a live HuggingFace download to resolve model architecture. This works online but will fail in offline/CI environments. Mitigation: add `_MODEL_MAP` entries where architecturally equivalent (e.g., `"meta-llama/Llama-3.1-8B-Instruct"` → `"LLAMA3.1_8B"`). Note: `Qwen/Qwen3-14B` and `codellama/CodeLlama-34b-Instruct-hf` have no matching `SupportedModels` entry and must use the HF download path.
+
+3. **Config knob experiments:** `max_num_batched_tokens`, `cpu_offload`, `gpu_mem_util` are not modeled by AIConfigurator. Experiments that sweep these (IDs 22-25, 27-30) will get identical estimates regardless.
+
+**Coverage:** ~20 experiments (H100, dense models only).
 
 ---
 
