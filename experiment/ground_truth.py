@@ -114,7 +114,7 @@ def discover_experiments(
     return results
 
 
-def parse_experiment(folder_path: str) -> Experiment:
+def parse_experiment(folder_path: str, manifest_entry: dict | None = None) -> Experiment:
     """Parse a single experiment directory into an :class:`Experiment`."""
     folder_path = os.path.abspath(folder_path)
     folder_name = os.path.basename(folder_path)
@@ -129,8 +129,11 @@ def parse_experiment(folder_path: str) -> Experiment:
     max_num_batched_tokens = exp_cfg["max_num_batched_tokens"]
     max_num_seqs = exp_cfg["max_num_seqs"]
 
-    # 2. Extract workload from folder name (last segment after -tp<N>-)
-    workload = _extract_workload(folder_name)
+    # 2. Extract workload — prefer manifest to avoid suffix corruption
+    if manifest_entry is not None:
+        workload = manifest_entry["workload"]
+    else:
+        workload = _extract_workload(folder_name)
 
     # 3. Parse profile.yaml (single-line JSON that YAML can parse)
     with open(os.path.join(folder_path, "profile.yaml")) as fh:
@@ -138,8 +141,10 @@ def parse_experiment(folder_path: str) -> Experiment:
 
     stages_config = profile_config["load"]["stages"]
 
-    # 4. Parse stage lifecycle metrics
-    perf_dir = os.path.join(folder_path, "inference-perf-data")
+    # 4. Parse stage lifecycle metrics — auto-detect results dir
+    perf_dir = os.path.join(folder_path, "results")
+    if not os.path.isdir(perf_dir):
+        perf_dir = os.path.join(folder_path, "inference-perf-data")
     stage_files = sorted(glob.glob(os.path.join(perf_dir, "stage_*_lifecycle_metrics.json")))
     if len(stage_files) != len(stages_config):
         logger.warning(
@@ -161,7 +166,21 @@ def parse_experiment(folder_path: str) -> Experiment:
 
     # 6. Extract KV blocks
     total_kv_blocks = extract_total_kv_blocks(os.path.join(folder_path, "vllm.log"))
-    cpu_kv_blocks = extract_cpu_kv_blocks(os.path.join(folder_path, "kv_events.jsonl"))
+    kv_events_path = os.path.join(folder_path, "kv_events.jsonl")
+    cpu_kv_blocks = extract_cpu_kv_blocks(kv_events_path) if os.path.exists(kv_events_path) else 0
+
+    # 7. Manifest metadata (new fields from experiments.json)
+    kwargs = {}
+    if manifest_entry is not None:
+        kwargs = dict(
+            exp_id=manifest_entry["id"],
+            hardware=manifest_entry["hw"],
+            dp=manifest_entry["dp"],
+            cpu_offload=manifest_entry["cpu_offload"],
+            gpu_mem_util=manifest_entry["gpu_mem"],
+            precision=manifest_entry["precision"],
+            safe=manifest_entry["safe"],
+        )
 
     return Experiment(
         folder=folder_path,
@@ -176,6 +195,7 @@ def parse_experiment(folder_path: str) -> Experiment:
         stages=stages,
         summary=summary,
         profile_config=profile_config,
+        **kwargs,
     )
 
 

@@ -31,6 +31,8 @@ def _make_exp_dir(
     num_stages=2,
     vllm_log_tokens=119408,
     kv_events_lines=None,
+    perf_subdir="inference-perf-data",
+    include_kv_events=True,
 ):
     """Create a synthetic experiment directory that mirrors the real structure."""
     exp_dir = tmp_path / folder_name
@@ -80,15 +82,16 @@ def _make_exp_dir(
     (exp_dir / "vllm.log").write_text(vllm_log)
 
     # kv_events.jsonl
-    if kv_events_lines is None:
-        kv_events_lines = [
-            json.dumps([0.1, [["TransferCompleted", 1, "r1", "GPU", "CPU", 5, True, 0]], {}, {}]),
-            json.dumps([0.2, [["TransferCompleted", 2, "r1", "CPU", "GPU", 2, True, 1]], {}, {}]),
-        ]
-    (exp_dir / "kv_events.jsonl").write_text("\n".join(kv_events_lines) + "\n")
+    if include_kv_events:
+        if kv_events_lines is None:
+            kv_events_lines = [
+                json.dumps([0.1, [["TransferCompleted", 1, "r1", "GPU", "CPU", 5, True, 0]], {}, {}]),
+                json.dumps([0.2, [["TransferCompleted", 2, "r1", "CPU", "GPU", 2, True, 1]], {}, {}]),
+            ]
+        (exp_dir / "kv_events.jsonl").write_text("\n".join(kv_events_lines) + "\n")
 
-    # inference-perf-data/
-    perf_dir = exp_dir / "inference-perf-data"
+    # perf results subdirectory
+    perf_dir = exp_dir / perf_subdir
     perf_dir.mkdir()
 
     # Stage lifecycle metrics
@@ -302,6 +305,63 @@ class TestParseExperiment:
 
         assert "load" in exp.profile_config
         assert exp.profile_config["load"]["stages"][0]["rate"] == 5
+
+
+# ---------------------------------------------------------------------------
+# Tests: parsing fixes (auto-detect results dir, optional kv_events, manifest)
+# ---------------------------------------------------------------------------
+
+class TestParseExperimentFixes:
+    """Tests for parsing fixes: auto-detect results dir, optional kv_events, manifest metadata."""
+
+    def test_auto_detects_results_subfolder(self, tmp_path):
+        """Numbered experiments use results/ not inference-perf-data/."""
+        exp_dir = _make_exp_dir(tmp_path, folder_name="13-qwen3-14b-tp1-general",
+                                perf_subdir="results")
+        exp = parse_experiment(exp_dir)
+        assert exp.model == "meta-llama/Llama-2-7b-hf"
+
+    def test_falls_back_to_inference_perf_data(self, tmp_path):
+        """Legacy experiments still use inference-perf-data/."""
+        exp_dir = _make_exp_dir(tmp_path)
+        exp = parse_experiment(exp_dir)
+        assert exp.model == "meta-llama/Llama-2-7b-hf"
+
+    def test_missing_kv_events_gives_zero_cpu_blocks(self, tmp_path):
+        """When kv_events.jsonl is absent, cpu_kv_blocks should be 0."""
+        exp_dir = _make_exp_dir(tmp_path, folder_name="13-qwen3-14b-tp1-general",
+                                perf_subdir="results", include_kv_events=False)
+        exp = parse_experiment(exp_dir)
+        assert exp.cpu_kv_blocks == 0
+
+    def test_manifest_metadata_populates_fields(self, tmp_path):
+        """When manifest_entry is provided, new fields are populated."""
+        exp_dir = _make_exp_dir(tmp_path, folder_name="13-qwen3-14b-tp1-general",
+                                perf_subdir="results")
+        manifest_entry = {
+            "id": 13, "model": "Qwen3-14B", "precision": "FP16", "hw": "H100",
+            "workload": "general", "mbt": 2048, "cpu_offload": False,
+            "gpu_mem": 0.9, "tp": 1, "dp": None, "safe": "safe", "done": True, "notes": "",
+        }
+        exp = parse_experiment(exp_dir, manifest_entry=manifest_entry)
+        assert exp.exp_id == 13
+        assert exp.hardware == "H100"
+        assert exp.workload == "general"
+        assert exp.dp is None
+        assert exp.precision == "FP16"
+        assert exp.safe == "safe"
+
+    def test_workload_from_manifest_not_foldername(self, tmp_path):
+        """Workload must come from manifest to avoid suffix corruption."""
+        exp_dir = _make_exp_dir(tmp_path, folder_name="9-mixtral-8x7b-tp2-general-1",
+                                perf_subdir="results")
+        manifest_entry = {
+            "id": 9, "model": "Mixtral-8x7B", "precision": "FP16", "hw": "H100",
+            "workload": "general", "mbt": 2048, "cpu_offload": True,
+            "gpu_mem": 0.9, "tp": 2, "dp": 1, "safe": "safe", "done": True, "notes": "",
+        }
+        exp = parse_experiment(exp_dir, manifest_entry=manifest_entry)
+        assert exp.workload == "general"  # NOT "general-1"
 
 
 # ---------------------------------------------------------------------------
