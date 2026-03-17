@@ -156,11 +156,30 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         choices=ALL_ADAPTER_NAMES,
         help="Which adapters to run.",
     )
+    parser.add_argument(
+        "--figures",
+        action="store_true",
+        help="Generate publication figures from existing CSVs (skip simulation).",
+    )
+    parser.add_argument(
+        "--metadata",
+        default=None,
+        help="Path to experiment_metadata.csv (used with --figures).",
+    )
     return parser.parse_args(argv)
 
 
 def main(argv: list[str] | None = None) -> None:
     args = parse_args(argv)
+
+    if args.figures:
+        from experiment.figures import main as figures_main
+        fig_argv = ["--results-dir", args.output_dir]
+        if args.metadata:
+            fig_argv += ["--metadata", args.metadata]
+        figures_main(fig_argv)
+        return
+
     run_pipeline(
         data_dir=args.data_dir,
         blis_binary=args.blis_binary,
