@@ -90,30 +90,6 @@ def discover_experiments(
 
 **Return type change:** `list[str]` → `list[tuple[dict, str]]`. Metadata travels with the path.
 
-**Backward compatibility with `other_gt/`:** The `other_gt/` directory has no `experiments.json`. When `load_manifest()` raises `FileNotFoundError`, `discover_experiments()` falls back to the existing timestamp-regex discovery. In this fallback path, `manifest_entry` is `None` in each returned tuple:
-
-```python
-def discover_experiments(base_dir, *, safe_only=True, done_only=True):
-    try:
-        manifest = load_manifest(base_dir)
-    except FileNotFoundError:
-        # Legacy path: regex-based discovery for other_gt/
-        return _discover_legacy(base_dir)
-    # ... manifest-driven path ...
-
-def _discover_legacy(base_dir: str) -> list[tuple[None, str]]:
-    """Fallback: timestamp-regex discovery (other_gt/ format)."""
-    results = []
-    for entry in os.listdir(base_dir):
-        full_path = os.path.join(base_dir, entry)
-        if os.path.isdir(full_path) and _EXPERIMENT_DIR_RE.match(entry):
-            results.append((None, os.path.abspath(full_path)))
-    results.sort(key=lambda x: x[1])
-    return results
-```
-
-This preserves `--data-dir vllm_data/other_gt` workflows. The `run_pipeline()` loop already handles `manifest_entry=None` via the `parse_experiment()` fallback described in section 2c.
-
 ### 2. Parsing Fixes (`ground_truth.py`)
 
 **2a. Auto-detect results subfolder:**
@@ -148,7 +124,7 @@ When `manifest_entry` is provided, populate `Experiment` fields from the manifes
 | `precision` | `manifest_entry["precision"]` | `"FP16"` or `"FP8"` |
 | `safe` | `manifest_entry["safe"]` | `"safe"`, `"unsafe"`, `"uncalibrated"` |
 
-When `manifest_entry` is `None` (legacy `other_gt/` path), the existing folder-name parsing logic remains as fallback, and new fields get their dataclass defaults.
+Legacy `other_gt/` support is out of scope for this change.
 
 ### 3. Enriched Data Model (`data_model.py`)
 
