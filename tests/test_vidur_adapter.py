@@ -91,6 +91,24 @@ class TestVidurAdapterBasics:
         exp = _make_experiment(model="mistralai/Mistral-7B-v0.1")
         assert adapter.can_run(exp) is False
 
+    def test_can_run_rejects_unsupported_hardware(self):
+        adapter = VidurAdapter("/tmp/vidur")
+        exp = _make_experiment()
+        exp.hardware = "L40S"
+        assert adapter.can_run(exp) is False
+
+    def test_can_run_rejects_fp8(self):
+        adapter = VidurAdapter("/tmp/vidur")
+        exp = _make_experiment()
+        exp.precision = "FP8"
+        assert adapter.can_run(exp) is False
+
+    def test_can_run_accepts_a100_supported_model(self):
+        adapter = VidurAdapter("/tmp/vidur")
+        exp = _make_experiment(model="codellama/CodeLlama-34b-Instruct-hf")
+        exp.hardware = "A100-80GB"
+        assert adapter.can_run(exp) is True
+
 
 # ---------------------------------------------------------------------------
 # Tests: CLI args
@@ -133,6 +151,42 @@ class TestVidurCLIArgs:
 
         idx = args.index("--replica_config_device")
         assert args[idx + 1] == "h100"
+
+    def test_build_args_uses_experiment_hardware(self):
+        adapter = VidurAdapter("/tmp/vidur")
+        exp = _make_experiment()
+        exp.hardware = "A100-80GB"
+        args = adapter._build_args(exp, "/tmp/trace.csv", "/tmp/out")
+        idx = args.index("--replica_config_device")
+        assert args[idx + 1] == "a100"
+        idx_net = args.index("--replica_config_network_device")
+        assert args[idx_net + 1] == "a100_pairwise_nvlink"
+
+    def test_build_args_includes_network_device_for_h100(self):
+        adapter = VidurAdapter("/tmp/vidur")
+        exp = _make_experiment()
+        args = adapter._build_args(exp, "/tmp/trace.csv", "/tmp/out")
+        idx_net = args.index("--replica_config_network_device")
+        assert args[idx_net + 1] == "h100_pairwise_nvlink"
+
+    def test_build_args_includes_dp_replicas(self):
+        adapter = VidurAdapter("/tmp/vidur")
+        exp = _make_experiment()
+        exp.dp = 2
+        args = adapter._build_args(exp, "/tmp/trace.csv", "/tmp/out")
+        idx = args.index("--cluster_config_num_replicas")
+        assert args[idx + 1] == "2"
+        assert "--global_scheduler_config_type" in args
+        assert args.count("--cluster_config_num_replicas") == 1
+
+    def test_build_args_no_dp_stays_single_replica(self):
+        adapter = VidurAdapter("/tmp/vidur")
+        exp = _make_experiment()
+        exp.dp = None
+        args = adapter._build_args(exp, "/tmp/trace.csv", "/tmp/out")
+        idx = args.index("--cluster_config_num_replicas")
+        assert args[idx + 1] == "1"
+        assert "--global_scheduler_config_type" not in args
 
 
 # ---------------------------------------------------------------------------
