@@ -193,47 +193,9 @@ These propagate into `error_records.csv` and `runtime.csv` as new columns.
 
 ## Adapter Changes
 
-### BLIS Adapters (`adapters/base.py` — shared by all 4 variants)
+### BLIS Adapters — No Changes (Out of Scope)
 
-**Hardware mapping:**
-```python
-_HW_TO_BLIS: dict[str, str | None] = {
-    "H100": "H100",
-    "A100-80GB": "A100-80",    # BLIS hardware_config.json key
-    "L40S": "L40S",            # Forward-compatible; profile pending
-}
-```
-
-**Changes to `_build_common_args()`:**
-```python
-blis_hw = _HW_TO_BLIS.get(experiment.hardware)
-# Replace hardcoded "H100":
-"--hardware", blis_hw,
-```
-
-**Multi-instance support (DP and EP):**
-```python
-if experiment.dp and experiment.dp > 1:
-    args.extend(["--num-instances", str(experiment.dp)])
-```
-BLIS has a single `--num-instances` flag — no separate DP or EP flags. It models N identical instances with cluster-level request routing. For EP experiments (e.g., 32, 33, 34 where vLLM uses `--enable-expert-parallel`), BLIS still uses `--num-instances` since it has no expert-distribution awareness. The EP dimension is approximated as DP replicas only.
-
-**`can_run()` guard for L40S** (until BLIS adds the profile):
-```python
-def can_run(self, experiment: Experiment) -> bool:
-    blis_hw = _HW_TO_BLIS.get(experiment.hardware)
-    if blis_hw is None:
-        return False
-    # Check if hardware profile exists in hardware_config.json
-    # For now, skip L40S (profile pending)
-    if experiment.hardware == "L40S":
-        return False
-    return True
-```
-
-Remove the L40S guard when `hardware_config.json` adds the L40S entry.
-
-**Coverage:** All H100 + A100 experiments (~47 of 49 safe+done; 2 L40S blocked until profile added). Applies to all 4 BLIS adapters: blackbox, crossmodel, roofline, trained-roofline.
+BLIS is undergoing active changes. The 4 BLIS adapters (blackbox, crossmodel, roofline, trained-roofline) remain unchanged — they continue to run H100-only experiments with no DP/EP support. BLIS adapter updates (hardware mapping, `--num-instances` for DP/EP, L40S guard) will be handled in a follow-up once BLIS stabilizes.
 
 ### Vidur Adapter (`adapters/vidur.py`)
 
@@ -336,13 +298,11 @@ system_name = _HW_TO_AICONFIG[experiment.hardware]
 
 ## Adapter Coverage Matrix
 
-All 4 BLIS adapters (blackbox, crossmodel, roofline, trained-roofline) inherit from `BaseBLISAdapter` and share the same hardware routing in `_build_common_args()`. Hardware fix in `base.py` covers all 4.
-
-Counts below are of the 49 safe+done experiments (default filter).
+Counts below are of the 49 safe+done experiments (default filter). BLIS adapters are unchanged (H100-only) pending BLIS stabilization.
 
 | Adapter | H100 Dense | H100 MoE | A100 Dense | A100 FP8 | L40S | Total (approx) |
 |---------|:---:|:---:|:---:|:---:|:---:|:---:|
-| BLIS (all 4) | Yes | Yes | Yes | Yes | Pending | ~47 |
+| BLIS (all 4) | H100 only | H100 only | No | No | No | Unchanged |
 | Vidur | 3 models | No | 3 models | No | No | ~9 |
 | LLM-Optimizer | Yes | Yes* | Yes | No | No | ~46 |
 | AIConfigurator | Dense only | No | No | No | No | ~20 |
@@ -357,7 +317,6 @@ Counts below are of the 49 safe+done experiments (default filter).
 |------|---------|
 | `experiment/ground_truth.py` | Manifest-driven discovery; auto-detect results subfolder; handle missing `kv_events.jsonl`; accept manifest metadata |
 | `experiment/data_model.py` | Add `exp_id`, `hardware`, `dp`, `cpu_offload`, `gpu_mem_util`, `precision`, `safe` fields with defaults |
-| `experiment/adapters/base.py` | Hardware mapping; `--num-instances` for dp > 1; `can_run()` L40S guard |
 | `experiment/adapters/vidur.py` | Hardware mapping; auto-detect perf_dir; `can_run()` checks hardware |
 | `experiment/adapters/llm_optimizer_est.py` | Hardware mapping; precision from experiment; `can_run()` skips L40S and A100 FP8 |
 | `experiment/adapters/aiconfigurator_est.py` | Hardware mapping; extend `_MOE_MODELS`; `can_run()` skips non-H100 |
@@ -365,7 +324,6 @@ Counts below are of the 49 safe+done experiments (default filter).
 | `experiment/report.py` | Write new columns to CSVs |
 | `experiment/run.py` | Update `run_pipeline()` for manifest-driven discovery flow |
 | `tests/test_ground_truth.py` | Manifest discovery tests; auto-detect perf_dir tests; missing kv_events tests |
-| `tests/test_adapter_base.py` | Hardware mapping tests; DP routing tests; L40S guard tests |
 | `tests/test_vidur_adapter.py` | Hardware + model `can_run()` tests; perf_dir auto-detection |
 | `tests/test_llm_optimizer_adapter.py` | Hardware mapping; FP8/A100 exclusion tests |
 | `tests/test_aiconfigurator_adapter.py` | MoE exclusion update; non-H100 exclusion tests |
@@ -377,6 +335,7 @@ Counts below are of the 49 safe+done experiments (default filter).
 
 ## Out of Scope
 
+- **BLIS adapter changes** (hardware mapping, DP/EP support, L40S guard) — BLIS is undergoing active changes; will be a follow-up
 - Adding L40S profile to BLIS `hardware_config.json` (separate inference-sim PR)
 - Adding new Vidur GPU kernel profiles (requires running profiling on target hardware)
 - Fixing LLM-Optimizer's MoE roofline model (separate llm-optimizer effort)
