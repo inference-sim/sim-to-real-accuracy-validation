@@ -8,10 +8,10 @@
 
 | Subset | Count | Notes |
 |--------|------:|-------|
-| Manifest entries (`experiments.json`) | 56 | IDs 1–59, gaps at 37, 39, 43, 45 |
-| Directories on disk | 53 | 3 manifest entries lack directories (IDs 47, 52, and one other) |
-| `done=true` | 54 | IDs 47, 52 are `done=false` |
-| `safe="safe"` AND `done=true` | 50 | **Default filter** — what the pipeline runs |
+| Manifest entries (`experiments.json`) | 55 | IDs 1–59, gaps at 37, 39, 43, 45 |
+| Directories on disk | 53 | IDs 47, 52 have `done=false` and no directory |
+| `done=true` | 53 | IDs 47, 52 are `done=false` |
+| `safe="safe"` AND `done=true` | 49 | **Default filter** — what the pipeline runs |
 | Unsafe but done | 4 | IDs 1, 4, 5, 8 |
 
 ---
@@ -235,7 +235,7 @@ def can_run(self, experiment: Experiment) -> bool:
 
 Remove the L40S guard when `hardware_config.json` adds the L40S entry.
 
-**Coverage:** All H100 + A100 experiments (~48 of 50 safe+done; 2 L40S blocked until profile added). Applies to all 4 BLIS adapters: blackbox, crossmodel, roofline, trained-roofline.
+**Coverage:** All H100 + A100 experiments (~47 of 49 safe+done; 2 L40S blocked until profile added). Applies to all 4 BLIS adapters: blackbox, crossmodel, roofline, trained-roofline.
 
 ### Vidur Adapter (`adapters/vidur.py`)
 
@@ -267,7 +267,7 @@ per_req_path = os.path.join(perf_dir, "per_request_lifecycle_metrics.json")
 
 **No model expansion possible** — Vidur requires pre-profiled GPU kernel timings per (model, device) pair. Current profiles exist only for Llama-2-7b, Llama-2-70b, CodeLlama-34b on h100/a100.
 
-**Coverage:** ~12 experiments (3 models × {H100, A100} × available workloads).
+**Coverage:** ~9 experiments (3 models × {H100, A100} × available workloads).
 
 ### LLM-Optimizer Adapter (`adapters/llm_optimizer_est.py`)
 
@@ -297,7 +297,7 @@ precision = experiment.precision.lower()  # "fp16" or "fp8"
 
 **MoE note:** LLM-Optimizer has no MoE awareness — its roofline model treats all models as dense. MoE experiments will produce inaccurate results but won't crash. The figures spec already expects varying accuracy across simulators, so letting MoE experiments run and documenting the limitation is acceptable.
 
-**Coverage:** ~45 experiments (H100 + A100, excluding A100 FP8).
+**Coverage:** ~46 experiments (H100 + A100, excluding A100 FP8).
 
 ### AIConfigurator Adapter (`adapters/aiconfigurator_est.py`)
 
@@ -340,14 +340,14 @@ system_name = _HW_TO_AICONFIG[experiment.hardware]
 
 All 4 BLIS adapters (blackbox, crossmodel, roofline, trained-roofline) inherit from `BaseBLISAdapter` and share the same hardware routing in `_build_common_args()`. Hardware fix in `base.py` covers all 4.
 
-Counts below are of the 50 safe+done experiments (default filter).
+Counts below are of the 49 safe+done experiments (default filter).
 
 | Adapter | H100 Dense | H100 MoE | A100 Dense | A100 FP8 | L40S | Total (approx) |
 |---------|:---:|:---:|:---:|:---:|:---:|:---:|
-| BLIS (all 4) | Yes | Yes | Yes | Yes | Pending | ~48 |
-| Vidur | 3 models | No | 3 models | No | No | ~12 |
-| LLM-Optimizer | Yes | Yes* | Yes | No | No | ~43 |
-| AIConfigurator | Dense only | No | No | No | No | ~20-25 |
+| BLIS (all 4) | Yes | Yes | Yes | Yes | Pending | ~47 |
+| Vidur | 3 models | No | 3 models | No | No | ~9 |
+| LLM-Optimizer | Yes | Yes* | Yes | No | No | ~46 |
+| AIConfigurator | Dense only | No | No | No | No | ~20 |
 
 *MoE results will be inaccurate (dense-only roofline).
 
