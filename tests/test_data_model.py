@@ -200,6 +200,60 @@ class TestSimulatorResult:
         assert sr.adapter_name == "inference-sim"
 
 
+class TestExperimentNewFields:
+    """Tests for the 7 new metadata fields on Experiment."""
+
+    def test_experiment_new_fields_have_defaults(self) -> None:
+        """New metadata fields should have defaults for backward compat."""
+        stage = StageMetrics(
+            stage_index=0, rate=5.0, duration=600.0, num_requests=100,
+            e2e=LatencyDistribution(mean=100.0),
+            ttft=LatencyDistribution(mean=10.0),
+            itl=LatencyDistribution(mean=5.0),
+            throughput=ThroughputMetrics(100.0, 50.0, 5.0),
+        )
+        exp = Experiment(
+            folder="/tmp/test", model="test/model", tp=1, workload="general",
+            max_model_len=4096, max_num_batched_tokens=2048, max_num_seqs=128,
+            total_kv_blocks=1000, cpu_kv_blocks=0,
+            stages=[stage], summary=stage, profile_config={},
+        )
+        # New fields should have defaults
+        assert exp.exp_id == 0
+        assert exp.hardware == "H100"
+        assert exp.dp is None
+        assert exp.cpu_offload is False
+        assert exp.gpu_mem_util == 0.9
+        assert exp.precision == "FP16"
+        assert exp.safe == "safe"
+
+    def test_experiment_new_fields_settable(self) -> None:
+        """New metadata fields should be settable."""
+        stage = StageMetrics(
+            stage_index=0, rate=5.0, duration=600.0, num_requests=100,
+            e2e=LatencyDistribution(mean=100.0),
+            ttft=LatencyDistribution(mean=10.0),
+            itl=LatencyDistribution(mean=5.0),
+            throughput=ThroughputMetrics(100.0, 50.0, 5.0),
+        )
+        exp = Experiment(
+            folder="/tmp/test", model="test/model", tp=1, workload="general",
+            max_model_len=4096, max_num_batched_tokens=2048, max_num_seqs=128,
+            total_kv_blocks=1000, cpu_kv_blocks=0,
+            stages=[stage], summary=stage, profile_config={},
+            exp_id=42, hardware="A100-80GB", dp=2,
+            cpu_offload=True, gpu_mem_util=0.95,
+            precision="FP8", safe="unsafe",
+        )
+        assert exp.exp_id == 42
+        assert exp.hardware == "A100-80GB"
+        assert exp.dp == 2
+        assert exp.cpu_offload is True
+        assert exp.gpu_mem_util == 0.95
+        assert exp.precision == "FP8"
+        assert exp.safe == "unsafe"
+
+
 class TestImportsFromPackage:
     """Verify that dataclasses are importable from the experiment package."""
 
