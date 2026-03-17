@@ -209,8 +209,10 @@ _HW_TO_VIDUR: dict[str, str] = {"H100": "h100", "A100-80GB": "a100"}
 ```python
 def can_run(self, experiment: Experiment) -> bool:
     return (experiment.model in _SUPPORTED_MODELS
-            and experiment.hardware in _HW_TO_VIDUR)
+            and experiment.hardware in _HW_TO_VIDUR
+            and experiment.precision != "FP8")
 ```
+FP8 exclusion: Vidur is hardcoded FP16 (no FP8 kernel profiles). See `docs/simulator-limitations.md`.
 
 **Hardware-to-network-device mapping:** Vidur uses separate device and network_device parameters. The current adapter does NOT pass `--replica_config_network_device`, defaulting to `a100_pairwise_nvlink` even for H100 — this uses wrong network profiling data for all TP>1 experiments.
 ```python
