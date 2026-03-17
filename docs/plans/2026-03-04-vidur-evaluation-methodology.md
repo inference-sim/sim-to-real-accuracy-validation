@@ -228,13 +228,16 @@ Aggregation:
 
 | Limitation | Impact on Evaluation |
 |------------|---------------------|
-| **No Mixtral-8x7B support** | Vidur is evaluated on 12/16 experiments. Aggregate MAPE reflects only dense-architecture models. MoE accuracy is unknown. |
+| **No MoE support** | Vidur has zero MoE references. All MoE models (Mixtral-8x7B, Mixtral-8x22B, Llama-4-Scout) are excluded. Aggregate MAPE reflects only dense-architecture models. |
 | **No CPU KV offloading** | All ground-truth experiments use vLLM's `OffloadingConnector` (8 GiB CPU). Vidur's `MemoryPlanner` computes KV blocks from GPU memory only. Under high KV pressure, real vLLM offloads blocks to CPU (avoiding preemption), but Vidur may preempt or reject requests instead. Expect Vidur to **over-predict** E2E latency under memory pressure. |
 | **No prefix caching** | All experiments enable prefix caching. Vidur computes full prefill for every request regardless of shared prefixes. This causes Vidur to **over-predict TTFT** for workloads with high prefix reuse (e.g., `shared_prefix` data type where all requests share `system_prompt_len` tokens). |
 | **Profiling data extrapolation** | Execution time predictions for batch sizes or KV cache lengths outside the profiled range are extrapolated from the nearest profiled data points. Accuracy degrades at the extremes. |
 | **Scheduler model fidelity** | Vidur models vLLM's scheduler but may not capture every scheduling heuristic or edge case in vLLM v0.15.1 (e.g., exact chunked prefill budget allocation, priority queue ordering). |
 | **No network/host overhead** | Vidur models GPU execution time only. Real-world overhead from tokenization, detokenization, HTTP transport, and host-side scheduling is not captured. |
 | **Stage splitting approximation** | Splitting by `rate × duration` request counts assumes the exact expected number of requests per stage was achieved. In practice, request counts may differ slightly from `rate × duration` due to timing jitter and ramp-up effects. |
+| **Multi-instance (dp) approximation** | For dp>1 experiments, Vidur uses `--cluster_config_num_replicas` with `round_robin` global scheduler. This assumes: (1) the trace represents the **aggregate** workload across all dp instances, (2) round-robin distribution approximates the ground truth's actual load balancing, (3) `num_blocks` passed is the per-instance value. Vidur models independent per-replica queuing/batching correctly, but routing policy mismatch may affect tail latency accuracy. |
+| **No chunked prefill in vLLM scheduler** | Vidur's vLLM scheduler processes entire prefill in one shot; real vLLM v0.15.1 chunks prefill when `max_num_batched_tokens` < prefill length. This is a TTFT fidelity gap (not just an edge case). Only the Sarathi scheduler has chunked prefill, but our adapter uses the vLLM scheduler. |
+| **gpu_mem not modeled** | The adapter passes explicit `num_blocks` from ground truth, bypassing Vidur's `memory_margin_fraction`. Experiments with `gpu_mem=0.95` (IDs 25, 30) are simulated with the same KV block budget as `gpu_mem=0.9` — the difference in available memory is not reflected. |
 
 ---
 

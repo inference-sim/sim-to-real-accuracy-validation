@@ -226,6 +226,16 @@ _HW_TO_VIDUR_NETWORK: dict[str, str] = {
 "--replica_config_network_device", _HW_TO_VIDUR_NETWORK[experiment.hardware],
 ```
 
+**Multi-instance (dp) support:** Vidur's `ClusterConfig` supports `num_replicas` with independent per-replica queuing, batching, and scheduling via a global scheduler. When `experiment.dp` > 1, pass the replica count and scheduler:
+```python
+if experiment.dp and experiment.dp > 1:
+    args += [
+        "--cluster_config_num_replicas", str(experiment.dp),
+        "--global_scheduler_config_type", "round_robin",
+    ]
+```
+See `docs/plans/2026-03-04-vidur-evaluation-methodology.md` for approximation caveats (trace must represent aggregate workload, round-robin may not match ground truth routing).
+
 **Auto-detect per-request metrics path:**
 ```python
 perf_dir = os.path.join(experiment.folder, "results")
@@ -299,15 +309,31 @@ def can_run(self, experiment: Experiment) -> bool:
 **Updated `run()`:**
 ```python
 system_name = _HW_TO_AICONFIG[experiment.hardware]
+
+# Precision override: H100 auto-selects FP8 (sm_version=90).
+# For FP16 experiments, use the float16_default profile to force FP16 kernel estimates.
+profiles = ["float16_default"] if experiment.precision == "FP16" else []
+
+task_config = _create_task_config(
+    serving_mode="agg",
+    model_name=model_name,
+    system_name=system_name,
+    backend_name="vllm",
+    total_gpus=experiment.tp,
+    isl=input_length,
+    osl=output_length,
+    ttft=5000.0,
+    tpot=200.0,
+    profiles=profiles,
+)
 ```
+The `profiles=["float16_default"]` sets all 5 quant modes (gemm, moe, kvcache, fmha, comm) to float16, completely bypassing `_get_quant_mode()` auto-selection. For FP8 experiments, the empty profiles list lets the default FP8 auto-selection work correctly.
 
 **Known limitations:**
 
-1. **Precision mismatch:** On H100 (sm_version=90), AIConfigurator auto-selects FP8 quant mode for its GEMM kernel estimates. Most ground truth experiments are FP16 — this means estimates will be based on FP8 kernel performance, producing systematically optimistic predictions for FP16 experiments. AIConfigurator's `_get_quant_mode()` does not accept an external precision override. This is documented but not fixable without AIConfigurator SDK changes.
+1. **Config knob experiments:** `max_num_batched_tokens`, `cpu_offload`, `gpu_mem_util` are not modeled by AIConfigurator. Experiments that sweep these (IDs 22-25, 27-30) will get identical estimates regardless.
 
-2. **HuggingFace download dependency:** `Qwen/Qwen3-14B`, `meta-llama/Llama-3.1-8B-Instruct`, and `codellama/CodeLlama-34b-Instruct-hf` are NOT in AIConfigurator's `SupportedModels` or `CachedHFModels`. They require a live HuggingFace download to resolve model architecture. This works online but will fail in offline/CI environments. Mitigation: add `_MODEL_MAP` entries where architecturally equivalent (e.g., `"meta-llama/Llama-3.1-8B-Instruct"` → `"LLAMA3.1_8B"`). Note: `Qwen/Qwen3-14B` and `codellama/CodeLlama-34b-Instruct-hf` have no matching `SupportedModels` entry and must use the HF download path.
-
-3. **Config knob experiments:** `max_num_batched_tokens`, `cpu_offload`, `gpu_mem_util` are not modeled by AIConfigurator. Experiments that sweep these (IDs 22-25, 27-30) will get identical estimates regardless.
+2. **HuggingFace download for uncached models:** `Qwen/Qwen3-14B`, `meta-llama/Llama-3.1-8B-Instruct`, and `codellama/CodeLlama-34b-Instruct-hf` are NOT in AIConfigurator's `SupportedModels` or `CachedHFModels`. They require a live HuggingFace download to resolve model architecture (`config.json` only, ~1 KB). Mitigation: add `_MODEL_MAP` entries where architecturally equivalent (e.g., `"meta-llama/Llama-3.1-8B-Instruct"` → `"LLAMA3.1_8B"`).
 
 **Coverage:** ~20 experiments (H100, dense models only).
 

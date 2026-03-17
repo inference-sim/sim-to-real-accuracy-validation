@@ -270,7 +270,10 @@ cp -r src/aiconfigurator/systems/data/ \
 | **No prefix caching modeling** | All ground-truth experiments have prefix caching enabled. AIConfigurator models full prefill for every request, likely over-predicting TTFT for workloads with high prefix reuse. |
 | **Discrete concurrency grid** | The Pareto DataFrame contains rows at specific concurrency levels. Derived concurrency values between grid points are snapped to the nearest available row, introducing quantization error. |
 | **E2E is derived, not measured** | E2E = TTFT + TPOT × OSL assumes pure sequential decode with no overlap or scheduling delay. Real E2E includes queuing time, preemption delays, and decode scheduling overhead. |
-| **MoE exclusion** | Mixtral-8x7B cannot be evaluated. Aggregate MAPE reflects only dense-architecture models. |
+| **Precision now controlled via profiles** | H100 (`sm_version=90`) auto-selects FP8 quant mode. For FP16 experiments, the adapter passes `profiles=["float16_default"]` to force all 5 quant modes (gemm, moe, kvcache, fmha, comm) to float16, completely bypassing `_get_quant_mode()`. For FP8 experiments, the default auto-selection is correct. |
+| **MoE exclusion** | All MoE models (Mixtral-8x7B, Mixtral-8x22B, Llama-4-Scout) cannot be evaluated via the vLLM backend. Aggregate MAPE reflects only dense-architecture models. |
+| **Config knobs not modeled** | `max_num_batched_tokens`, `cpu_offload`, `gpu_mem_util` are not TaskConfig inputs. Experiments sweeping these (IDs 22–25, 27–30) produce identical estimates regardless of the sweep value. |
+| **dp not modeled** | `total_gpus=experiment.tp` ignores dp entirely. Multi-instance experiments (IDs 32–35) are simulated as if running on a single instance with `tp` GPUs. |
 | **Fixed ISL/OSL** | The adapter uses configured distribution parameters from `profile.yaml`, not actual per-request token counts. Variance in real request sizes is not captured. |
 
 ---
