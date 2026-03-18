@@ -352,7 +352,7 @@ class TestFigure4:
         plt.close(fig)
 
     def test_multiple_varying_params(self):
-        """Figure shows one subplot per varying config param."""
+        """Bar chart x-axis covers all varying config values."""
         from experiment.figures import plot_config_sensitivity_dense, FIG4A_MODEL
         rows = []
         for tp in [1, 2]:
@@ -368,8 +368,12 @@ class TestFigure4:
         df = pd.DataFrame(rows)
         fig = plot_config_sensitivity_dense(df, output_path=None)
         assert fig is not None
-        # Should have 2 subplots: tp and max_num_batched_tokens
-        assert len(fig.axes) == 2
+        # 2 TP values + 3 MBT values = 5 x-axis ticks
+        ax = fig.axes[0]
+        xlabels = [t.get_text() for t in ax.get_xticklabels()]
+        assert len(xlabels) == 5
+        assert "1" in xlabels
+        assert "1024" in xlabels
         plt.close(fig)
 
     def test_skips_without_metadata(self):

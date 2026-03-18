@@ -507,9 +507,9 @@ FIG4B_MODEL = FIG4B_MODEL_DEFAULT
 
 CONFIG_SENSITIVITY_PARAMS: list[tuple[str, str]] = [
     ("tp", "TP"),
-    ("max_num_batched_tokens", "Max Batch Tokens"),
-    ("gpu_mem_util", "GPU Mem Util"),
-    ("cpu_offload", "CPU Offload"),
+    ("max_num_batched_tokens", "Chunk Size"),
+    ("gpu_mem_util", "GPU Mem (\\%)"),
+    ("cpu_offload", "KV Cache Offloading"),
     ("dp", "DP"),
 ]
 """Config parameters to sweep for Figures 4a/4b.  Each entry is
@@ -559,123 +559,179 @@ def _plot_config_sensitivity(
     df: pd.DataFrame,
     model: str,
     title: str,
+    subtitle: str,
     output_path: str | None,
 ) -> plt.Figure | None:
     """Shared implementation for Figures 4a/4b.
 
-    Line plot — one subplot per config parameter that varies for *model*.
-    X-axis = distinct values of that parameter, one line per simulator,
-    y = median MAPE for the ``FIG4_METRIC`` metric.
+    Single grouped-bar chart with all config values on the x-axis,
+    grouped by parameter with gaps between groups and group labels below.
+    Filters to ``FIG4_METRIC`` only.
     """
     if not _has_metadata(df):
         warnings.warn(f"{title}: skipped (no config metadata)")
         return None
 
     df = df[df["model"] == model]
-    # Filter to the single metric we're plotting
     df = df[df["metric_name"] == FIG4_METRIC]
+
+    # Pin to a single hardware and workload so we only vary config params
+    if "hardware" in df.columns and df["hardware"].notna().any():
+        df = df[df["hardware"] == "H100"]
+    df = df[df["workload"].isin(("general", "general-lite"))]
+
     if df.empty:
         warnings.warn(f"{title}: no data for model")
         return None
 
-    # Discover which config params actually vary for this model
-    varying: list[tuple[str, str]] = []
+    # Extract hardware and workload for subtitle
+    hw_str = "H100"
+    wl_vals = df["workload"].dropna()
+    wl_vals = wl_vals[wl_vals != ""]
+    wl_names = [WORKLOAD_DISPLAY_NAMES.get(w, w) for w in sorted(wl_vals.unique())]
+    wl_str = ", ".join(wl_names) if wl_names else None
+
+    extra_parts = [hw_str]
+    if wl_str:
+        extra_parts.append(wl_str)
+    subtitle += " | " + ", ".join(extra_parts)
+
+    all_sims = set(df["simulator"].unique())
+    simulators = [s for s in SIMULATOR_ORDER if s in all_sims]
+    n_sims = len(simulators)
+
+    # Determine baseline (mode) value for each config parameter
+    config_cols = [col for col, _ in CONFIG_SENSITIVITY_PARAMS if col in df.columns]
+    baseline: dict[str, str] = {}
+    for col in config_cols:
+        vals = df[col].dropna()
+        vals = vals[vals != ""]
+        if not vals.empty:
+            baseline[col] = str(vals.mode().iloc[0])
+
+    # Collect config entries: list of (group_label, value_label, {sim: mape})
+    entries: list[tuple[str, str, dict[str, float]]] = []
+    group_boundaries: list[int] = []  # index of first entry in each group
+
     for col, label in CONFIG_SENSITIVITY_PARAMS:
         if col not in df.columns:
             continue
         unique = df[col].dropna()
         unique = unique[unique != ""]
-        if unique.nunique() > 1:
-            varying.append((col, label))
+        if unique.nunique() <= 1:
+            continue
 
-    if not varying:
+        # Controlled comparison: hold all OTHER params at baseline
+        sweep_df = df.copy()
+        for other_col in config_cols:
+            if other_col == col or other_col not in baseline:
+                continue
+            sweep_df = sweep_df[sweep_df[other_col].astype(str) == baseline[other_col]]
+
+        sweep_unique = sweep_df[col].dropna()
+        sweep_unique = sweep_unique[sweep_unique != ""]
+        if sweep_unique.nunique() <= 1:
+            continue
+
+        try:
+            sorted_vals = sorted(sweep_unique.unique(), key=lambda v: float(v))
+        except (ValueError, TypeError):
+            sorted_vals = sorted(sweep_unique.unique(), key=str)
+
+        group_boundaries.append(len(entries))
+        for val in sorted_vals:
+            sim_mapes: dict[str, float] = {}
+            for sim in simulators:
+                mask = (sweep_df["simulator"] == sim) & (sweep_df[col].astype(str) == str(val))
+                vals = sweep_df.loc[mask, "mape"]
+                if not vals.empty:
+                    sim_mapes[sim] = vals.median()
+            if col == "cpu_offload":
+                val_label = "On" if str(val) in ("True", "true", "1") else "Off"
+            elif col == "gpu_mem_util":
+                val_label = str(int(round(float(val) * 100)))
+            else:
+                try:
+                    val_label = str(int(float(val))) if float(val) == int(float(val)) else str(val)
+                except (ValueError, TypeError):
+                    val_label = str(val)
+            entries.append((label, val_label, sim_mapes))
+
+    if not entries:
         warnings.warn(f"{title}: no varying config params")
         return None
 
     _apply_rc_params()
-    all_sims = set(df["simulator"].unique())
-    simulators = [s for s in SIMULATOR_ORDER if s in all_sims]
-    n_params = len(varying)
-    n_sims = len(simulators)
 
-    # Grid layout: 2 columns, as many rows as needed
-    n_cols = min(n_params, 2)
-    n_rows = math.ceil(n_params / n_cols)
-    w = FIGURE_SIZES["wide"][0]
-    h_per_row = 2.5
-    fig, axes_2d = plt.subplots(
-        n_rows, n_cols,
-        figsize=(w, h_per_row * n_rows + 0.8),
-        squeeze=False,
-    )
-    axes = [axes_2d[r][c] for r in range(n_rows) for c in range(n_cols)]
+    # Compute x-positions with gaps between groups
+    GAP = 0.6  # extra space between parameter groups
+    x_positions: list[float] = []
+    pos = 0.0
+    for i, (group_label, val_label, sim_mapes) in enumerate(entries):
+        if i in group_boundaries and i > 0:
+            pos += GAP
+        x_positions.append(pos)
+        pos += 1.0
 
-    # Hide unused subplots
-    for idx in range(n_params, n_rows * n_cols):
-        axes[idx].set_visible(False)
+    x = np.array(x_positions)
+    bar_width = 0.8 / n_sims
+    global_max = 0.0
 
-    col_maxes = [0.0] * n_params
+    fig, ax = plt.subplots(figsize=FIGURE_SIZES["wide"])
 
-    for p_idx, (param_col, param_label) in enumerate(varying):
-        ax = axes[p_idx]
+    for sim_idx, sim in enumerate(simulators):
+        offset = (sim_idx - n_sims / 2 + 0.5) * bar_width
+        positions = []
+        heights = []
+        for i, (_, _, sim_mapes) in enumerate(entries):
+            if sim in sim_mapes:
+                positions.append(x[i] + offset)
+                heights.append(sim_mapes[sim])
+        if not heights:
+            continue
+        global_max = max(global_max, max(heights))
+        ax.bar(
+            positions, heights, bar_width,
+            color=COLOR_PALETTE[sim],
+            hatch=HATCH_PATTERNS.get(sim, ""),
+            edgecolor="black", linewidth=0.5,
+            label=SIMULATOR_DISPLAY_NAMES[sim],
+        )
 
-        # Sorted unique values
-        raw_vals = df[param_col].dropna()
-        raw_vals = raw_vals[raw_vals != ""]
-        try:
-            sorted_vals = sorted(raw_vals.unique(), key=lambda v: float(v))
-        except (ValueError, TypeError):
-            sorted_vals = sorted(raw_vals.unique(), key=str)
-        val_labels = [str(v) for v in sorted_vals]
-        x = np.arange(len(sorted_vals))
+    # X-axis: value labels
+    ax.set_xticks(x)
+    ax.set_xticklabels([e[1] for e in entries], rotation=0, ha="center")
 
-        for sim in simulators:
-            y_vals = []
-            x_pos = []
+    # Group labels below the value labels
+    for g_idx, boundary in enumerate(group_boundaries):
+        end = group_boundaries[g_idx + 1] - 1 if g_idx + 1 < len(group_boundaries) else len(entries) - 1
+        mid_x = (x[boundary] + x[end]) / 2.0
+        ax.text(
+            mid_x, -0.15, entries[boundary][0],
+            ha="center", va="top", fontsize=8, fontweight="bold",
+            transform=ax.get_xaxis_transform(),
+        )
 
-            for v_idx, val in enumerate(sorted_vals):
-                mask = (df["simulator"] == sim) & (df[param_col].astype(str) == str(val))
-                vals = df.loc[mask, "mape"]
-                if vals.empty:
-                    continue
-                y_vals.append(vals.median())
-                x_pos.append(x[v_idx])
-
-            if not y_vals:
-                continue
-            col_maxes[p_idx] = max(col_maxes[p_idx], max(y_vals))
-
-            label = SIMULATOR_DISPLAY_NAMES[sim] if p_idx == 0 else ""
-            ax.plot(
-                x_pos, y_vals,
-                color=COLOR_PALETTE[sim],
-                marker=MARKER_STYLES.get(sim, "o"),
-                markersize=6, linewidth=1.5,
-                markeredgecolor="white", markeredgewidth=0.5,
-                label=label,
-            )
-
-        ax.set_xticks(x)
-        ax.set_xticklabels(val_labels, rotation=0, ha="center")
-        ax.set_title(param_label)
-
-    # Independent y-axis per subplot with 20% headroom
+    # Y-axis with headroom
+    y_top = global_max * 1.20 if global_max > 0 else 1.0
+    ax.set_ylim(bottom=0, top=y_top)
     pct = r"\%" if matplotlib.rcParams.get("text.usetex") else "%"
-    for p_idx in range(n_params):
-        ax = axes[p_idx]
-        y_top = col_maxes[p_idx] * 1.20 if col_maxes[p_idx] > 0 else 1.0
-        ax.set_ylim(bottom=0, top=y_top)
-        ax.set_ylabel(f"MAPE ({pct})")
+    ax.set_ylabel(f"MAPE ({pct})", labelpad=10)
 
-    fig.suptitle(title, fontsize=11, fontweight="bold")
-    handles, labels = axes[0].get_legend_handles_labels()
+    ax.set_title(f"{title}\n{subtitle}", fontsize=10, pad=8,
+                 linespacing=1.8, fontweight="bold")
+    # Override: make subtitle line normal weight via fontproperties on the Text
+    # (matplotlib applies fontweight to the whole title, but the visual
+    # contrast from linespacing + smaller-looking second line is sufficient)
+    handles, labels = ax.get_legend_handles_labels()
     if handles:
         fig.legend(
             handles, labels, loc="upper center",
-            bbox_to_anchor=(0.5, 0.02), ncol=n_sims,
+            bbox_to_anchor=(0.5, -0.01), ncol=n_sims,
             frameon=False, handlelength=1.5, columnspacing=1.0,
         )
-    fig.tight_layout(h_pad=3.0, rect=[0, 0.06, 1, 0.93])
+    fig.tight_layout()
+    fig.subplots_adjust(top=0.82, bottom=0.18)
 
     if output_path:
         _save_figure(fig, output_path)
@@ -692,7 +748,8 @@ def plot_config_sensitivity_dense(
     short = _short_model_name(model)
     return _plot_config_sensitivity(
         df, model=model,
-        title=f"Config Sensitivity — {short} (Dense) — {FIG4_METRIC_LABEL} MAPE",
+        title="Config Sensitivity (Dense)",
+        subtitle=f"{short} — {FIG4_METRIC_LABEL} MAPE",
         output_path=output_path,
     )
 
@@ -707,7 +764,8 @@ def plot_config_sensitivity_moe(
     short = _short_model_name(model)
     return _plot_config_sensitivity(
         df, model=model,
-        title=f"Config Sensitivity — {short} (MoE) — {FIG4_METRIC_LABEL} MAPE",
+        title="Config Sensitivity (MoE)",
+        subtitle=f"{short} — {FIG4_METRIC_LABEL} MAPE",
         output_path=output_path,
     )
 
