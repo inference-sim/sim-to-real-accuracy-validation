@@ -1,6 +1,12 @@
 # Publication Figures
 
-**Stage-level comparison methodology.** All workloads consist of multiple load stages at different request rates. BLIS and Vidur replay the full per-request trace in a single run; the adapter then splits output rows into stage buckets by cumulative arrival count. LLM-Optimizer and AIConfigurator are analytical estimators — for each stage they derive concurrency via Little's Law from the stage's request rate, then query the estimator at that concurrency.
+## Methodology Notes
+
+**Trace replay vs. analytical estimation.** BLIS and Vidur replay the full per-request trace (with original inter-arrival times) in a single run; the adapter then splits output rows into stage buckets by cumulative arrival count. LLM-Optimizer and AIConfigurator are analytical estimators — for each stage they derive concurrency via Little's Law from the stage's request rate, then query the estimator at that concurrency.
+
+**MoE approximations.** Vidur and AIConfigurator exclude MoE models entirely. LLM-Optimizer runs MoE models but approximates them as dense, hardcoding the feed-forward dimension to 4×hidden\_size and ignoring expert routing.
+
+**vLLM serving parameter pass-through.** Only tensor parallelism (TP) is passed by all simulators. Batch chunk size (max\_num\_batched\_tokens) is passed only by Vidur. Data parallelism (DP) is passed only by Vidur (via num\_replicas). Precision (FP16/FP8) is passed by LLM-Optimizer and AIConfigurator but not Vidur (hardcoded FP16). CPU KV cache offloading and GPU memory utilization are not modeled by any non-BLIS simulator — experiments varying these parameters produce identical predictions.
 
 ---
 
@@ -8,7 +14,7 @@
 
 ![Figure 1](figures/fig1_model_sensitivity.png)
 
-MAPE of each simulator across 7 models on H100 with default serving configuration and general-purpose workload: Llama-3.1-8B, Qwen3-14B, CodeLlama-34B, Llama-2-70B (dense), Mixtral-8x7B, Mixtral-8x22B, and Llama-4-Scout-17B-16E (MoE/FP8). Vidur is limited to models it has pre-profiled (CodeLlama-34B, Llama-2-70B) and cannot simulate MoE architectures. AIConfigurator lacks MoE support and is restricted to H100 dense models. LLM-Optimizer cannot run Llama-4-Scout due to missing HuggingFace config fields.
+MAPE of each simulator across 7 models on H100 with default serving configuration and general-purpose workload: Llama-3.1-8B, Qwen3-14B, CodeLlama-34B, Llama-2-70B (dense), Mixtral-8x7B, Mixtral-8x22B, and Llama-4-Scout-17B-16E (MoE/FP8). Simulators absent from a model either lack a pre-built profile for that architecture (Vidur) or exclude MoE models entirely (Vidur, AIConfigurator). LLM-Optimizer runs MoE models using its dense approximation (see methodology).
 
 ---
 
@@ -16,7 +22,7 @@ MAPE of each simulator across 7 models on H100 with default serving configuratio
 
 ![Figure 2](figures/fig2_hardware_portability.png)
 
-Median MAPE across models for three GPU types (H100, A100-80GB, L40S) with default configuration. No simulator supports L40S: Vidur and LLM-Optimizer lack an L40S device specification, and AIConfigurator has no L40S performance data. AIConfigurator is further limited to H100, having no A100 vLLM performance profiles. Vidur coverage on A100 is restricted to its pre-profiled models.
+Median MAPE across models for three GPU types (H100, A100-80GB, L40S) with default configuration. No non-BLIS simulator supports L40S. AIConfigurator is limited to H100. Vidur coverage varies by GPU due to per-model profiling requirements.
 
 ---
 
@@ -32,7 +38,7 @@ Median MAPE for four workload types — general-purpose, code generation, rolepl
 
 ![Figure 4a](figures/fig4a_config_dense.png)
 
-MAPE under controlled single-parameter sweeps on a dense model (H100, general-purpose workload). Each group varies one serving parameter — TP, chunk size (max\_num\_batched\_tokens), GPU memory utilization, or KV cache offloading — while holding all others at baseline. LLM-Optimizer and AIConfigurator are roofline/analytical estimators that do not model chunk size, KV cache offloading, or GPU memory utilization; their bars remain constant across those sweeps. Vidur lacks a profile for this model and does not appear.
+MAPE under controlled single-parameter sweeps on a dense model (H100, general-purpose workload). Each group varies one serving parameter — TP, chunk size, GPU memory utilization, or KV cache offloading — while holding all others at baseline. Analytical estimators (LLM-Optimizer, AIConfigurator) do not accept chunk size, offloading, or memory utilization as inputs, so their predictions remain constant across those sweeps (see methodology). Vidur is absent when it lacks a profile for the selected model.
 
 ---
 
@@ -40,7 +46,7 @@ MAPE under controlled single-parameter sweeps on a dense model (H100, general-pu
 
 ![Figure 4b](figures/fig4b_config_moe.png)
 
-Same controlled single-parameter sweeps as Figure 4a, applied to a MoE model (Mixtral-8x7B, H100, general-purpose workload), with expert parallelism (DP) as an additional swept dimension. Vidur cannot simulate MoE architectures. AIConfigurator excludes all MoE models. LLM-Optimizer runs but treats MoE as dense and is blind to chunk size, KV cache offloading, GPU memory utilization, and data parallelism.
+Same controlled single-parameter sweeps as Figure 4a, applied to a MoE model (Mixtral-8x7B, H100, general-purpose workload), with expert parallelism (DP) as an additional swept dimension. Vidur and AIConfigurator exclude MoE architectures entirely. LLM-Optimizer runs using its dense approximation and does not model DP, chunk size, offloading, or memory utilization (see methodology).
 
 ---
 
