@@ -8,7 +8,7 @@
 
 **MoE approximations.** Vidur and AIConfigurator exclude MoE models entirely. LLM-Optimizer runs MoE models but approximates them as dense, hardcoding the feed-forward dimension to 4×hidden\_size and ignoring expert routing.
 
-**vLLM serving parameter pass-through.** Only tensor parallelism (TP) is passed by all simulators. Batch chunk size (max\_num\_batched\_tokens) is passed only by Vidur. Data parallelism (DP) is passed only by Vidur (via num\_replicas). Precision (FP16/FP8) is passed by LLM-Optimizer and AIConfigurator but not Vidur (hardcoded FP16). CPU KV cache offloading and GPU memory utilization are not modeled by any non-BLIS simulator — experiments varying these parameters produce identical predictions.
+**vLLM serving parameter pass-through.** Only tensor parallelism (TP) is passed by all simulators. Batch chunk size (max\_num\_batched\_tokens) is passed only by Vidur. Data parallelism (DP) is passed only by Vidur (via num\_replicas). Precision (FP16/FP8) is passed by LLM-Optimizer and AIConfigurator but not Vidur (hardcoded FP16). CPU KV cache offloading and GPU memory utilization are not modeled by any non-BLIS simulator — experiments varying these parameters produce identical predictions. Note: MAPE may still vary across such sweeps because the ground-truth latency changes while the simulator's prediction stays constant, shifting the error ratio.
 
 ---
 
