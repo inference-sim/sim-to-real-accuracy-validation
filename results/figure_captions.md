@@ -1,6 +1,6 @@
 # Publication Figures
 
-**Stage-level comparison methodology.** All workloads consist of multiple load stages at different request rates. BLIS and Vidur replay per-request traces and bucket results by stage. LLM-Optimizer and AIConfigurator are analytical estimators — for each stage they derive concurrency via Little's Law from the stage's request rate, then query the estimator at that concurrency, producing stage-aware predictions without trace replay.
+**Stage-level comparison methodology.** All workloads consist of multiple load stages at different request rates. BLIS and Vidur replay the full per-request trace in a single run; the adapter then splits output rows into stage buckets by cumulative arrival count. LLM-Optimizer and AIConfigurator are analytical estimators — for each stage they derive concurrency via Little's Law from the stage's request rate, then query the estimator at that concurrency.
 
 ---
 
