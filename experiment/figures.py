@@ -8,9 +8,11 @@ from __future__ import annotations
 
 import argparse
 import logging
+import math
 import os
 import shutil
 import warnings
+from pathlib import Path
 
 import matplotlib
 import matplotlib.pyplot as plt
@@ -42,19 +44,27 @@ SIMULATOR_DISPLAY_NAMES = {
 }
 
 COLOR_PALETTE = {
-    "blis-trained-roofline": "#0077B6",
-    "blis-roofline": "#90E0EF",
-    "vidur": "#6C757D",
-    "llm-optimizer-estimate": "#ADB5BD",
-    "aiconfigurator-estimate": "#DEE2E6",
+    "blis-trained-roofline": "#4C72B0",
+    "blis-roofline": "#64B5F6",
+    "vidur": "#DD8452",
+    "llm-optimizer-estimate": "#55A868",
+    "aiconfigurator-estimate": "#8172B3",
 }
 
 HATCH_PATTERNS = {
-    "blis-trained-roofline": None,
-    "blis-roofline": None,
-    "vidur": "//",
-    "llm-optimizer-estimate": "\\\\",
-    "aiconfigurator-estimate": "xx",
+    "blis-trained-roofline": "",
+    "blis-roofline": "//",
+    "vidur": "\\\\",
+    "llm-optimizer-estimate": "xx",
+    "aiconfigurator-estimate": "..",
+}
+
+MARKER_STYLES = {
+    "blis-trained-roofline": "o",
+    "blis-roofline": "s",
+    "vidur": "D",
+    "llm-optimizer-estimate": "^",
+    "aiconfigurator-estimate": "v",
 }
 
 MODEL_ORDER = [
@@ -90,18 +100,33 @@ METRICS_GRID = [
     [("e2e_mean", "E2E Mean"), ("ttft_mean", "TTFT Mean"), ("itl_mean", "ITL Mean")],
 ]
 
-MAPE_THRESHOLD = 20.0
-FIGURE_SIZES = {"bar_grid": (7.0, 2.2), "pareto": (5.5, 4.5)}
+# USENIX/ACM double-column = 7in, single-column = 3.33in
+FIGURE_SIZES = {
+    "wide": (7.0, 3.2),       # 3-panel figures (Figs 1, 2, 3, 4)
+    "pareto": (3.33, 3.33),   # single-column square (Fig 5)
+}
 
 RC_PARAMS = {
     "font.family": "serif",
     "text.usetex": True,
-    "font.size": 8,
-    "axes.titlesize": 9,
-    "axes.labelsize": 8,
-    "xtick.labelsize": 7,
-    "ytick.labelsize": 7,
-    "legend.fontsize": 7,
+    "font.size": 9,
+    "axes.titlesize": 10,
+    "axes.titleweight": "bold",
+    "axes.labelsize": 9,
+    "xtick.labelsize": 8,
+    "ytick.labelsize": 8,
+    "legend.fontsize": 8,
+    "axes.spines.top": False,
+    "axes.spines.right": False,
+    "axes.grid": True,
+    "axes.grid.axis": "y",
+    "grid.linewidth": 0.4,
+    "grid.alpha": 0.4,
+    "axes.axisbelow": True,
+    "figure.dpi": 150,
+    "savefig.dpi": 300,
+    "savefig.bbox": "tight",
+    "savefig.pad_inches": 0.05,
 }
 
 HARDWARE_ORDER = ["H100", "A100-80GB", "L40S"]
@@ -114,36 +139,82 @@ FIGURE3_MODELS = [
     "mistralai/Mixtral-8x22B-Instruct-v0.1",
 ]
 
-FIG4A_MODEL = "meta-llama/Llama-3.1-8B-Instruct"
-FIG4A_CONFIG_ORDER = [
-    "default", "mbt=1024", "mbt=8192", "cpu-offload", "gpu-0.95", "tp=2",
-]
-FIG4A_CONFIG_LABELS = {
-    "default": "Default",
-    "mbt=1024": "mbt=1024",
-    "mbt=8192": "mbt=8192",
-    "cpu-offload": "CPU-Offload",
-    "gpu-0.95": "GPU-0.95",
-    "tp=2": "TP=2",
-}
-
-FIG4B_MODEL = "mistralai/Mixtral-8x7B-v0.1"
-FIG4B_CONFIG_ORDER = [
-    "default", "mbt=1024", "mbt=8192", "cpu-offload", "gpu-0.95", "tp=4", "ep=4",
-]
-FIG4B_CONFIG_LABELS = {
-    "default": "Default",
-    "mbt=1024": "mbt=1024",
-    "mbt=8192": "mbt=8192",
-    "cpu-offload": "CPU-Offload",
-    "gpu-0.95": "GPU-0.95",
-    "tp=4": "TP=4",
-    "ep=4": "EP=4 (DP=2)",
-}
-
 _METADATA_COLUMNS = [
-    "hardware", "tp", "dp", "cpu_offloading", "gpu_memory_utilization", "config_tag",
+    "hardware", "dp", "cpu_offload", "gpu_mem_util",
+    "tp", "max_num_batched_tokens",
 ]
+
+# Default TP for each model (used to detect tp-varied config experiments).
+_MODEL_DEFAULT_TP = {
+    "meta-llama/Llama-2-7b-hf": 1,
+    "meta-llama/Llama-3.1-8B-Instruct": 1,
+    "Qwen/Qwen3-14B": 1,
+    "codellama/CodeLlama-34b-Instruct-hf": 1,
+    "meta-llama/Llama-2-70b-hf": 4,
+    "mistralai/Mixtral-8x7B-v0.1": 2,
+    "mistralai/Mixtral-8x22B-Instruct-v0.1": 4,
+    "RedHatAI/Llama-4-Scout-17B-16E-Instruct-FP8-dynamic": 8,
+}
+
+_MOE_MODELS = frozenset({
+    "mistralai/Mixtral-8x7B-v0.1",
+    "mistralai/Mixtral-8x22B-Instruct-v0.1",
+    "RedHatAI/Llama-4-Scout-17B-16E-Instruct-FP8-dynamic",
+})
+
+
+def _derive_config_tag(row: pd.Series) -> str:
+    """Derive a config_tag from raw metadata fields in a DataFrame row.
+
+    Priority order (first match wins): mbt, cpu_offload, gpu_mem, dp/ep, tp.
+    """
+    mbt = row.get("max_num_batched_tokens")
+    if pd.notna(mbt) and int(mbt) != 2048:
+        return f"mbt={int(mbt)}"
+
+    cpu_offload = row.get("cpu_offload")
+    if cpu_offload in (True, "True", "true", 1, "1"):
+        return "cpu-offload"
+
+    gpu_mem = row.get("gpu_mem_util")
+    if pd.notna(gpu_mem) and float(gpu_mem) != 0.9:
+        return f"gpu-{gpu_mem}"
+
+    dp = row.get("dp")
+    if pd.notna(dp) and dp != "" and int(float(dp)) > 1:
+        model = row.get("model", "")
+        if model in _MOE_MODELS:
+            tp = int(float(row.get("tp", 1)))
+            return f"ep={int(float(dp)) * tp}"
+        return f"dp={int(float(dp))}"
+
+    tp = row.get("tp")
+    if pd.notna(tp):
+        model = row.get("model", "")
+        default_tp = _MODEL_DEFAULT_TP.get(model, 1)
+        if int(float(tp)) != default_tp:
+            return f"tp={int(float(tp))}"
+
+    return "default"
+
+
+def _add_config_tags(df: pd.DataFrame) -> pd.DataFrame:
+    """Add a ``config_tag`` column if not already present.
+
+    Derives tags from raw metadata (tp, max_num_batched_tokens, cpu_offload,
+    gpu_mem_util, dp).  If the DataFrame already has a ``config_tag`` column
+    (e.g. from test fixtures or an external metadata CSV), it is kept as-is.
+    """
+    if "config_tag" in df.columns:
+        return df
+    df = df.copy()
+    if "max_num_batched_tokens" in df.columns and df["max_num_batched_tokens"].notna().any():
+        df["config_tag"] = df.apply(_derive_config_tag, axis=1)
+    else:
+        # Old CSV without raw fields — assume all experiments are default config
+        df["config_tag"] = "default"
+    return df
+
 
 # ---------------------------------------------------------------------------
 # Data Loading
@@ -170,9 +241,11 @@ def enrich_with_metadata(
     metadata_path: str | None = None,
 ) -> pd.DataFrame:
     """Left-join metadata onto DataFrame by experiment_folder."""
-    if metadata_path and os.path.exists(metadata_path):
-        meta = pd.read_csv(metadata_path)
-        return df.merge(meta, on="experiment_folder", how="left", suffixes=("", "_meta"))
+    if metadata_path:
+        if os.path.exists(metadata_path):
+            meta = pd.read_csv(metadata_path)
+            return df.merge(meta, on="experiment_folder", how="left", suffixes=("", "_meta"))
+        logger.warning("Metadata file not found: %s", metadata_path)
     df = df.copy()
     for col in _METADATA_COLUMNS:
         if col not in df.columns:
@@ -206,196 +279,122 @@ def _save_figure(fig: plt.Figure, output_path: str) -> None:
     """Save figure as PDF + PNG at 300 DPI."""
     os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
     fig.savefig(output_path, dpi=300, bbox_inches="tight")
-    png_path = output_path.replace(".pdf", ".png")
-    if png_path != output_path:
-        fig.savefig(png_path, dpi=300, bbox_inches="tight")
+    p = Path(output_path)
+    if p.suffix == ".pdf":
+        fig.savefig(str(p.with_suffix(".png")), dpi=300, bbox_inches="tight")
     logger.info("Saved %s", output_path)
 
 
-def _aggregate_for_bar_grid(
+def _grouped_bar(
     df: pd.DataFrame,
     group_col: str,
-    group_order: list[str],
-    group_labels: dict[str, str] | None = None,
-) -> tuple[dict, dict, dict, list[str]]:
-    """Build data/error_data/dot_data dicts from a DataFrame for _bar_chart_grid.
-
-    Returns (data, error_data, dot_data, present_groups).
-    """
-    data: dict[str, dict[str, dict[str, float]]] = {}
-    error_data: dict[str, dict[str, dict[str, tuple[float, float]]]] = {}
-    dot_data: dict[str, dict[str, dict[str, list[float]]]] = {}
-
-    for group in group_order:
-        gdf = df[df[group_col] == group]
-        if gdf.empty:
-            continue
-        data[group] = {}
-        error_data[group] = {}
-        dot_data[group] = {}
-
-        for sim in SIMULATOR_ORDER:
-            sdf = gdf[gdf["simulator"] == sim]
-            if sdf.empty:
-                continue
-            data[group][sim] = {}
-            error_data[group][sim] = {}
-            dot_data[group][sim] = {}
-
-            for row in METRICS_GRID:
-                for metric_key, _ in row:
-                    vals = sdf[sdf["metric_name"] == metric_key]["mape"]
-                    if vals.empty:
-                        continue
-                    med = vals.median()
-                    data[group][sim][metric_key] = med
-                    if len(vals) > 3:
-                        q1, q3 = vals.quantile(0.25), vals.quantile(0.75)
-                        error_data[group][sim][metric_key] = (med - q1, q3 - med)
-                    elif len(vals) > 1:
-                        dot_data[group][sim][metric_key] = vals.tolist()
-
-    present_groups = [g for g in group_order if g in data]
-    return data, error_data, dot_data, present_groups
-
-
-def _bar_chart_grid(
-    data: dict[str, dict[str, dict[str, float | None]]],
     group_order: list[str],
     title: str,
     output_path: str | None,
     group_labels: dict[str, str] | None = None,
     figsize: tuple[float, float] | None = None,
-    error_data: dict | None = None,
-    dot_data: dict | None = None,
-) -> tuple[plt.Figure, np.ndarray]:
-    """Render a grouped-bar grid (shared layout for Figures 1-4)."""
+    aggregate: bool = False,
+    xlabel_rotation: float = 35,
+    metrics: list[tuple[str, str]] | None = None,
+) -> plt.Figure | None:
+    """Grouped bar chart: x = groups, bars = simulators, y = MAPE.
+
+    Parameters
+    ----------
+    aggregate : bool
+        If True, take the median MAPE per (group, simulator, metric).
+    metrics : list of (key, label) pairs
+        Which metrics to plot as subplots. Defaults to E2E Mean only.
+    """
     _apply_rc_params()
-    n_rows = len(METRICS_GRID)
-    figsize = figsize or FIGURE_SIZES["bar_grid"]
-    fig, axes = plt.subplots(n_rows, 3, figsize=figsize, sharey="row")
-    if n_rows == 1:
-        axes = axes[np.newaxis, :]  # ensure 2D indexing
+    if metrics is None:
+        metrics = [("e2e_mean", "E2E Mean")]
 
-    # Determine which simulators have data in any group
-    all_sims: set[str] = set()
-    for g_data in data.values():
-        all_sims.update(g_data.keys())
+    all_sims = set(df["simulator"].unique())
     simulators = [s for s in SIMULATOR_ORDER if s in all_sims]
-    n_sims = len(simulators)
-    n_groups = len(group_order)
+    present_groups = [g for g in group_order if g in df[group_col].values]
 
-    if n_sims == 0 or n_groups == 0:
-        if output_path:
-            _save_figure(fig, output_path)
-        return fig, axes
+    if not simulators or not present_groups:
+        return None
+
+    n_groups = len(present_groups)
+    n_sims = len(simulators)
+    n_cols = len(metrics)
+    figsize = figsize or FIGURE_SIZES["wide"]
+
+    fig, axes = plt.subplots(1, n_cols, figsize=figsize)
+    if n_cols == 1:
+        axes = [axes]
 
     bar_width = 0.8 / n_sims
     x = np.arange(n_groups)
+    col_maxes = [0.0] * n_cols
 
-    for row_idx, row_metrics in enumerate(METRICS_GRID):
-        for col_idx, (metric_key, metric_label) in enumerate(row_metrics):
-            ax = axes[row_idx, col_idx]
+    for col_idx, (metric_key, metric_label) in enumerate(metrics):
+        ax = axes[col_idx]
 
-            for sim_idx, sim in enumerate(simulators):
-                offset = (sim_idx - n_sims / 2 + 0.5) * bar_width
-                positions = []
-                heights = []
-                err_lo = []
-                err_hi = []
+        for sim_idx, sim in enumerate(simulators):
+            offset = (sim_idx - n_sims / 2 + 0.5) * bar_width
+            positions = []
+            heights = []
 
-                for g_idx, g in enumerate(group_order):
-                    sim_data = data.get(g, {}).get(sim, {})
-                    val = sim_data.get(metric_key)
-
-                    if val is not None:
-                        positions.append(x[g_idx] + offset)
-                        heights.append(val)
-                        # IQR error bars
-                        e = (error_data or {}).get(g, {}).get(sim, {}).get(metric_key)
-                        if e:
-                            err_lo.append(e[0])
-                            err_hi.append(e[1])
-                        else:
-                            err_lo.append(0)
-                            err_hi.append(0)
-                    elif sim_data:
-                        # Simulator ran for this group but metric missing → N/A
-                        ax.text(
-                            x[g_idx] + offset, 0.3, "N/A",
-                            ha="center", va="bottom", fontsize=4,
-                            color="gray", fontstyle="italic",
-                        )
-
-                if not positions:
+            for g_idx, group_val in enumerate(present_groups):
+                vals = df[
+                    (df[group_col] == group_val)
+                    & (df["simulator"] == sim)
+                    & (df["metric_name"] == metric_key)
+                ]["mape"]
+                if vals.empty:
                     continue
+                mape = vals.median() if aggregate else vals.iloc[0]
+                positions.append(x[g_idx] + offset)
+                heights.append(mape)
 
-                yerr = None
-                if any(lo > 0 or hi > 0 for lo, hi in zip(err_lo, err_hi)):
-                    yerr = np.array([err_lo, err_hi])
+            if not positions:
+                continue
+            col_maxes[col_idx] = max(col_maxes[col_idx], max(heights))
 
-                label = (
-                    SIMULATOR_DISPLAY_NAMES[sim]
-                    if row_idx == 0 and col_idx == 0
-                    else ""
-                )
-                ax.bar(
-                    positions, heights, bar_width,
-                    color=COLOR_PALETTE[sim],
-                    hatch=HATCH_PATTERNS[sim],
-                    edgecolor="black", linewidth=0.3,
-                    label=label,
-                    yerr=yerr, capsize=2, error_kw={"linewidth": 0.5},
-                )
-
-                # Overlay dots for small-n aggregations
-                if dot_data:
-                    for g_idx, g in enumerate(group_order):
-                        dots = (dot_data or {}).get(g, {}).get(sim, {}).get(
-                            metric_key, [],
-                        )
-                        if dots:
-                            dot_x = x[g_idx] + offset
-                            ax.scatter(
-                                [dot_x] * len(dots), dots,
-                                color=COLOR_PALETTE[sim], alpha=0.5,
-                                s=8, zorder=5, edgecolors="none",
-                            )
-
-            # MAPE threshold line
-            ax.axhline(
-                MAPE_THRESHOLD, color="gray", linestyle="--",
-                linewidth=0.5, zorder=0,
+            label = SIMULATOR_DISPLAY_NAMES[sim] if col_idx == 0 else ""
+            ax.bar(
+                positions, heights, bar_width,
+                color=COLOR_PALETTE[sim],
+                hatch=HATCH_PATTERNS.get(sim, ""),
+                edgecolor="black", linewidth=0.5,
+                label=label,
             )
 
-            ax.set_title(metric_label)
-            ax.set_xticks(x)
-            tick_labels = [
-                (group_labels or {}).get(g, g) for g in group_order
-            ]
-            ax.set_xticklabels(tick_labels, rotation=45, ha="right")
-            if col_idx == 0:
-                pct = r"\%" if matplotlib.rcParams.get("text.usetex") else "%"
-                ax.set_ylabel(f"MAPE ({pct})")
+        ax.set_xticks(x)
+        ha = "right" if xlabel_rotation else "center"
+        ax.set_xticklabels(
+            [(group_labels or {}).get(g, g) for g in present_groups],
+            rotation=xlabel_rotation, ha=ha,
+        )
+        ax.set_title(metric_label)
 
-    # Shared legend below bottom row
-    handles, labels = axes[0, 0].get_legend_handles_labels()
-    h_l = [(h, l) for h, l in zip(handles, labels) if l]
-    if h_l:
-        handles, labels = zip(*h_l)
+    # Independent y-axis per subplot with 20% headroom
+    pct = r"\%" if matplotlib.rcParams.get("text.usetex") else "%"
+    for col_idx, ax in enumerate(axes):
+        y_top = col_maxes[col_idx] * 1.20 if col_maxes[col_idx] > 0 else 1.0
+        ax.set_ylim(bottom=0, top=y_top)
+        ax.set_ylabel(f"MAPE ({pct})")
+
+    fig.suptitle(title, fontsize=11, fontweight="bold")
+
+    handles, labels = axes[0].get_legend_handles_labels()
+    if handles:
         fig.legend(
-            handles, labels, loc="lower center",
-            ncol=len(handles), bbox_to_anchor=(0.5, -0.02),
-            frameon=False,
+            handles, labels, loc="upper center",
+            bbox_to_anchor=(0.5, -0.01), ncol=n_sims,
+            frameon=False, handlelength=1.5, columnspacing=1.0,
         )
 
-    fig.suptitle(title, fontsize=10, y=0.98)
-    fig.tight_layout(rect=[0, 0.04, 1, 0.95])
+    fig.tight_layout()
+    # tight_layout doesn't account for suptitle — push axes down to make room
+    fig.subplots_adjust(top=0.86)
 
     if output_path:
         _save_figure(fig, output_path)
-
-    return fig, axes
+    return fig
 
 
 # ---------------------------------------------------------------------------
@@ -417,31 +416,19 @@ def plot_model_sensitivity(
         warnings.warn("Figure 1: no data after filtering")
         return None
 
-    # Build data dict: {model: {simulator: {metric: mape}}}
-    data: dict = {}
-    for model in MODEL_ORDER:
-        mdf = df[df["model"] == model]
-        if mdf.empty:
-            continue
-        data[model] = {}
-        for sim in SIMULATOR_ORDER:
-            sdf = mdf[mdf["simulator"] == sim]
-            if sdf.empty:
-                continue
-            data[model][sim] = dict(zip(sdf["metric_name"], sdf["mape"]))
-
-    present_models = [m for m in MODEL_ORDER if m in data]
-    if not present_models:
-        warnings.warn("Figure 1: no models with data")
-        return None
-
-    fig, _ = _bar_chart_grid(
-        data=data,
-        group_order=present_models,
-        group_labels=MODEL_SHORT_LABELS,
-        title="Model Sensitivity",
+    fig = _grouped_bar(
+        df, group_col="model", group_order=MODEL_ORDER,
+        title="Prediction Error Across Model Architectures",
         output_path=output_path,
+        group_labels=MODEL_SHORT_LABELS,
+        metrics=[
+            ("e2e_mean", "E2E Mean"),
+            ("ttft_mean", "TTFT Mean"),
+            ("itl_mean", "ITL Mean"),
+        ],
     )
+    if fig is None:
+        warnings.warn("Figure 1: no models with data")
     return fig
 
 
@@ -462,19 +449,21 @@ def plot_hardware_portability(
         warnings.warn("Figure 2: no data after filtering")
         return None
 
-    data, error_data, dot_data, present_hw = _aggregate_for_bar_grid(
+    fig = _grouped_bar(
         df, group_col="hardware", group_order=HARDWARE_ORDER,
+        group_labels={"A100-80GB": "A100"},
+        xlabel_rotation=0,
+        title="Prediction Error Across GPU Types",
+        output_path=output_path,
+        aggregate=True,
+        metrics=[
+            ("e2e_mean", "E2E Mean"),
+            ("ttft_mean", "TTFT Mean"),
+            ("itl_mean", "ITL Mean"),
+        ],
     )
-
-    if not present_hw:
+    if fig is None:
         warnings.warn("Figure 2: no hardware groups with data")
-        return None
-
-    fig, _ = _bar_chart_grid(
-        data=data, group_order=present_hw,
-        title="Hardware Portability", output_path=output_path,
-        error_data=error_data, dot_data=dot_data,
-    )
     return fig
 
 
@@ -492,69 +481,204 @@ def plot_workload_sensitivity(
         warnings.warn("Figure 3: no data after filtering")
         return None
 
-    data, error_data, dot_data, present_wl = _aggregate_for_bar_grid(
+    fig = _grouped_bar(
         df, group_col="workload", group_order=WORKLOAD_ORDER,
+        title="Prediction Error Across Workload Types",
+        output_path=output_path,
+        group_labels=WORKLOAD_DISPLAY_NAMES, aggregate=True,
+        metrics=[
+            ("e2e_mean", "E2E Mean"),
+            ("ttft_mean", "TTFT Mean"),
+            ("itl_mean", "ITL Mean"),
+        ],
     )
-
-    if not present_wl:
+    if fig is None:
         warnings.warn("Figure 3: no workloads with data")
-        return None
-
-    fig, _ = _bar_chart_grid(
-        data=data, group_order=present_wl,
-        group_labels=WORKLOAD_DISPLAY_NAMES,
-        title="Workload Sensitivity", output_path=output_path,
-        error_data=error_data, dot_data=dot_data,
-    )
     return fig
+
+
+FIG4A_MODEL_DEFAULT = "meta-llama/Llama-3.1-8B-Instruct"
+FIG4B_MODEL_DEFAULT = "mistralai/Mixtral-8x7B-v0.1"
+
+# Keep legacy aliases for backwards compatibility in tests
+FIG4A_MODEL = FIG4A_MODEL_DEFAULT
+FIG4B_MODEL = FIG4B_MODEL_DEFAULT
+
+
+CONFIG_SENSITIVITY_PARAMS: list[tuple[str, str]] = [
+    ("tp", "TP"),
+    ("max_num_batched_tokens", "Max Batch Tokens"),
+    ("gpu_mem_util", "GPU Mem Util"),
+    ("cpu_offload", "CPU Offload"),
+    ("dp", "DP"),
+]
+"""Config parameters to sweep for Figures 4a/4b.  Each entry is
+(column_name, display_label).  Only parameters with >1 distinct value
+for a given model are shown."""
+
+
+def _config_variation_score(df: pd.DataFrame, model: str) -> int:
+    """Score a model by total config variation (sum of distinct values across varying params)."""
+    mdf = df[df["model"] == model]
+    score = 0
+    for col, _ in CONFIG_SENSITIVITY_PARAMS:
+        if col not in mdf.columns:
+            continue
+        unique = mdf[col].dropna()
+        unique = unique[unique != ""]
+        n = unique.nunique()
+        if n > 1:
+            score += n
+    return score
+
+
+def _pick_best_model(df: pd.DataFrame, candidates: list[str], fallback: str) -> str:
+    """Pick the candidate model with the most config variation in *df*."""
+    best, best_score = fallback, -1
+    for model in candidates:
+        s = _config_variation_score(df, model)
+        if s > best_score:
+            best, best_score = model, s
+    return best
+
+
+def _short_model_name(model: str) -> str:
+    """Extract a short display name: 'meta-llama/Llama-3.1-8B-Instruct' → 'Llama-3.1-8B'."""
+    name = model.split("/")[-1]
+    # Strip common suffixes
+    for suffix in ("-Instruct", "-hf", "-v0.1", "-FP8-dynamic"):
+        name = name.replace(suffix, "")
+    return name
+
+
+FIG4_METRIC = "e2e_mean"
+FIG4_METRIC_LABEL = "E2E Mean"
 
 
 def _plot_config_sensitivity(
     df: pd.DataFrame,
     model: str,
-    config_order: list[str],
-    config_labels: dict[str, str],
     title: str,
     output_path: str | None,
 ) -> plt.Figure | None:
-    """Shared implementation for Figures 4a and 4b."""
+    """Shared implementation for Figures 4a/4b.
+
+    Line plot — one subplot per config parameter that varies for *model*.
+    X-axis = distinct values of that parameter, one line per simulator,
+    y = median MAPE for the ``FIG4_METRIC`` metric.
+    """
     if not _has_metadata(df):
         warnings.warn(f"{title}: skipped (no config metadata)")
         return None
 
-    df = df[
-        (df["hardware"] == "H100")
-        & (df["workload"] == "general")
-        & (df["model"] == model)
-    ]
-
+    df = df[df["model"] == model]
+    # Filter to the single metric we're plotting
+    df = df[df["metric_name"] == FIG4_METRIC]
     if df.empty:
-        warnings.warn(f"{title}: no data after filtering")
+        warnings.warn(f"{title}: no data for model")
         return None
 
-    # Build data dict: {config_tag: {simulator: {metric: mape}}}
-    data: dict = {}
-    for tag in config_order:
-        tdf = df[df["config_tag"] == tag]
-        if tdf.empty:
+    # Discover which config params actually vary for this model
+    varying: list[tuple[str, str]] = []
+    for col, label in CONFIG_SENSITIVITY_PARAMS:
+        if col not in df.columns:
             continue
-        data[tag] = {}
-        for sim in SIMULATOR_ORDER:
-            sdf = tdf[tdf["simulator"] == sim]
-            if sdf.empty:
-                continue
-            data[tag][sim] = dict(zip(sdf["metric_name"], sdf["mape"]))
+        unique = df[col].dropna()
+        unique = unique[unique != ""]
+        if unique.nunique() > 1:
+            varying.append((col, label))
 
-    present_configs = [c for c in config_order if c in data]
-    if not present_configs:
-        warnings.warn(f"{title}: no configs with data")
+    if not varying:
+        warnings.warn(f"{title}: no varying config params")
         return None
 
-    fig, _ = _bar_chart_grid(
-        data=data, group_order=present_configs,
-        group_labels=config_labels,
-        title=title, output_path=output_path,
+    _apply_rc_params()
+    all_sims = set(df["simulator"].unique())
+    simulators = [s for s in SIMULATOR_ORDER if s in all_sims]
+    n_params = len(varying)
+    n_sims = len(simulators)
+
+    # Grid layout: 2 columns, as many rows as needed
+    n_cols = min(n_params, 2)
+    n_rows = math.ceil(n_params / n_cols)
+    w = FIGURE_SIZES["wide"][0]
+    h_per_row = 2.5
+    fig, axes_2d = plt.subplots(
+        n_rows, n_cols,
+        figsize=(w, h_per_row * n_rows + 0.8),
+        squeeze=False,
     )
+    axes = [axes_2d[r][c] for r in range(n_rows) for c in range(n_cols)]
+
+    # Hide unused subplots
+    for idx in range(n_params, n_rows * n_cols):
+        axes[idx].set_visible(False)
+
+    col_maxes = [0.0] * n_params
+
+    for p_idx, (param_col, param_label) in enumerate(varying):
+        ax = axes[p_idx]
+
+        # Sorted unique values
+        raw_vals = df[param_col].dropna()
+        raw_vals = raw_vals[raw_vals != ""]
+        try:
+            sorted_vals = sorted(raw_vals.unique(), key=lambda v: float(v))
+        except (ValueError, TypeError):
+            sorted_vals = sorted(raw_vals.unique(), key=str)
+        val_labels = [str(v) for v in sorted_vals]
+        x = np.arange(len(sorted_vals))
+
+        for sim in simulators:
+            y_vals = []
+            x_pos = []
+
+            for v_idx, val in enumerate(sorted_vals):
+                mask = (df["simulator"] == sim) & (df[param_col].astype(str) == str(val))
+                vals = df.loc[mask, "mape"]
+                if vals.empty:
+                    continue
+                y_vals.append(vals.median())
+                x_pos.append(x[v_idx])
+
+            if not y_vals:
+                continue
+            col_maxes[p_idx] = max(col_maxes[p_idx], max(y_vals))
+
+            label = SIMULATOR_DISPLAY_NAMES[sim] if p_idx == 0 else ""
+            ax.plot(
+                x_pos, y_vals,
+                color=COLOR_PALETTE[sim],
+                marker=MARKER_STYLES.get(sim, "o"),
+                markersize=6, linewidth=1.5,
+                markeredgecolor="white", markeredgewidth=0.5,
+                label=label,
+            )
+
+        ax.set_xticks(x)
+        ax.set_xticklabels(val_labels, rotation=0, ha="center")
+        ax.set_title(param_label)
+
+    # Independent y-axis per subplot with 20% headroom
+    pct = r"\%" if matplotlib.rcParams.get("text.usetex") else "%"
+    for p_idx in range(n_params):
+        ax = axes[p_idx]
+        y_top = col_maxes[p_idx] * 1.20 if col_maxes[p_idx] > 0 else 1.0
+        ax.set_ylim(bottom=0, top=y_top)
+        ax.set_ylabel(f"MAPE ({pct})")
+
+    fig.suptitle(title, fontsize=11, fontweight="bold")
+    handles, labels = axes[0].get_legend_handles_labels()
+    if handles:
+        fig.legend(
+            handles, labels, loc="upper center",
+            bbox_to_anchor=(0.5, 0.02), ncol=n_sims,
+            frameon=False, handlelength=1.5, columnspacing=1.0,
+        )
+    fig.tight_layout(h_pad=3.0, rect=[0, 0.06, 1, 0.93])
+
+    if output_path:
+        _save_figure(fig, output_path)
     return fig
 
 
@@ -562,11 +686,13 @@ def plot_config_sensitivity_dense(
     df: pd.DataFrame,
     output_path: str | None = None,
 ) -> plt.Figure | None:
-    """Figure 4a: Config sensitivity for Llama-3.1-8B (dense)."""
+    """Figure 4a: Config sensitivity for the dense model with most variation."""
+    dense_candidates = [m for m in df["model"].unique() if m not in _MOE_MODELS]
+    model = _pick_best_model(df, dense_candidates, FIG4A_MODEL_DEFAULT)
+    short = _short_model_name(model)
     return _plot_config_sensitivity(
-        df, model=FIG4A_MODEL,
-        config_order=FIG4A_CONFIG_ORDER, config_labels=FIG4A_CONFIG_LABELS,
-        title="Config Sensitivity \u2014 Dense (Llama-3.1-8B)",
+        df, model=model,
+        title=f"Config Sensitivity — {short} (Dense) — {FIG4_METRIC_LABEL} MAPE",
         output_path=output_path,
     )
 
@@ -575,11 +701,13 @@ def plot_config_sensitivity_moe(
     df: pd.DataFrame,
     output_path: str | None = None,
 ) -> plt.Figure | None:
-    """Figure 4b: Config sensitivity for Mixtral-8x7B (MoE)."""
+    """Figure 4b: Config sensitivity for the MoE model with most variation."""
+    moe_candidates = [m for m in df["model"].unique() if m in _MOE_MODELS]
+    model = _pick_best_model(df, moe_candidates, FIG4B_MODEL_DEFAULT)
+    short = _short_model_name(model)
     return _plot_config_sensitivity(
-        df, model=FIG4B_MODEL,
-        config_order=FIG4B_CONFIG_ORDER, config_labels=FIG4B_CONFIG_LABELS,
-        title="Config Sensitivity \u2014 MoE (Mixtral-8x7B)",
+        df, model=model,
+        title=f"Config Sensitivity — {short} (MoE) — {FIG4_METRIC_LABEL} MAPE",
         output_path=output_path,
     )
 
@@ -630,8 +758,8 @@ def plot_pareto(
         "blis-trained-roofline": (-14, -20),
         "blis-roofline": (14, 16),
         "vidur": (12, -18),
-        "llm-optimizer-estimate": (14, -18),
-        "aiconfigurator-estimate": (-14, 16),
+        "llm-optimizer-estimate": (14, 16),
+        "aiconfigurator-estimate": (-14, -20),
     }
 
     for sim in SIMULATOR_ORDER:
@@ -657,9 +785,9 @@ def plot_pareto(
         )
         ox, oy = _annotation_offsets.get(sim, (10, 8))
         ax.annotate(
-            f"{SIMULATOR_DISPLAY_NAMES[sim]} (n={s['n']})",
+            SIMULATOR_DISPLAY_NAMES[sim],
             (s["mape_med"], s["rt_med"]),
-            textcoords="offset points", xytext=(ox, oy), fontsize=5.5,
+            textcoords="offset points", xytext=(ox, oy), fontsize=8,
             arrowprops={"arrowstyle": "-", "color": "gray", "linewidth": 0.4},
         )
 
@@ -684,7 +812,15 @@ def plot_pareto(
     pct = r"\%" if matplotlib.rcParams.get("text.usetex") else "%"
     ax.set_xlabel(f"Median MAPE ({pct})")
     ax.set_ylabel("Median Runtime (s)")
-    ax.legend(fontsize=7.5, loc="lower right", framealpha=0.9)
+
+    # Place legend below the plot to avoid overlap with data/annotations
+    handles, labels = ax.get_legend_handles_labels()
+    if handles:
+        fig.legend(
+            handles, labels, loc="upper center",
+            bbox_to_anchor=(0.5, -0.02), ncol=len(handles),
+            frameon=False, fontsize=7, handlelength=1.5, columnspacing=1.0,
+        )
     fig.tight_layout()
 
     if output_path:
@@ -746,6 +882,10 @@ def parse_figure_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--metadata", default=None,
         help="Path to experiment_metadata.csv for hardware/config enrichment",
     )
+    parser.add_argument(
+        "--exclude-simulators", nargs="+", default=[],
+        help="Simulators to hide from all figures (e.g. --exclude-simulators vidur)",
+    )
     return parser.parse_args(argv)
 
 
@@ -756,16 +896,36 @@ def main(argv: list[str] | None = None) -> None:
     runtime_csv = os.path.join(args.results_dir, "runtime.csv")
 
     if not os.path.exists(error_csv):
-        logger.error("error_records.csv not found in %s", args.results_dir)
+        msg = f"error_records.csv not found in {args.results_dir}"
+        logger.error(msg)
+        print(msg)
         return
     if not os.path.exists(runtime_csv):
-        logger.error("runtime.csv not found in %s", args.results_dir)
+        msg = f"runtime.csv not found in {args.results_dir}"
+        logger.error(msg)
+        print(msg)
         return
 
-    error_df = load_error_data(error_csv)
-    runtime_df = load_runtime_data(runtime_csv)
+    error_df_full = load_error_data(error_csv)
+    runtime_df_full = load_runtime_data(runtime_csv)
+
+    if args.exclude_simulators:
+        excluded = set(args.exclude_simulators)
+        error_df = error_df_full[~error_df_full["simulator"].isin(excluded)].reset_index(drop=True)
+        runtime_df = runtime_df_full[~runtime_df_full["simulator"].isin(excluded)].reset_index(drop=True)
+        print(f"Excluding simulators from Figs 1-4: {', '.join(sorted(excluded))}")
+    else:
+        error_df = error_df_full
+        runtime_df = runtime_df_full
+
     error_df = enrich_with_metadata(error_df, args.metadata)
     runtime_df = enrich_with_metadata(runtime_df, args.metadata)
+    error_df = _add_config_tags(error_df)
+
+    # Fig 5 (Pareto) always uses all simulators
+    error_df_all = enrich_with_metadata(error_df_full, args.metadata)
+    runtime_df_all = enrich_with_metadata(runtime_df_full, args.metadata)
+    error_df_all = _add_config_tags(error_df_all)
 
     out = args.output_dir
     os.makedirs(out, exist_ok=True)
@@ -782,7 +942,7 @@ def main(argv: list[str] | None = None) -> None:
         ("fig4b_config_moe.pdf",
          lambda: plot_config_sensitivity_moe(error_df, os.path.join(out, "fig4b_config_moe.pdf"))),
         ("fig5_pareto.pdf",
-         lambda: plot_pareto(error_df, runtime_df, os.path.join(out, "fig5_pareto.pdf"))),
+         lambda: plot_pareto(error_df_all, runtime_df_all, os.path.join(out, "fig5_pareto.pdf"))),
     ]
 
     for name, generate in figures:
@@ -805,6 +965,7 @@ def main(argv: list[str] | None = None) -> None:
         print(f"  OK: table1_runtime.tex")
     except Exception as e:
         print(f"  FAIL: table1_runtime.tex ({e})")
+        logger.exception("Failed to generate table1_runtime.tex")
 
     print(f"\nFigures saved to {out}")
 

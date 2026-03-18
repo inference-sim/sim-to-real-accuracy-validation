@@ -35,6 +35,7 @@ def _make_error_row(
     config_tag="default",
     tp=1,
     dp=1,
+    max_num_batched_tokens=2048,
 ):
     return {
         "simulator": simulator,
@@ -52,8 +53,9 @@ def _make_error_row(
         "config_tag": config_tag,
         "tp": tp,
         "dp": dp,
-        "cpu_offloading": "Disabled",
-        "gpu_memory_utilization": 0.90,
+        "cpu_offload": False,
+        "gpu_mem_util": 0.90,
+        "max_num_batched_tokens": max_num_batched_tokens,
     }
 
 
@@ -116,8 +118,8 @@ def _sample_runtime_csv(tmp_path: Path) -> str:
 def _sample_metadata_csv(tmp_path: Path) -> str:
     path = tmp_path / "experiment_metadata.csv"
     path.write_text(
-        "experiment_folder,hardware,tp,dp,cpu_offloading,gpu_memory_utilization,config_tag\n"
-        "/exp/1,H100,1,1,Disabled,0.90,default\n"
+        "experiment_folder,hardware,tp,dp,cpu_offload,gpu_mem_util,config_tag\n"
+        "/exp/1,H100,1,1,False,0.90,default\n"
     )
     return str(path)
 
@@ -139,12 +141,13 @@ class TestConstants:
     def test_all_simulators_have_style_entries(self):
         from experiment.figures import (
             SIMULATOR_ORDER, COLOR_PALETTE,
-            SIMULATOR_DISPLAY_NAMES, HATCH_PATTERNS,
+            SIMULATOR_DISPLAY_NAMES, HATCH_PATTERNS, MARKER_STYLES,
         )
         for sim in SIMULATOR_ORDER:
             assert sim in COLOR_PALETTE
             assert sim in SIMULATOR_DISPLAY_NAMES
             assert sim in HATCH_PATTERNS
+            assert sim in MARKER_STYLES
 
     def test_model_order_excludes_llama2_7b(self):
         from experiment.figures import MODEL_ORDER
@@ -207,90 +210,6 @@ class TestDataLoading:
         from experiment.figures import _has_metadata
         df = pd.DataFrame({"hardware": ["", ""]})
         assert not _has_metadata(df)
-
-
-# ---------------------------------------------------------------------------
-# Tests: Bar Chart Grid
-# ---------------------------------------------------------------------------
-
-
-class TestBarChartGrid:
-    def _make_data(self):
-        metrics = {m: 10.0 for row in _METRICS for m in [row]}
-        # Actually build properly
-        from experiment.figures import METRICS_GRID
-        d = {}
-        for row in METRICS_GRID:
-            for k, _ in row:
-                d[k] = 10.0
-        return {
-            "Group-A": {"blis-trained-roofline": dict(d), "vidur": dict(d)},
-            "Group-B": {"blis-trained-roofline": dict(d)},
-        }
-
-    def test_returns_1x3_axes(self):
-        from experiment.figures import _bar_chart_grid
-        fig, axes = _bar_chart_grid(
-            data=self._make_data(), group_order=["Group-A", "Group-B"],
-            title="Test", output_path=None,
-        )
-        assert axes.shape == (1, 3)
-        plt.close(fig)
-
-    def test_threshold_line_present(self):
-        from experiment.figures import _bar_chart_grid, MAPE_THRESHOLD
-        fig, axes = _bar_chart_grid(
-            data=self._make_data(), group_order=["Group-A"],
-            title="Test", output_path=None,
-        )
-        for ax in axes.flat:
-            lines = ax.get_lines()
-            y_values = []
-            for line in lines:
-                yd = line.get_ydata()
-                if hasattr(yd, "__len__") and len(yd) > 0:
-                    y_values.extend(yd)
-            assert any(abs(y - MAPE_THRESHOLD) < 0.01 for y in y_values)
-        plt.close(fig)
-
-    def test_saves_pdf_and_png(self, tmp_path):
-        from experiment.figures import _bar_chart_grid
-        out = str(tmp_path / "test.pdf")
-        _bar_chart_grid(
-            data=self._make_data(), group_order=["Group-A"],
-            title="Test", output_path=out,
-        )
-        assert os.path.exists(out)
-        assert os.path.exists(out.replace(".pdf", ".png"))
-
-    def test_empty_data_no_crash(self):
-        from experiment.figures import _bar_chart_grid
-        fig, axes = _bar_chart_grid(
-            data={}, group_order=[], title="Empty", output_path=None,
-        )
-        assert axes.shape == (1, 3)
-        plt.close(fig)
-
-    def test_na_annotation_for_missing_metric(self):
-        """Simulator present but specific metric missing → N/A annotation."""
-        from experiment.figures import _bar_chart_grid
-        data = {
-            "Group-A": {
-                "blis-trained-roofline": {"e2e_mean": 5.0},
-                # vidur ran but only has e2e_mean, missing others
-                "vidur": {"e2e_mean": 8.0},
-            },
-        }
-        fig, axes = _bar_chart_grid(
-            data=data, group_order=["Group-A"],
-            title="Test N/A", output_path=None,
-        )
-        # Check that text annotations exist in subplots where metrics are missing
-        for ax in axes.flat:
-            texts = [t.get_text() for t in ax.texts]
-            # At least some subplots should have N/A
-            # (e2e_p99, ttft_mean, etc. are missing for both sims)
-        plt.close(fig)
 
 
 # ---------------------------------------------------------------------------
@@ -403,31 +322,54 @@ class TestFigure3:
 
 
 class TestFigure4:
-    def _make_config_df(self, model, config_order):
+    def _make_config_sweep_df(self, model, param_col, values):
+        """Create a DataFrame where *param_col* takes multiple *values*."""
         rows = []
-        for tag in config_order:
+        for val in values:
             for sim in ["blis-trained-roofline", "vidur"]:
                 for metric in _METRICS:
-                    rows.append(_make_error_row(
+                    row = _make_error_row(
                         simulator=sim, model=model,
                         metric_name=metric, mape=7.0,
-                        config_tag=tag,
-                        experiment_folder=f"/exp/{model}/{tag}",
-                    ))
+                        experiment_folder=f"/exp/{model}/{param_col}_{val}",
+                    )
+                    row[param_col] = val
+                    rows.append(row)
         return pd.DataFrame(rows)
 
     def test_fig4a_returns_figure(self):
-        from experiment.figures import plot_config_sensitivity_dense, FIG4A_MODEL, FIG4A_CONFIG_ORDER
-        df = self._make_config_df(FIG4A_MODEL, FIG4A_CONFIG_ORDER)
+        from experiment.figures import plot_config_sensitivity_dense, FIG4A_MODEL
+        df = self._make_config_sweep_df(FIG4A_MODEL, "tp", [1, 2, 4])
         fig = plot_config_sensitivity_dense(df, output_path=None)
         assert fig is not None
         plt.close(fig)
 
     def test_fig4b_returns_figure(self):
-        from experiment.figures import plot_config_sensitivity_moe, FIG4B_MODEL, FIG4B_CONFIG_ORDER
-        df = self._make_config_df(FIG4B_MODEL, FIG4B_CONFIG_ORDER)
+        from experiment.figures import plot_config_sensitivity_moe, FIG4B_MODEL
+        df = self._make_config_sweep_df(FIG4B_MODEL, "tp", [2, 4, 8])
         fig = plot_config_sensitivity_moe(df, output_path=None)
         assert fig is not None
+        plt.close(fig)
+
+    def test_multiple_varying_params(self):
+        """Figure shows one subplot per varying config param."""
+        from experiment.figures import plot_config_sensitivity_dense, FIG4A_MODEL
+        rows = []
+        for tp in [1, 2]:
+            for mbt in [1024, 2048, 4096]:
+                for sim in ["blis-trained-roofline", "vidur"]:
+                    for metric in _METRICS:
+                        row = _make_error_row(
+                            simulator=sim, model=FIG4A_MODEL,
+                            metric_name=metric, mape=7.0,
+                            tp=tp, max_num_batched_tokens=mbt,
+                        )
+                        rows.append(row)
+        df = pd.DataFrame(rows)
+        fig = plot_config_sensitivity_dense(df, output_path=None)
+        assert fig is not None
+        # Should have 2 subplots: tp and max_num_batched_tokens
+        assert len(fig.axes) == 2
         plt.close(fig)
 
     def test_skips_without_metadata(self):
@@ -530,6 +472,7 @@ class TestCLI:
         assert args.results_dir == "results"
         assert args.output_dir == "results/figures"
         assert args.metadata is None
+        assert args.exclude_simulators == []
 
     def test_parse_args_custom(self):
         from experiment.figures import parse_figure_args
@@ -539,6 +482,11 @@ class TestCLI:
         assert args.results_dir == "/data"
         assert args.output_dir == "/out"
         assert args.metadata == "/m.csv"
+
+    def test_parse_args_exclude_simulators(self):
+        from experiment.figures import parse_figure_args
+        args = parse_figure_args(["--exclude-simulators", "vidur", "blis-roofline"])
+        assert args.exclude_simulators == ["vidur", "blis-roofline"]
 
 
 # ---------------------------------------------------------------------------
@@ -551,7 +499,7 @@ class TestEndToEnd:
         """Write realistic sample CSVs for all figures."""
         from experiment.figures import (
             MODEL_ORDER, SIMULATOR_ORDER, FIGURE3_MODELS,
-            FIG4A_MODEL, FIG4A_CONFIG_ORDER, FIG4B_MODEL, FIG4B_CONFIG_ORDER,
+            FIG4A_MODEL, FIG4B_MODEL,
         )
 
         error_rows = []
@@ -607,37 +555,43 @@ class TestEndToEnd:
                     ))
                 exp_id += 1
 
-        # Fig 4a data: config sweeps for dense model
-        for tag in FIG4A_CONFIG_ORDER:
-            for sim in SIMULATOR_ORDER[:3]:
-                exp_folder = f"/exp/{exp_id}"
-                for metric in _METRICS:
-                    error_rows.append(_make_error_row(
-                        simulator=sim, model=FIG4A_MODEL,
-                        metric_name=metric, mape=6.0,
-                        config_tag=tag, experiment_folder=exp_folder,
+        # Fig 4a data: config sweeps for dense model (vary tp and mbt)
+        for tp_val in [1, 2, 4]:
+            for mbt_val in [1024, 2048, 4096]:
+                for sim in SIMULATOR_ORDER[:3]:
+                    exp_folder = f"/exp/{exp_id}"
+                    for metric in _METRICS:
+                        row = _make_error_row(
+                            simulator=sim, model=FIG4A_MODEL,
+                            metric_name=metric, mape=6.0,
+                            experiment_folder=exp_folder,
+                            tp=tp_val, max_num_batched_tokens=mbt_val,
+                        )
+                        error_rows.append(row)
+                    runtime_rows.append(_make_runtime_row(
+                        simulator=sim, experiment_folder=exp_folder,
+                        wall_clock_seconds=1.3,
                     ))
-                runtime_rows.append(_make_runtime_row(
-                    simulator=sim, experiment_folder=exp_folder,
-                    wall_clock_seconds=1.3,
-                ))
-            exp_id += 1
+                exp_id += 1
 
-        # Fig 4b data: config sweeps for MoE model
-        for tag in FIG4B_CONFIG_ORDER:
-            for sim in SIMULATOR_ORDER[:2]:
-                exp_folder = f"/exp/{exp_id}"
-                for metric in _METRICS:
-                    error_rows.append(_make_error_row(
-                        simulator=sim, model=FIG4B_MODEL,
-                        metric_name=metric, mape=7.0,
-                        config_tag=tag, experiment_folder=exp_folder,
+        # Fig 4b data: config sweeps for MoE model (vary tp and dp)
+        for tp_val in [2, 4, 8]:
+            for dp_val in [1, 2]:
+                for sim in SIMULATOR_ORDER[:2]:
+                    exp_folder = f"/exp/{exp_id}"
+                    for metric in _METRICS:
+                        row = _make_error_row(
+                            simulator=sim, model=FIG4B_MODEL,
+                            metric_name=metric, mape=7.0,
+                            experiment_folder=exp_folder,
+                            tp=tp_val, dp=dp_val,
+                        )
+                        error_rows.append(row)
+                    runtime_rows.append(_make_runtime_row(
+                        simulator=sim, experiment_folder=exp_folder,
+                        wall_clock_seconds=2.5,
                     ))
-                runtime_rows.append(_make_runtime_row(
-                    simulator=sim, experiment_folder=exp_folder,
-                    wall_clock_seconds=2.5,
-                ))
-            exp_id += 1
+                exp_id += 1
 
         # Write CSVs
         edf = pd.DataFrame(error_rows)
@@ -646,12 +600,6 @@ class TestEndToEnd:
         edf.to_csv(tmp_path / "error_records.csv", index=False)
         rdf.to_csv(tmp_path / "runtime.csv", index=False)
 
-        # Write metadata (all experiments already have metadata in the rows)
-        meta_rows = edf[["experiment_folder", "hardware", "tp", "dp",
-                         "cpu_offloading", "gpu_memory_utilization",
-                         "config_tag"]].drop_duplicates()
-        meta_rows.to_csv(tmp_path / "experiment_metadata.csv", index=False)
-
     def test_full_pipeline(self, tmp_path):
         """Generate all figures from synthetic CSVs — no crash, files created."""
         from experiment.figures import main as figures_main
@@ -659,10 +607,10 @@ class TestEndToEnd:
         self._write_csvs(tmp_path)
         out = tmp_path / "figures"
 
+        # No --metadata needed: the new pipeline writes metadata inline in CSVs
         figures_main([
             "--results-dir", str(tmp_path),
             "--output-dir", str(out),
-            "--metadata", str(tmp_path / "experiment_metadata.csv"),
         ])
 
         expected = [
@@ -677,3 +625,79 @@ class TestEndToEnd:
         ]
         for fname in expected:
             assert (out / fname).exists(), f"Missing: {fname}"
+
+
+# ---------------------------------------------------------------------------
+# Tests: Config Tag Derivation
+# ---------------------------------------------------------------------------
+
+
+class TestDeriveConfigTag:
+    """Tests for _derive_config_tag and _add_config_tags in figures.py."""
+
+    def _make_row(self, **overrides):
+        base = {
+            "model": "meta-llama/Llama-3.1-8B-Instruct",
+            "tp": 1, "dp": 1, "cpu_offload": False,
+            "gpu_mem_util": 0.9, "max_num_batched_tokens": 2048,
+        }
+        base.update(overrides)
+        return pd.Series(base)
+
+    def test_default(self):
+        from experiment.figures import _derive_config_tag
+        assert _derive_config_tag(self._make_row()) == "default"
+
+    def test_mbt_1024(self):
+        from experiment.figures import _derive_config_tag
+        assert _derive_config_tag(self._make_row(max_num_batched_tokens=1024)) == "mbt=1024"
+
+    def test_cpu_offload(self):
+        from experiment.figures import _derive_config_tag
+        assert _derive_config_tag(self._make_row(cpu_offload=True)) == "cpu-offload"
+
+    def test_gpu_mem(self):
+        from experiment.figures import _derive_config_tag
+        assert _derive_config_tag(self._make_row(gpu_mem_util=0.95)) == "gpu-0.95"
+
+    def test_tp_variation(self):
+        from experiment.figures import _derive_config_tag
+        assert _derive_config_tag(self._make_row(tp=2)) == "tp=2"
+
+    def test_dp_for_dense(self):
+        from experiment.figures import _derive_config_tag
+        assert _derive_config_tag(self._make_row(dp=2)) == "dp=2"
+
+    def test_ep_for_moe(self):
+        from experiment.figures import _derive_config_tag
+        row = self._make_row(
+            model="mistralai/Mixtral-8x7B-v0.1", tp=2, dp=2,
+        )
+        assert _derive_config_tag(row) == "ep=4"
+
+    def test_mbt_priority_over_cpu_offload(self):
+        from experiment.figures import _derive_config_tag
+        row = self._make_row(max_num_batched_tokens=1024, cpu_offload=True)
+        assert _derive_config_tag(row) == "mbt=1024"
+
+    def test_add_config_tags_skips_existing(self):
+        from experiment.figures import _add_config_tags
+        df = pd.DataFrame([{"config_tag": "custom", "max_num_batched_tokens": 1024}])
+        result = _add_config_tags(df)
+        assert result["config_tag"].iloc[0] == "custom"
+
+    def test_add_config_tags_derives_when_missing(self):
+        from experiment.figures import _add_config_tags
+        df = pd.DataFrame([{
+            "model": "meta-llama/Llama-3.1-8B-Instruct",
+            "tp": 1, "dp": 1, "cpu_offload": False,
+            "gpu_mem_util": 0.9, "max_num_batched_tokens": 1024,
+        }])
+        result = _add_config_tags(df)
+        assert result["config_tag"].iloc[0] == "mbt=1024"
+
+    def test_add_config_tags_defaults_without_mbt(self):
+        from experiment.figures import _add_config_tags
+        df = pd.DataFrame([{"simulator": "vidur", "mape": 10.0}])
+        result = _add_config_tags(df)
+        assert result["config_tag"].iloc[0] == "default"
