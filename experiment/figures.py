@@ -718,11 +718,8 @@ def _plot_config_sensitivity(
     pct = r"\%" if matplotlib.rcParams.get("text.usetex") else "%"
     ax.set_ylabel(f"MAPE ({pct})", labelpad=10)
 
-    ax.set_title(f"{title}\n{subtitle}", fontsize=10, pad=8,
-                 linespacing=1.8, fontweight="bold")
-    # Override: make subtitle line normal weight via fontproperties on the Text
-    # (matplotlib applies fontweight to the whole title, but the visual
-    # contrast from linespacing + smaller-looking second line is sufficient)
+    fig.suptitle(title, fontsize=12, fontweight="bold", y=0.96)
+    ax.set_title(subtitle, fontsize=9, fontweight="normal", pad=8)
     handles, labels = ax.get_legend_handles_labels()
     if handles:
         fig.legend(
