@@ -2,7 +2,7 @@
 
 ## Methodology Notes
 
-**Ground truth data collection.** All ground truth measurements were collected using [inference-perf](https://github.com/triton-inference-server/perf_analyzer), which orchestrates vLLM serving experiments and captures per-request latency distributions and throughput metrics.
+**Ground truth data collection.** All ground truth measurements were collected using [inference-perf](https://github.com/kubernetes-sigs/inference-perf), which orchestrates vLLM serving experiments and captures per-request latency distributions and throughput metrics.
 
 **Metrics compared.** All figures and tables report error metrics computed from **summary-level predictions** (aggregated across all load stages, `stage_index = -1` in results.csv). Per-stage metrics are excluded from the analysis to focus on overall experiment accuracy rather than individual load phase predictions.
 
