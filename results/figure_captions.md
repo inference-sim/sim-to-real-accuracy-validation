@@ -2,6 +2,10 @@
 
 ## Methodology Notes
 
+**Ground truth data collection.** All ground truth measurements were collected using [inference-perf](https://github.com/triton-inference-server/perf_analyzer), which orchestrates vLLM serving experiments and captures per-request latency distributions and throughput metrics.
+
+**Metrics compared.** All figures and tables report error metrics computed from **summary-level predictions** (aggregated across all load stages, `stage_index = -1` in results.csv). Per-stage metrics are excluded from the analysis to focus on overall experiment accuracy rather than individual load phase predictions.
+
 **Trace replay vs. analytical estimation.** BLIS and Vidur replay the full per-request trace (with original inter-arrival times) in a single run; the adapter then splits output rows into stage buckets by cumulative arrival count. LLM-Optimizer and AIConfigurator are analytical estimators — for each stage they derive concurrency via Little's Law (L = λ × W) using the stage's request rate and the ground-truth mean E2E latency, then query the estimator at that concurrency. This means the concurrency input to analytical estimators is informed by observed performance, not purely predicted.
 
 **Workload support.** BLIS natively supports multi-turn workloads via `enable_multi_turn_chat` in its workload spec. Vidur replays per-request traces, so multi-turn context is implicit in the actual token lengths. LLM-Optimizer and AIConfigurator only run on `shared_prefix` workloads — they use the configured fixed token lengths (question\_len + system\_prompt\_len, output\_len) rather than per-request actuals, and cannot model multi-turn conversational patterns.
