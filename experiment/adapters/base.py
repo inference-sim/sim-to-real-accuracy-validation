@@ -85,7 +85,7 @@ class BaseBLISAdapter(SimulatorAdapter):
             "--total-kv-blocks", str(experiment.total_kv_blocks),
             "--kv-cpu-blocks", str(experiment.cpu_kv_blocks),
             "--kv-offload-threshold", "0.9",
-            "--kv-transfer-bandwidth", "100.0",
+            "--kv-transfer-bandwidth", "0.2",
             "--seed", "42",
             "--workload-spec", trace_spec,
             "--results-path", results_path,
