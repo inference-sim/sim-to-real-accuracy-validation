@@ -81,43 +81,89 @@ Passing `--gpu-memory-utilization` would:
 
 Decision: **Don't pass it** — keeps the change minimal and focused.
 
+### Additional Issues Discovered
+
+#### Issue 2: Hardware Name Mismatch
+
+**Manifest** (`experiments.json`) uses: `"A100-80GB"`, `"H100"`, `"L40S"`
+**BLIS** (`hardware_config.json`) expects: `"A100-80"`, `"H100"`, `"L40S"`
+**defaults.yaml** uses: `"A100-80"`, `"H100"`
+
+The manifest uses `"A100-80GB"` but BLIS and its defaults.yaml use `"A100-80"`.
+
+**Impact:** Passing `--hardware "A100-80GB"` to BLIS will fail because it won't match any hardware config.
+
+**Solution:** Add a hardware normalization function that maps manifest names to BLIS names.
+
+#### Issue 3: BLISBlackboxAdapter.can_run() Doesn't Check Hardware
+
+`blis_blackbox.py` lines 32-48 check model and TP but NOT GPU:
+```python
+def can_run(self, experiment: Experiment) -> bool:
+    model_lower = experiment.model.lower()
+    for entry in (data or {}).get("models", []):
+        if (
+            entry.get("id", "").lower() == model_lower
+            and entry.get("tensor_parallelism") == experiment.tp
+            # ❌ Missing: and entry.get("GPU") == normalized_hardware
+            and any(c != 0 for c in entry.get("alpha_coeffs", []))
+        ):
+            return True
+```
+
+**Problem:** defaults.yaml has separate entries for H100 and A100-80 (same model, same TP, different GPU). Without checking GPU, `can_run()` returns True even when coefficients exist only for the wrong hardware.
+
+**Example:**
+- defaults.yaml has coefficients for `Llama-3.1-8B / H100 / TP=1`
+- Experiment is `Llama-3.1-8B / A100-80GB / TP=1`
+- `can_run()` returns True (wrong!)
+- BLIS either fails or uses wrong coefficients
+
+**Solution:** Add GPU field check to `can_run()` using normalized hardware names.
+
 ## Design
 
 ### Change Summary
 
-**File:** `experiment/adapters/base.py`
-**Line:** 70
-**Change:** Replace hardcoded `"H100"` with `experiment.hardware`
+**Three coordinated changes:**
 
-```python
-# Before
-"--hardware", "H100",
+1. **Add hardware normalization helper** (`base.py`)
+   - Maps manifest hardware names to BLIS-compatible names
+   - `"A100-80GB"` → `"A100-80"`, others pass through
 
-# After
-"--hardware", experiment.hardware,
-```
+2. **Use normalized hardware in CLI args** (`base.py`)
+   - Replace hardcoded `"H100"` with normalized `experiment.hardware`
+
+3. **Fix blackbox adapter can_run()** (`blis_blackbox.py`)
+   - Add GPU field check using normalized hardware
 
 ### Files Modified
 
 1. **`experiment/adapters/base.py`**
-   - Line 70: Use `experiment.hardware` instead of hardcoded string
+   - Add `_normalize_hardware()` static method
+   - Line 70: Use `_normalize_hardware(experiment.hardware)` instead of `"H100"`
 
-2. **`tests/test_blis_adapters.py`**
-   - `TestBLISCLIArgs.test_kv_offloading_flags_present` (line ~246-268)
-   - Update assertion to check for `experiment.hardware` instead of hardcoded "H100"
-   - Optionally add test for A100-80GB to verify hardware is respected
+2. **`experiment/adapters/blis_blackbox.py`**
+   - Update `can_run()` to check `entry.get("GPU")` matches normalized hardware
 
-### Behavior
+3. **`tests/test_blis_adapters.py`**
+   - Update `test_kv_offloading_flags_present` to check for dynamic hardware
+   - Add test for A100-80GB normalization
+   - Add test for blackbox `can_run()` hardware matching
+
+### Behavior Changes
 
 **Before:**
-- All BLIS simulations use H100 hardware calibration regardless of actual experiment hardware
-- A100-80GB experiments are simulated with incorrect hardware parameters
-- Leads to systematic error for non-H100 experiments
+- All BLIS simulations hardcode `--hardware "H100"` regardless of experiment
+- A100-80GB experiments fail or use wrong hardware calibration
+- BLISBlackboxAdapter.can_run() returns True for A100 experiments even when only H100 coefficients exist
+- Manifest hardware name `"A100-80GB"` would fail if passed to BLIS
 
 **After:**
-- BLIS uses the correct hardware calibration (H100 or A100-80GB) from the manifest
-- Simulations match the actual hardware used in ground truth experiments
-- Covers full parameter space of the 56-experiment dataset
+- BLIS uses correct hardware calibration from manifest (`"H100"`, `"A100-80"`, `"L40S"`)
+- Hardware names are normalized (`"A100-80GB"` → `"A100-80"`)
+- BLISBlackboxAdapter.can_run() correctly checks if trained coefficients exist for the experiment's hardware
+- Covers full parameter space of 56 experiments (H100 and A100-80GB)
 
 ### What's Not Changing
 
@@ -137,41 +183,117 @@ The change is fully backward compatible:
 
 ## Implementation Plan
 
-1. **Modify `BaseBLISAdapter._build_common_args()`**
-   - Replace hardcoded `"H100"` with `experiment.hardware`
+### Step 1: Add Hardware Normalization
 
-2. **Update test in `test_blis_adapters.py`**
-   - `test_kv_offloading_flags_present`: Change assertion from checking for "H100" to checking for `experiment.hardware`
-   - `test_model_and_tp_in_args`: Already tests dynamic values, no change needed
+`experiment/adapters/base.py` - Add before `_build_common_args()`:
+```python
+@staticmethod
+def _normalize_hardware(hardware: str) -> str:
+    """Normalize manifest hardware names to BLIS-compatible names.
 
-3. **Verify with integration test**
-   - Run BLIS adapter against an A100-80GB experiment from manifest
-   - Verify `--hardware A100-80GB` appears in BLIS subprocess args
+    Manifest uses "A100-80GB" but BLIS expects "A100-80".
+    """
+    if hardware == "A100-80GB":
+        return "A100-80"
+    return hardware  # H100, L40S, etc. pass through unchanged
+```
+
+### Step 2: Use Normalized Hardware in CLI Args
+
+`experiment/adapters/base.py:70` - Update `_build_common_args()`:
+```python
+# Before
+"--hardware", "H100",
+
+# After
+"--hardware", self._normalize_hardware(experiment.hardware),
+```
+
+### Step 3: Fix Blackbox Adapter can_run()
+
+`experiment/adapters/blis_blackbox.py:32-48` - Add GPU check:
+```python
+def can_run(self, experiment: Experiment) -> bool:
+    """True if defaults.yaml has trained coefficients for (model, GPU, TP) tuple."""
+    try:
+        with open(self._defaults_yaml) as fh:
+            data = yaml.safe_load(fh)
+    except (FileNotFoundError, PermissionError, yaml.YAMLError):
+        return False
+
+    model_lower = experiment.model.lower()
+    normalized_hw = self._normalize_hardware(experiment.hardware)  # ← New
+
+    for entry in (data or {}).get("models", []):
+        if (
+            entry.get("id", "").lower() == model_lower
+            and entry.get("tensor_parallelism") == experiment.tp
+            and entry.get("GPU") == normalized_hw  # ← New check
+            and any(c != 0 for c in entry.get("alpha_coeffs", []))
+        ):
+            return True
+    return False
+```
+
+### Step 4: Update Tests
+
+`tests/test_blis_adapters.py`:
+
+1. **test_kv_offloading_flags_present** - Verify hardware is passed dynamically
+2. **test_hardware_normalization** - New test for A100-80GB → A100-80 mapping
+3. **test_blackbox_can_run_checks_hardware** - New test verifying GPU field is checked
 
 ## Testing Strategy
 
-### Unit Tests (already exist)
+### Unit Tests
 
-1. `TestBLISCLIArgs.test_kv_offloading_flags_present`
-   - Update to verify hardware is passed from `experiment.hardware`
-   - No longer check for hardcoded "H100"
+1. **test_hardware_normalization** (new)
+   ```python
+   def test_hardware_normalization():
+       adapter = BLISRooflineAdapter("/tmp/blis")
+       assert adapter._normalize_hardware("A100-80GB") == "A100-80"
+       assert adapter._normalize_hardware("H100") == "H100"
+       assert adapter._normalize_hardware("L40S") == "L40S"
+   ```
 
-2. `TestBLISCLIArgs.test_model_and_tp_in_args`
-   - Already tests that CLI args use experiment fields dynamically
-   - Demonstrates the pattern we're following for hardware
+2. **test_kv_offloading_flags_present** (update existing)
+   - Change assertion to verify `experiment.hardware` is passed (not hardcoded "H100")
+   - Test with both H100 and A100-80GB experiments
+
+3. **test_blackbox_hardware_matching** (new)
+   ```python
+   def test_blackbox_can_run_checks_hardware(tmp_path):
+       # defaults.yaml with H100 coeffs only
+       defaults = _write_defaults_yaml(
+           str(tmp_path),
+           [("meta-llama/Llama-2-7b-hf", "H100", 1)]
+       )
+       adapter = BLISBlackboxAdapter("/tmp/blis", defaults_yaml=defaults)
+
+       # H100 experiment should match
+       exp_h100 = _make_experiment(model="meta-llama/Llama-2-7b-hf", hardware="H100")
+       assert adapter.can_run(exp_h100) is True
+
+       # A100-80GB experiment should NOT match (coeffs don't exist)
+       exp_a100 = _make_experiment(model="meta-llama/Llama-2-7b-hf", hardware="A100-80GB")
+       assert adapter.can_run(exp_a100) is False
+   ```
+
+4. **test_model_and_tp_in_args** (existing, no change)
+   - Already verifies CLI args use experiment fields dynamically
 
 ### Integration Test (manual verification)
 
-Run adapter against A100-80GB experiment:
+Run BLIS against A100-80GB experiment:
 ```bash
 python -m experiment.run \
   --gt-dir vllm_data/ground_truth \
   --adapter blis-roofline \
   --blis-binary inference-sim/blis \
-  --exp-id 36  # Qwen3-14B on A100-80GB
+  --exp-id 38  # Llama-3.1-8B on A100-80GB
 ```
 
-Verify BLIS command includes `--hardware A100-80GB`.
+Verify BLIS command includes `--hardware A100-80` (normalized from A100-80GB).
 
 ## Risks
 
@@ -179,12 +301,22 @@ Verify BLIS command includes `--hardware A100-80GB`.
 
 **Hardware calibration mismatch:**
 - Risk: BLIS might not have calibration data for A100-80GB
-- Mitigation: BLIS has `hardware_config.json` with both H100 and A100-80GB
-- Verified: Both GPU types are supported in PR #790
+- Mitigation: BLIS has `hardware_config.json` with H100, A100-80, and L40S
+- Verified: All manifest hardware types are supported
+
+**Hardware normalization incomplete:**
+- Risk: Future hardware types might need normalization but we don't handle them
+- Mitigation: Normalization function has a pass-through default (returns input unchanged)
+- New hardware types will fail clearly with BLIS error if not in hardware_config.json
+
+**defaults.yaml might not have coefficients for all hardware:**
+- Risk: BLISBlackboxAdapter might not have trained coefficients for A100-80GB experiments
+- Mitigation: can_run() will correctly return False, adapter won't be used
+- Other adapters (roofline, crossmodel) don't require trained coefficients
 
 **Test brittleness:**
-- Risk: Test might need manual value updates
-- Mitigation: Test will check for `experiment.hardware` value, not a hardcoded string
+- Risk: Tests need to know about hardware normalization mapping
+- Mitigation: Tests explicitly verify the normalization mapping is correct
 
 ## Alternatives Considered
 
@@ -202,4 +334,9 @@ Verify BLIS command includes `--hardware A100-80GB`.
 
 ## Open Questions
 
-None. Design is ready for implementation.
+None. All three issues have been identified with clear solutions:
+1. Hardware normalization for A100-80GB → A100-80
+2. Using normalized hardware in BLIS CLI args
+3. Fixing blackbox adapter can_run() to check GPU field
+
+Design is ready for implementation.
