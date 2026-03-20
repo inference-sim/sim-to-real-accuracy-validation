@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 # Constants
 # ---------------------------------------------------------------------------
 
-EXCLUDED_SIMULATORS = frozenset({"blis-blackbox", "blis-crossmodel"})
+EXCLUDED_SIMULATORS = frozenset({"blis-blackbox", "blis-crossmodel", "vidur"})
 
 SIMULATOR_ORDER = [
     "blis-trained-roofline",
@@ -418,7 +418,7 @@ def plot_model_sensitivity(
 
     fig = _grouped_bar(
         df, group_col="model", group_order=MODEL_ORDER,
-        title="Prediction Error Across Model Architectures",
+        title="Prediction Error Across Model Architectures ↓",
         output_path=output_path,
         group_labels=MODEL_SHORT_LABELS,
         metrics=[
@@ -453,7 +453,7 @@ def plot_hardware_portability(
         df, group_col="hardware", group_order=HARDWARE_ORDER,
         group_labels={"A100-80GB": "A100"},
         xlabel_rotation=0,
-        title="Prediction Error Across GPU Types",
+        title="Prediction Error Across GPU Types ↓",
         output_path=output_path,
         aggregate=True,
         metrics=[
@@ -483,7 +483,7 @@ def plot_workload_sensitivity(
 
     fig = _grouped_bar(
         df, group_col="workload", group_order=WORKLOAD_ORDER,
-        title="Prediction Error Across Workload Types",
+        title="Prediction Error Across Workload Types ↓",
         output_path=output_path,
         group_labels=WORKLOAD_DISPLAY_NAMES, aggregate=True,
         metrics=[
@@ -745,7 +745,7 @@ def plot_config_sensitivity_dense(
     short = _short_model_name(model)
     return _plot_config_sensitivity(
         df, model=model,
-        title="Config Sensitivity (Dense)",
+        title="Config Sensitivity (Dense) ↓",
         subtitle=f"{short} — {FIG4_METRIC_LABEL} MAPE",
         output_path=output_path,
     )
@@ -761,7 +761,7 @@ def plot_config_sensitivity_moe(
     short = _short_model_name(model)
     return _plot_config_sensitivity(
         df, model=model,
-        title="Config Sensitivity (MoE)",
+        title="Config Sensitivity (MoE) ↓",
         subtitle=f"{short} — {FIG4_METRIC_LABEL} MAPE",
         output_path=output_path,
     )
