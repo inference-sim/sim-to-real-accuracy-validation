@@ -151,6 +151,32 @@ class TestBlackboxCanRun:
         exp = _make_experiment()
         assert adapter.can_run(exp) is False
 
+    def test_gpu_mismatch_rejects(self, tmp_path):
+        """Coefficients for H100 should not match A100-80GB experiment."""
+        data = {
+            "models": [{
+                "id": "meta-llama/Llama-2-7b-hf",
+                "GPU": "H100",
+                "tensor_parallelism": 1,
+                "alpha_coeffs": [1.0, 2.0, 3.0],
+            }]
+        }
+        defaults_path = os.path.join(str(tmp_path), "defaults.yaml")
+        with open(defaults_path, "w") as fh:
+            yaml.dump(data, fh)
+
+        adapter = BLISBlackboxAdapter("/tmp/blis", defaults_yaml=defaults_path)
+
+        # H100 should match
+        exp_h100 = _make_experiment(model="meta-llama/Llama-2-7b-hf", tp=1)
+        exp_h100.hardware = "H100"
+        assert adapter.can_run(exp_h100) is True
+
+        # A100-80GB should NOT match
+        exp_a100 = _make_experiment(model="meta-llama/Llama-2-7b-hf", tp=1)
+        exp_a100.hardware = "A100-80GB"
+        assert adapter.can_run(exp_a100) is False
+
 
 class TestRooflineCanRun:
     def test_always_true(self):
