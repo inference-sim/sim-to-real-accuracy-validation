@@ -79,6 +79,14 @@ class TestParseArgs:
         assert args.blis_binary == "/bin/blis"
         assert args.adapters == ["vidur", "blis-roofline"]
 
+    def test_no_dp_scaling_default_false(self):
+        args = parse_args([])
+        assert args.no_dp_scaling is False
+
+    def test_no_dp_scaling_flag_present(self):
+        args = parse_args(["--no-dp-scaling"])
+        assert args.no_dp_scaling is True
+
 
 # ---------------------------------------------------------------------------
 # Tests: build_adapter_registry

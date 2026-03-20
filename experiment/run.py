@@ -179,6 +179,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         choices=ALL_ADAPTER_NAMES,
         help="Which adapters to run.",
     )
+    parser.add_argument(
+        "--no-dp-scaling",
+        action="store_true",
+        help="Exclude experiments with data parallelism > 1 (multi-replica).",
+    )
     return parser.parse_args(argv)
 
 
