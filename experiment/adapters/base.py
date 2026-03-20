@@ -56,6 +56,18 @@ class BaseBLISAdapter(SimulatorAdapter):
         self.blis_binary = os.path.abspath(blis_binary)
         self._blis_dir = os.path.dirname(self.blis_binary)
 
+    @staticmethod
+    def _normalize_hardware(hardware: str) -> str:
+        """Normalize manifest hardware names to BLIS-compatible names.
+
+        The manifest uses "A100-80GB" but BLIS expects "A100-80" in its
+        hardware_config.json and defaults.yaml. Other hardware types
+        (H100, L40S) pass through unchanged.
+        """
+        if hardware == "A100-80GB":
+            return "A100-80"
+        return hardware
+
     def _build_common_args(
         self,
         experiment: Experiment,

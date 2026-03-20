@@ -174,6 +174,28 @@ class TestTrainedRooflineCanRun:
 
 
 # ---------------------------------------------------------------------------
+# Tests: hardware normalization
+# ---------------------------------------------------------------------------
+
+
+class TestHardwareNormalization:
+    def test_a100_80gb_normalization(self):
+        """A100-80GB from manifest should normalize to A100-80 for BLIS."""
+        adapter = BLISRooflineAdapter("/tmp/blis")
+        assert adapter._normalize_hardware("A100-80GB") == "A100-80"
+
+    def test_h100_passes_through(self):
+        """H100 should pass through unchanged."""
+        adapter = BLISRooflineAdapter("/tmp/blis")
+        assert adapter._normalize_hardware("H100") == "H100"
+
+    def test_l40s_passes_through(self):
+        """L40S should pass through unchanged."""
+        adapter = BLISRooflineAdapter("/tmp/blis")
+        assert adapter._normalize_hardware("L40S") == "L40S"
+
+
+# ---------------------------------------------------------------------------
 # Tests: CLI argument construction
 # ---------------------------------------------------------------------------
 
