@@ -518,7 +518,7 @@ def plot_aggregate_comparison(
         ax.set_title(metric_label, fontsize=10, fontweight="bold")
 
     fig.suptitle(
-        f"Aggregate Prediction Error Across Common Experiments (n={len(common_exps)}) ↓",
+        f"Aggregate Prediction Error Across Common Experiments (H100, n={len(common_exps)}) ↓",
         fontsize=11, fontweight="bold"
     )
 
