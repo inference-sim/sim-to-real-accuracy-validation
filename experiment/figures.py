@@ -384,10 +384,19 @@ def _grouped_bar(
 
     fig.suptitle(title, fontsize=11, fontweight="bold")
 
-    handles, labels = axes[0].get_legend_handles_labels()
-    if handles:
+    # Collect legend handles/labels from all axes (not just axes[0])
+    # to include simulators that don't have data in the first metric column
+    all_handles, all_labels = [], []
+    for ax in axes:
+        h, l = ax.get_legend_handles_labels()
+        for handle, label in zip(h, l):
+            if label and label not in all_labels:  # Deduplicate by label
+                all_handles.append(handle)
+                all_labels.append(label)
+
+    if all_handles:
         fig.legend(
-            handles, labels, loc="upper center",
+            all_handles, all_labels, loc="upper center",
             bbox_to_anchor=(0.5, -0.01), ncol=n_sims,
             frameon=False, handlelength=1.5, columnspacing=1.0,
         )
