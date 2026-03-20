@@ -317,8 +317,8 @@ class TestRunWithMock:
 
     @patch("experiment.adapters.aiconfigurator_est._run_task")
     @patch("experiment.adapters.aiconfigurator_est._create_task_config")
-    def test_e2e_computation(self, mock_create, mock_run):
-        """E2E = ttft + tpot × output_length."""
+    def test_e2e_not_reported(self, mock_create, mock_run):
+        """E2E is NOT reported (None) since AIConfigurator doesn't natively predict it."""
         mock_create.return_value = MagicMock()
         mock_run.return_value = {"pareto_df": _make_pareto_df(), "pareto_frontier_df": None}
 
@@ -328,11 +328,11 @@ class TestRunWithMock:
 
         # Stage 0: concurrency=9 → snaps to row with concurrency=10
         # ttft = 20.0 + 10*0.5 = 25.0, tpot = 3.0 + 10*0.1 = 4.0
-        # e2e = 25.0 + 4.0 * 247 = 25.0 + 988.0 = 1013.0
+        # E2E is NOT computed (would be ttft + tpot*output_length, but that's misleading)
         s0 = result.stages[0]
         assert abs(s0.ttft.mean - 25.0) < 0.01
         assert abs(s0.itl.mean - 4.0) < 0.01
-        assert abs(s0.e2e.mean - 1013.0) < 0.01
+        assert s0.e2e.mean is None  # E2E not provided
 
     @patch("experiment.adapters.aiconfigurator_est._run_task")
     @patch("experiment.adapters.aiconfigurator_est._create_task_config")
@@ -374,7 +374,10 @@ class TestRunWithMock:
     @patch("experiment.adapters.aiconfigurator_est._run_task")
     @patch("experiment.adapters.aiconfigurator_est._create_task_config")
     def test_summary_is_weighted_average(self, mock_create, mock_run):
-        """Summary E2E mean should be request-weighted average across stages."""
+        """Summary TTFT/ITL means should be request-weighted average across stages.
+
+        E2E is NOT provided (None) since AIConfigurator doesn't predict it.
+        """
         mock_create.return_value = MagicMock()
         mock_run.return_value = {"pareto_df": _make_pareto_df(), "pareto_frontier_df": None}
 
@@ -382,12 +385,14 @@ class TestRunWithMock:
         exp = _make_experiment()
         result = adapter.run(exp)
 
-        # Stage 0 (3000 reqs): concurrency=9 → row 10 → e2e=1013.0
-        # Stage 1 (6000 reqs): concurrency=21 → row 20 → ttft=30, tpot=5.0
-        #   e2e = 30.0 + 5.0 * 247 = 1265.0
-        # Weighted mean = (1013*3000 + 1265*6000) / 9000
-        expected_e2e = (1013.0 * 3000 + 1265.0 * 6000) / 9000
-        assert abs(result.summary.e2e.mean - expected_e2e) < 0.01
+        # Stage 0 (3000 reqs): concurrency=9 → row 10 → ttft=25, itl=4.0
+        # Stage 1 (6000 reqs): concurrency=21 → row 20 → ttft=30, itl=5.0
+        # Weighted mean for TTFT = (25*3000 + 30*6000) / 9000
+        expected_ttft = (25.0 * 3000 + 30.0 * 6000) / 9000
+        assert abs(result.summary.ttft.mean - expected_ttft) < 0.01
+
+        # E2E not provided
+        assert result.summary.e2e.mean is None
 
     @patch("experiment.adapters.aiconfigurator_est._run_task")
     @patch("experiment.adapters.aiconfigurator_est._create_task_config")

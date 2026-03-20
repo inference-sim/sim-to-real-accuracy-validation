@@ -77,11 +77,21 @@ def _make_exp_dir(
     (exp_dir / "profile.yaml").write_text(json.dumps(profile))
 
     # vllm.log
-    vllm_log = (
-        "INFO 2026-02-17 some line\n"
-        f"INFO vllm.v1.core.kv_cache_utils: GPU KV cache size: {vllm_log_tokens:,} tokens\n"
-        "INFO 2026-02-17 another line\n"
-    )
+    # Include CPU offloading config if kv_events will be present
+    if include_kv_events:
+        vllm_log = (
+            "INFO 2026-02-17 some line\n"
+            "INFO vllm.v1.worker.gpu_worker: Available KV cache memory: 12.50 GiB\n"
+            f"INFO vllm.v1.core.kv_cache_utils: GPU KV cache size: {vllm_log_tokens:,} tokens\n"
+            "INFO vllm.v1.worker.gpu_worker: kv_connector_extra_config={'cpu_bytes_to_use': 8589934592.0}\n"
+            "INFO 2026-02-17 another line\n"
+        )
+    else:
+        vllm_log = (
+            "INFO 2026-02-17 some line\n"
+            f"INFO vllm.v1.core.kv_cache_utils: GPU KV cache size: {vllm_log_tokens:,} tokens\n"
+            "INFO 2026-02-17 another line\n"
+        )
     (exp_dir / "vllm.log").write_text(vllm_log)
 
     # kv_events.jsonl
@@ -239,8 +249,10 @@ class TestParseExperiment:
     def test_cpu_kv_blocks_extracted(self, tmp_path):
         exp_path = _make_exp_dir(tmp_path)
         exp = parse_experiment(exp_path)
-        # Synthetic: 5 GPU→CPU, then 2 CPU→GPU → peak = 5, final = 3
-        assert exp.cpu_kv_blocks == 5
+        # Extracts CPU capacity from cpu_bytes_to_use (8 GB = 8589934592 bytes)
+        # With 119,408 tokens GPU and 12.50 GiB available → ~4776 CPU blocks
+        assert exp.cpu_kv_blocks > 4700
+        assert exp.cpu_kv_blocks < 4800
 
     def test_stages_parsed(self, tmp_path):
         exp_path = _make_exp_dir(tmp_path)

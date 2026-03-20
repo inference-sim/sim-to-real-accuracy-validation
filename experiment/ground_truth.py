@@ -209,9 +209,9 @@ def parse_experiment(folder_path: str, manifest_entry: dict | None = None) -> Ex
     summary = _parse_stage_metrics(summary_data, stage_index=-1, stage_cfg=None)
 
     # 6. Extract KV blocks
-    total_kv_blocks = extract_total_kv_blocks(os.path.join(folder_path, "vllm.log"))
-    kv_events_path = os.path.join(folder_path, "kv_events.jsonl")
-    cpu_kv_blocks = extract_cpu_kv_blocks(kv_events_path) if os.path.exists(kv_events_path) else 0
+    vllm_log = os.path.join(folder_path, "vllm.log")
+    total_kv_blocks = extract_total_kv_blocks(vllm_log)
+    cpu_kv_blocks = extract_cpu_kv_blocks(vllm_log)
 
     # 7. Manifest metadata (new fields from experiments.json)
     kwargs = {}

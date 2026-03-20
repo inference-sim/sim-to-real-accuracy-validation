@@ -5,7 +5,7 @@ from dataclasses import dataclass
 
 @dataclass
 class LatencyDistribution:
-    mean: float  # milliseconds
+    mean: float | None = None  # milliseconds; None if simulator doesn't provide this metric
     p90: float | None = None
     p99: float | None = None
 
@@ -39,7 +39,7 @@ class Experiment:
     max_num_batched_tokens: int
     max_num_seqs: int
     total_kv_blocks: int  # GPU blocks: "GPU KV cache size" tokens / 16
-    cpu_kv_blocks: int  # CPU blocks: peak from kv_events.jsonl
+    cpu_kv_blocks: int  # CPU blocks: capacity from cpu_bytes_to_use in vllm.log
     stages: list[StageMetrics]
     summary: StageMetrics
     profile_config: dict  # Raw parsed profile.yaml

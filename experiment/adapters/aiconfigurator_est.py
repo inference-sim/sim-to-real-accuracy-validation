@@ -8,7 +8,10 @@ Since AIConfigurator produces only **mean** latency estimates (one row per
 concurrency level), P90 and P99 are left as ``None`` (the metrics layer
 skips comparisons where the simulator does not provide a value).
 
-E2E latency is derived as ``ttft + tpot × output_length``.
+**E2E latency is NOT reported** (set to ``None``) because AIConfigurator
+does not natively predict E2E — it only provides TTFT and TPOT. Computing
+E2E as ``ttft + tpot × output_length`` would be misleading as it ignores
+queueing, batching, and scheduling overhead.
 """
 
 from __future__ import annotations
@@ -194,14 +197,15 @@ class AIConfiguratorEstimateAdapter(SimulatorAdapter):
 
             ttft_ms = float(row["ttft"])
             tpot_ms = float(row["tpot"])
-            e2e_ms = ttft_ms + tpot_ms * output_length
+            # E2E NOT reported - AIConfigurator doesn't natively predict it
+            # (computing ttft + tpot*output_length is oversimplified)
 
             stages.append(StageMetrics(
                 stage_index=gt_stage.stage_index,
                 rate=gt_stage.rate,
                 duration=gt_stage.duration,
                 num_requests=gt_stage.num_requests,
-                e2e=self._make_latency_dist(e2e_ms),
+                e2e=LatencyDistribution(mean=None),  # Not provided by AIConfigurator
                 ttft=self._make_latency_dist(ttft_ms),
                 itl=self._make_latency_dist(tpot_ms),
                 throughput=ThroughputMetrics(
@@ -230,14 +234,17 @@ class AIConfiguratorEstimateAdapter(SimulatorAdapter):
         Latency metrics use request-weighted averaging (correct for per-request
         quantities).  Throughput metrics use duration-weighted averaging
         (correct for rates — tokens/sec, requests/sec).
+
+        E2E is not provided (None) since AIConfigurator doesn't predict it.
         """
         total_reqs = sum(s.num_requests for s in stages)
         total_duration = sum(s.duration for s in stages)
         if total_reqs == 0:
+            none_dist = LatencyDistribution(mean=None)
             zero = LatencyDistribution(0)
             return StageMetrics(
                 stage_index=-1, rate=0, duration=0, num_requests=0,
-                e2e=zero, ttft=zero, itl=zero,
+                e2e=none_dist, ttft=zero, itl=zero,
                 throughput=ThroughputMetrics(0, 0, 0),
             )
 
@@ -249,7 +256,7 @@ class AIConfiguratorEstimateAdapter(SimulatorAdapter):
                 return 0.0
             return sum(getter(s) * s.duration for s in stages) / total_duration
 
-        e2e_mean = _req_wavg(lambda s: s.e2e.mean)
+        # E2E not provided by AIConfigurator
         ttft_mean = _req_wavg(lambda s: s.ttft.mean)
         itl_mean = _req_wavg(lambda s: s.itl.mean)
 
@@ -258,7 +265,7 @@ class AIConfiguratorEstimateAdapter(SimulatorAdapter):
             rate=0.0,
             duration=0.0,
             num_requests=total_reqs,
-            e2e=LatencyDistribution(e2e_mean),
+            e2e=LatencyDistribution(mean=None),  # Not provided
             ttft=LatencyDistribution(ttft_mean),
             itl=LatencyDistribution(itl_mean),
             throughput=ThroughputMetrics(
