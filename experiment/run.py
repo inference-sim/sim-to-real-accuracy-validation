@@ -67,6 +67,7 @@ def run_pipeline(
     vidur_dir: str,
     output_dir: str,
     adapter_names: list[str] | None = None,
+    no_dp_scaling: bool = False,
 ) -> tuple[list[ErrorRecord], list[RuntimeRecord]]:
     """Core pipeline: discover → run → compute errors → report.
 
@@ -94,6 +95,15 @@ def run_pipeline(
     print(f"Parsed {len(experiments)} experiments successfully")
     if discovered and not experiments:
         logger.warning("All %d experiments failed to parse", len(discovered))
+
+    # Filter by DP if requested
+    if no_dp_scaling:
+        before_count = len(experiments)
+        experiments = [exp for exp in experiments
+                       if exp.dp is None or exp.dp <= 1]
+        filtered_count = before_count - len(experiments)
+        print(f"Filtered to {len(experiments)} single-replica experiments "
+              f"(excluded {filtered_count} with DP > 1)")
 
     # 3. Build adapter registry (only requested adapters)
     adapters = build_adapter_registry(blis_binary, vidur_dir, adapter_names)
@@ -196,6 +206,7 @@ def main(argv: list[str] | None = None) -> None:
         vidur_dir=args.vidur_dir,
         output_dir=args.output_dir,
         adapter_names=args.adapters,
+        no_dp_scaling=args.no_dp_scaling,
     )
 
 
