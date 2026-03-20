@@ -329,6 +329,7 @@ def _grouped_bar(
     bar_width = 0.8 / n_sims
     x = np.arange(n_groups)
     col_maxes = [0.0] * n_cols
+    labeled_sims = set()  # Track which simulators have been labeled
 
     for col_idx, (metric_key, metric_label) in enumerate(metrics):
         ax = axes[col_idx]
@@ -354,7 +355,10 @@ def _grouped_bar(
                 continue
             col_maxes[col_idx] = max(col_maxes[col_idx], max(heights))
 
-            label = SIMULATOR_DISPLAY_NAMES[sim] if col_idx == 0 else ""
+            # Add label only the first time this simulator is plotted
+            label = SIMULATOR_DISPLAY_NAMES[sim] if sim not in labeled_sims else ""
+            if sim not in labeled_sims:
+                labeled_sims.add(sim)
             ax.bar(
                 positions, heights, bar_width,
                 color=COLOR_PALETTE[sim],
