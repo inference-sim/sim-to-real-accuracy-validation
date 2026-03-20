@@ -8,8 +8,12 @@ Usage::
 from __future__ import annotations
 
 import argparse
+import logging
 import time
-import traceback
+
+import yaml
+
+logger = logging.getLogger(__name__)
 
 from experiment.adapters.aiconfigurator_est import AIConfiguratorEstimateAdapter
 from experiment.adapters.base import SimulatorAdapter
@@ -72,23 +76,24 @@ def run_pipeline(
         adapter_names = ALL_ADAPTER_NAMES
 
     # 1. Discover experiments
-    experiment_dirs = discover_experiments(data_dir)
-    if not experiment_dirs:
+    discovered = discover_experiments(data_dir)
+    if not discovered:
         print(f"No experiments found in {data_dir}")
         return [], []
 
-    print(f"Found {len(experiment_dirs)} experiments")
+    print(f"Found {len(discovered)} experiments")
 
     # 2. Parse experiments
     experiments = []
-    for d in experiment_dirs:
+    for manifest_entry, dir_path in discovered:
         try:
-            experiments.append(parse_experiment(d))
-        except Exception:
-            print(f"  SKIP (parse error): {d}")
-            traceback.print_exc()
+            experiments.append(parse_experiment(dir_path, manifest_entry=manifest_entry))
+        except (OSError, KeyError, ValueError, yaml.YAMLError) as exc:
+            logger.error("SKIP (parse error): %s — %s", dir_path, exc)
 
     print(f"Parsed {len(experiments)} experiments successfully")
+    if discovered and not experiments:
+        logger.warning("All %d experiments failed to parse", len(discovered))
 
     # 3. Build adapter registry (only requested adapters)
     adapters = build_adapter_registry(blis_binary, vidur_dir, adapter_names)
@@ -96,9 +101,12 @@ def run_pipeline(
     # 4. Run all (experiment, adapter) pairs
     all_records: list[ErrorRecord] = []
     runtime_records: list[RuntimeRecord] = []
+    fail_count = 0
+    skip_count = 0
     for exp in experiments:
         for adapter_name, adapter in adapters.items():
             if not adapter.can_run(exp):
+                skip_count += 1
                 continue
             try:
                 t0 = time.perf_counter()
@@ -113,11 +121,26 @@ def run_pipeline(
                     model=exp.model,
                     workload=exp.workload,
                     wall_clock_seconds=elapsed,
+                    exp_id=exp.exp_id,
+                    hardware=exp.hardware,
+                    dp=exp.dp,
+                    cpu_offload=exp.cpu_offload,
+                    gpu_mem_util=exp.gpu_mem_util,
+                    precision=exp.precision,
+                    tp=exp.tp,
+                    max_num_batched_tokens=exp.max_num_batched_tokens,
                 ))
                 print(f"  OK: {adapter_name} × {exp.model} ({exp.workload}) [{elapsed:.2f}s]")
-            except Exception:
-                print(f"  FAIL: {adapter_name} × {exp.model} ({exp.workload})")
-                traceback.print_exc()
+            except Exception as exc:
+                fail_count += 1
+                logger.error(
+                    "FAIL: %s × %s (%s): %s", adapter_name, exp.model, exp.workload, exc,
+                )
+
+    if skip_count:
+        logger.info("Skipped %d (experiment, adapter) pairs via can_run()", skip_count)
+    if fail_count:
+        logger.warning("%d adapter runs failed", fail_count)
 
     # 5. Generate report
     generate_report(all_records, output_dir, runtime_records=runtime_records)
@@ -161,6 +184,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 def main(argv: list[str] | None = None) -> None:
     args = parse_args(argv)
+
     run_pipeline(
         data_dir=args.data_dir,
         blis_binary=args.blis_binary,

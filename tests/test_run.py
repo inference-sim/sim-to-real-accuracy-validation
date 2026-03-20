@@ -21,6 +21,12 @@ from experiment.run import (
 )
 
 
+_MANIFEST_STUB = {
+    "id": 1, "hw": "H100", "dp": None, "cpu_offload": False,
+    "gpu_mem": 0.9, "precision": "FP16", "safe": "safe",
+    "workload": "codegen", "model": "m", "mbt": 2048, "done": True, "notes": "",
+}
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -117,8 +123,8 @@ class TestRunPipeline:
         self, mock_registry, mock_discover, mock_parse, mock_report
     ):
         exp = _make_experiment()
-        mock_discover.return_value = ["/tmp/exp"]
-        mock_parse.return_value = exp
+        mock_discover.return_value = [(_MANIFEST_STUB, "/tmp/exp")]
+        mock_parse.side_effect = lambda path, manifest_entry=None: exp
 
         # Create a mock adapter that can_run and returns a result
         mock_adapter = MagicMock()
@@ -156,8 +162,8 @@ class TestRunPipeline:
         self, mock_registry, mock_discover, mock_parse, mock_report
     ):
         exp = _make_experiment()
-        mock_discover.return_value = ["/tmp/exp"]
-        mock_parse.return_value = exp
+        mock_discover.return_value = [(_MANIFEST_STUB, "/tmp/exp")]
+        mock_parse.side_effect = lambda path, manifest_entry=None: exp
 
         mock_adapter = MagicMock()
         mock_adapter.name = "mock-sim"
@@ -185,8 +191,8 @@ class TestRunPipeline:
         self, mock_registry, mock_discover, mock_parse, mock_report
     ):
         exp = _make_experiment()
-        mock_discover.return_value = ["/tmp/exp"]
-        mock_parse.return_value = exp
+        mock_discover.return_value = [(_MANIFEST_STUB, "/tmp/exp")]
+        mock_parse.side_effect = lambda path, manifest_entry=None: exp
 
         mock_adapter = MagicMock()
         mock_adapter.name = "failing-sim"
@@ -207,6 +213,78 @@ class TestRunPipeline:
         assert len(error_records) == 0
         assert len(runtime_records) == 0
         mock_report.assert_called_once()
+
+    @patch("experiment.run.generate_report")
+    @patch("experiment.run.parse_experiment")
+    @patch("experiment.run.discover_experiments")
+    def test_passes_manifest_entry_to_parse(
+        self, mock_discover, mock_parse, mock_report
+    ):
+        """Pipeline should pass manifest_entry to parse_experiment."""
+        calls = []
+
+        def mock_parse_fn(folder_path, manifest_entry=None):
+            calls.append({"path": folder_path, "manifest_entry": manifest_entry})
+            return _make_experiment(folder=folder_path)
+
+        mock_discover.return_value = [(_MANIFEST_STUB, "/tmp/exp")]
+        mock_parse.side_effect = mock_parse_fn
+
+        run_pipeline(
+            data_dir="/data",
+            blis_binary="/bin/blis",
+            vidur_dir="/opt/vidur",
+            output_dir="/out",
+            adapter_names=[],
+        )
+
+        assert len(calls) == 1
+        assert calls[0]["path"] == "/tmp/exp"
+        assert calls[0]["manifest_entry"]["id"] == 1
+
+    @patch("experiment.run.generate_report")
+    @patch("experiment.run.parse_experiment")
+    @patch("experiment.run.discover_experiments")
+    @patch("experiment.run.build_adapter_registry")
+    def test_runtime_records_include_metadata(
+        self, mock_registry, mock_discover, mock_parse, mock_report
+    ):
+        """RuntimeRecord should carry experiment metadata fields."""
+        exp = _make_experiment()
+        exp.exp_id = 42
+        exp.hardware = "A100-80GB"
+        exp.dp = 2
+        exp.cpu_offload = True
+        exp.gpu_mem_util = 0.85
+        exp.precision = "FP8"
+
+        manifest = {**_MANIFEST_STUB, "id": 42, "hw": "A100-80GB", "dp": 2}
+        mock_discover.return_value = [(manifest, "/tmp/exp")]
+        mock_parse.side_effect = lambda path, manifest_entry=None: exp
+
+        mock_adapter = MagicMock()
+        mock_adapter.name = "mock-sim"
+        mock_adapter.can_run.return_value = True
+        mock_adapter.run.return_value = SimulatorResult(
+            adapter_name="mock-sim", experiment_folder="/tmp/exp",
+            stages=[_make_stage(0)], summary=_make_stage(-1),
+        )
+        mock_registry.return_value = {"mock-sim": mock_adapter}
+
+        _, runtime_records = run_pipeline(
+            data_dir="/data", blis_binary="/bin/blis",
+            vidur_dir="/opt/vidur", output_dir="/out",
+            adapter_names=["mock-sim"],
+        )
+
+        assert len(runtime_records) == 1
+        rr = runtime_records[0]
+        assert rr.exp_id == 42
+        assert rr.hardware == "A100-80GB"
+        assert rr.dp == 2
+        assert rr.cpu_offload is True
+        assert rr.gpu_mem_util == 0.85
+        assert rr.precision == "FP8"
 
     @patch("experiment.run.generate_report")
     @patch("experiment.run.discover_experiments")

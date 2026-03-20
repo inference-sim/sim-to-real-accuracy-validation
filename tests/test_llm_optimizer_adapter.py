@@ -26,6 +26,8 @@ def _make_experiment(
     stages=None,
     summary=None,
     profile_config=None,
+    hardware="H100",
+    precision="FP16",
 ) -> Experiment:
     """Build a minimal Experiment for testing."""
     zero_lat = LatencyDistribution(mean=0.0, p90=0.0, p99=0.0)
@@ -84,6 +86,8 @@ def _make_experiment(
         stages=stages,
         summary=summary,
         profile_config=profile_config,
+        hardware=hardware,
+        precision=precision,
     )
 
 
@@ -140,6 +144,29 @@ class TestLLMOptimizerCanRun:
             "load": {"stages": [{"duration": 600, "rate": 5}]},
         })
         assert adapter.can_run(exp) is False
+
+    def test_can_run_rejects_l40s(self):
+        exp = _make_experiment()
+        exp.hardware = "L40S"
+        assert LLMOptimizerEstimateAdapter().can_run(exp) is False
+
+    def test_can_run_rejects_a100_fp8(self):
+        exp = _make_experiment()
+        exp.hardware = "A100-80GB"
+        exp.precision = "FP8"
+        assert LLMOptimizerEstimateAdapter().can_run(exp) is False
+
+    def test_can_run_accepts_a100_fp16(self):
+        exp = _make_experiment()
+        exp.hardware = "A100-80GB"
+        exp.precision = "FP16"
+        assert LLMOptimizerEstimateAdapter().can_run(exp) is True
+
+    def test_can_run_accepts_h100_fp8(self):
+        exp = _make_experiment()
+        exp.hardware = "H100"
+        exp.precision = "FP8"
+        assert LLMOptimizerEstimateAdapter().can_run(exp) is True
 
 
 class TestConcurrencyDerivation:
@@ -338,3 +365,51 @@ class TestRunWithMock:
         adapter.run(exp)
 
         mock_get_cfg.assert_called_once_with("meta-llama/Llama-2-7b-hf")
+
+    @patch("experiment.adapters.llm_optimizer_est.estimate_llm_performance")
+    @patch("experiment.adapters.llm_optimizer_est.get_model_config_from_hf")
+    def test_run_passes_experiment_precision(self, mock_get_cfg, mock_estimate):
+        """Precision should come from experiment, not model_config.inferred_precision."""
+        mock_get_cfg.return_value = MagicMock()
+        mock_estimate.return_value = _FakePerformanceResult(
+            ttft_ms=25.0, itl_ms=3.5, e2e_latency_s=1.8,
+            output_throughput_tps=980.0, input_throughput_tps=2900.0,
+            requests_per_sec=5.2, concurrency=9,
+        )
+        adapter = LLMOptimizerEstimateAdapter()
+        exp = _make_experiment()
+        exp.precision = "FP8"
+        adapter.run(exp)
+        _, kwargs = mock_estimate.call_args
+        assert kwargs["precision"] == "fp8"
+
+    def test_run_rejects_unsupported_hardware(self):
+        """run() should raise ValueError for unsupported hardware."""
+        adapter = LLMOptimizerEstimateAdapter()
+        exp = _make_experiment(hardware="L40S")
+        with pytest.raises(ValueError, match="Unsupported hardware"):
+            adapter.run(exp)
+
+    def test_run_rejects_a100_fp8(self):
+        """run() should raise ValueError for A100+FP8 (no FP8 TFLOPS)."""
+        adapter = LLMOptimizerEstimateAdapter()
+        exp = _make_experiment(hardware="A100-80GB", precision="FP8")
+        with pytest.raises(ValueError, match="Unsupported precision"):
+            adapter.run(exp)
+
+    @patch("experiment.adapters.llm_optimizer_est.estimate_llm_performance")
+    @patch("experiment.adapters.llm_optimizer_est.get_model_config_from_hf")
+    def test_run_uses_hardware_gpu_name(self, mock_get_cfg, mock_estimate):
+        """gpu_name should come from experiment hardware, not hardcoded H100."""
+        mock_get_cfg.return_value = MagicMock()
+        mock_estimate.return_value = _FakePerformanceResult(
+            ttft_ms=25.0, itl_ms=3.5, e2e_latency_s=1.8,
+            output_throughput_tps=980.0, input_throughput_tps=2900.0,
+            requests_per_sec=5.2, concurrency=9,
+        )
+        adapter = LLMOptimizerEstimateAdapter()
+        exp = _make_experiment()
+        exp.hardware = "A100-80GB"
+        adapter.run(exp)
+        _, kwargs = mock_estimate.call_args
+        assert kwargs["gpu_name"] == "A100"

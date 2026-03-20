@@ -30,10 +30,18 @@ _MODEL_MAP: dict[str, str] = {
     "meta-llama/Llama-2-70b-hf": "LLAMA2_70B",
 }
 
+# ---------------------------------------------------------------------------
+# Hardware mapping: experiment hardware tag → AIConfigurator system name
+# Only H100 has vLLM perf data in AIConfigurator; A100/L40S excluded via can_run.
+# ---------------------------------------------------------------------------
+_HW_TO_AICONFIG: dict[str, str] = {"H100": "h100_sxm"}
+
 # MoE models that cannot use the vllm backend in AIConfigurator.
 _MOE_MODELS: frozenset[str] = frozenset({
     "mistralai/Mixtral-8x7B-v0.1",
     "mistralai/Mixtral-8x22B-v0.1",
+    "mistralai/Mixtral-8x22B-Instruct-v0.1",
+    "RedHatAI/Llama-4-Scout-17B-16E-Instruct-FP8-dynamic",
 })
 
 
@@ -65,7 +73,11 @@ class AIConfiguratorEstimateAdapter(SimulatorAdapter):
     # ------------------------------------------------------------------
 
     def can_run(self, experiment: Experiment) -> bool:
-        """True when profile config uses ``shared_prefix`` and model is not MoE."""
+        """True when hardware is supported, precision is FP16/FP8, model is not MoE, and profile uses shared_prefix."""
+        if experiment.hardware not in _HW_TO_AICONFIG:
+            return False
+        if experiment.precision not in ("FP16", "FP8"):
+            return False
         if experiment.model in _MOE_MODELS:
             return False
         try:
@@ -122,20 +134,39 @@ class AIConfiguratorEstimateAdapter(SimulatorAdapter):
     # ------------------------------------------------------------------
 
     def run(self, experiment: Experiment) -> SimulatorResult:
+        if experiment.hardware not in _HW_TO_AICONFIG:
+            raise ValueError(
+                f"Unsupported hardware '{experiment.hardware}' for {self.name} "
+                f"(supported: {sorted(_HW_TO_AICONFIG)})"
+            )
         model_name = self._resolve_model_name(experiment.model)
         input_length, output_length = self._extract_lengths(experiment)
 
         # Run AIConfigurator once — it sweeps all concurrency levels.
+        system_name = _HW_TO_AICONFIG[experiment.hardware]
+        # FP16: explicit float16 profile; FP8: empty list lets AIConfigurator
+        # use its native FP8 path.
+        if experiment.precision == "FP16":
+            profiles = ["float16_default"]
+        elif experiment.precision == "FP8":
+            profiles = []
+        else:
+            raise ValueError(
+                f"Unsupported precision '{experiment.precision}' for {self.name} "
+                f"(supported: FP16, FP8)"
+            )
+
         task_config = _create_task_config(
             serving_mode="agg",
             model_name=model_name,
-            system_name="h100_sxm",
+            system_name=system_name,
             backend_name="vllm",
             total_gpus=experiment.tp,
             isl=input_length,
             osl=output_length,
             ttft=5000.0,
             tpot=200.0,
+            profiles=profiles,
         )
         result = _run_task(task_config)
         if result is None:

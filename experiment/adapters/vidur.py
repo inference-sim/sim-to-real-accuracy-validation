@@ -19,12 +19,19 @@ from experiment.data_model import (
     StageMetrics,
     ThroughputMetrics,
 )
+from experiment.ground_truth import resolve_perf_dir
 from experiment.vidur_trace_converter import convert_to_vidur_trace
 
 _SUPPORTED_MODELS = {
     "meta-llama/Llama-2-7b-hf",
     "meta-llama/Llama-2-70b-hf",
     "codellama/CodeLlama-34b-Instruct-hf",
+}
+
+_HW_TO_VIDUR: dict[str, str] = {"H100": "h100", "A100-80GB": "a100"}
+_HW_TO_VIDUR_NETWORK: dict[str, str] = {
+    "H100": "h100_pairwise_nvlink",
+    "A100-80GB": "a100_pairwise_nvlink",
 }
 
 # Vidur CSV columns (all times in seconds).
@@ -49,14 +56,25 @@ class VidurAdapter(SimulatorAdapter):
         return "vidur"
 
     def can_run(self, experiment: Experiment) -> bool:
-        return experiment.model in _SUPPORTED_MODELS
+        return (experiment.model in _SUPPORTED_MODELS
+                and experiment.hardware in _HW_TO_VIDUR
+                and experiment.precision != "FP8")
 
     def run(self, experiment: Experiment) -> SimulatorResult:
+        if experiment.hardware not in _HW_TO_VIDUR:
+            raise ValueError(
+                f"Unsupported hardware '{experiment.hardware}' for {self.name} "
+                f"(supported: {sorted(_HW_TO_VIDUR)})"
+            )
+        if experiment.precision == "FP8":
+            raise ValueError(
+                f"Unsupported precision '{experiment.precision}' for {self.name} "
+                f"(Vidur has no FP8 device profiles)"
+            )
         with tempfile.TemporaryDirectory() as tmpdir:
             # 1. Convert trace
-            per_req_path = os.path.join(
-                experiment.folder, "inference-perf-data", "per_request_lifecycle_metrics.json"
-            )
+            perf_dir = resolve_perf_dir(experiment.folder)
+            per_req_path = os.path.join(perf_dir, "per_request_lifecycle_metrics.json")
             trace_csv = os.path.join(tmpdir, "trace.csv")
             convert_to_vidur_trace(per_req_path, trace_csv)
 
@@ -84,13 +102,13 @@ class VidurAdapter(SimulatorAdapter):
         trace_csv: str,
         output_dir: str,
     ) -> list[str]:
-        return [
+        args = [
             sys.executable, "-m", "vidur.main",
             "--replica_config_model_name", experiment.model,
-            "--replica_config_device", "h100",
+            "--replica_config_device", _HW_TO_VIDUR[experiment.hardware],
+            "--replica_config_network_device", _HW_TO_VIDUR_NETWORK[experiment.hardware],
             "--replica_config_tensor_parallel_size", str(experiment.tp),
             "--replica_config_num_pipeline_stages", "1",
-            "--cluster_config_num_replicas", "1",
             "--replica_scheduler_config_type", "vllm",
             "--vllm_scheduler_config_batch_size_cap", str(experiment.max_num_seqs),
             "--vllm_scheduler_config_max_tokens_in_batch", str(experiment.max_num_batched_tokens),
@@ -98,6 +116,11 @@ class VidurAdapter(SimulatorAdapter):
             "--trace_request_generator_config_trace_file", trace_csv,
             "--metrics_config_output_dir", output_dir,
         ]
+        num_replicas = str(int(experiment.dp)) if experiment.dp and experiment.dp > 1 else "1"
+        args += ["--cluster_config_num_replicas", num_replicas]
+        if experiment.dp and experiment.dp > 1:
+            args += ["--global_scheduler_config_type", "round_robin"]
+        return args
 
     @staticmethod
     def _find_request_metrics_csv(output_dir: str) -> str:

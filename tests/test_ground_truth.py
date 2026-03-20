@@ -8,7 +8,14 @@ import pytest
 import yaml
 
 from experiment.data_model import Experiment, LatencyDistribution, StageMetrics, ThroughputMetrics
-from experiment.ground_truth import discover_experiments, parse_experiment
+from experiment.ground_truth import (
+    _discover_experiments_legacy,
+    discover_experiments,
+    load_manifest,
+    parse_experiment,
+    resolve_experiment_dir,
+    resolve_perf_dir,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -27,6 +34,8 @@ def _make_exp_dir(
     num_stages=2,
     vllm_log_tokens=119408,
     kv_events_lines=None,
+    perf_subdir="inference-perf-data",
+    include_kv_events=True,
 ):
     """Create a synthetic experiment directory that mirrors the real structure."""
     exp_dir = tmp_path / folder_name
@@ -76,15 +85,16 @@ def _make_exp_dir(
     (exp_dir / "vllm.log").write_text(vllm_log)
 
     # kv_events.jsonl
-    if kv_events_lines is None:
-        kv_events_lines = [
-            json.dumps([0.1, [["TransferCompleted", 1, "r1", "GPU", "CPU", 5, True, 0]], {}, {}]),
-            json.dumps([0.2, [["TransferCompleted", 2, "r1", "CPU", "GPU", 2, True, 1]], {}, {}]),
-        ]
-    (exp_dir / "kv_events.jsonl").write_text("\n".join(kv_events_lines) + "\n")
+    if include_kv_events:
+        if kv_events_lines is None:
+            kv_events_lines = [
+                json.dumps([0.1, [["TransferCompleted", 1, "r1", "GPU", "CPU", 5, True, 0]], {}, {}]),
+                json.dumps([0.2, [["TransferCompleted", 2, "r1", "CPU", "GPU", 2, True, 1]], {}, {}]),
+            ]
+        (exp_dir / "kv_events.jsonl").write_text("\n".join(kv_events_lines) + "\n")
 
-    # inference-perf-data/
-    perf_dir = exp_dir / "inference-perf-data"
+    # perf results subdirectory
+    perf_dir = exp_dir / perf_subdir
     perf_dir.mkdir()
 
     # Stage lifecycle metrics
@@ -168,13 +178,15 @@ def _make_stage_metrics(count, rate, duration, e2e_mean, ttft_mean, itl_mean, is
 # ---------------------------------------------------------------------------
 
 class TestDiscoverExperiments:
+    """Tests for the legacy regex-based discovery (now _discover_experiments_legacy)."""
+
     def test_discovers_matching_dirs(self, tmp_path):
         (tmp_path / "20260217-155451-llama-2-7b-tp1-codegen").mkdir()
         (tmp_path / "20260218-120914-mixtral-8x7b-v0-1-tp2-codegen").mkdir()
         (tmp_path / "SCHEMA.md").write_text("schema docs")
         (tmp_path / "random_file.txt").write_text("noise")
 
-        result = discover_experiments(str(tmp_path))
+        result = _discover_experiments_legacy(str(tmp_path))
 
         assert len(result) == 2
         assert all(os.path.isabs(p) for p in result)
@@ -184,12 +196,12 @@ class TestDiscoverExperiments:
 
     def test_returns_empty_for_no_matches(self, tmp_path):
         (tmp_path / "SCHEMA.md").write_text("schema docs")
-        result = discover_experiments(str(tmp_path))
+        result = _discover_experiments_legacy(str(tmp_path))
         assert result == []
 
     def test_excludes_non_directory(self, tmp_path):
         (tmp_path / "20260217-155451-llama-2-7b-tp1-codegen").write_text("file, not dir")
-        result = discover_experiments(str(tmp_path))
+        result = _discover_experiments_legacy(str(tmp_path))
         assert result == []
 
 
@@ -296,3 +308,213 @@ class TestParseExperiment:
 
         assert "load" in exp.profile_config
         assert exp.profile_config["load"]["stages"][0]["rate"] == 5
+
+
+# ---------------------------------------------------------------------------
+# Tests: parsing fixes (auto-detect results dir, optional kv_events, manifest)
+# ---------------------------------------------------------------------------
+
+class TestParseExperimentFixes:
+    """Tests for parsing fixes: auto-detect results dir, optional kv_events, manifest metadata."""
+
+    def test_auto_detects_results_subfolder(self, tmp_path):
+        """Numbered experiments use results/ not inference-perf-data/."""
+        exp_dir = _make_exp_dir(tmp_path, folder_name="13-qwen3-14b-tp1-general",
+                                perf_subdir="results")
+        exp = parse_experiment(exp_dir)
+        assert exp.model == "meta-llama/Llama-2-7b-hf"
+
+    def test_falls_back_to_inference_perf_data(self, tmp_path):
+        """Legacy experiments still use inference-perf-data/."""
+        exp_dir = _make_exp_dir(tmp_path)
+        exp = parse_experiment(exp_dir)
+        assert exp.model == "meta-llama/Llama-2-7b-hf"
+
+    def test_missing_kv_events_gives_zero_cpu_blocks(self, tmp_path):
+        """When kv_events.jsonl is absent, cpu_kv_blocks should be 0."""
+        exp_dir = _make_exp_dir(tmp_path, folder_name="13-qwen3-14b-tp1-general",
+                                perf_subdir="results", include_kv_events=False)
+        exp = parse_experiment(exp_dir)
+        assert exp.cpu_kv_blocks == 0
+
+    def test_manifest_metadata_populates_fields(self, tmp_path):
+        """When manifest_entry is provided, new fields are populated."""
+        exp_dir = _make_exp_dir(tmp_path, folder_name="13-qwen3-14b-tp1-general",
+                                perf_subdir="results")
+        manifest_entry = {
+            "id": 13, "model": "Qwen3-14B", "precision": "FP16", "hw": "H100",
+            "workload": "general", "mbt": 2048, "cpu_offload": False,
+            "gpu_mem": 0.9, "tp": 1, "dp": None, "safe": "safe", "done": True, "notes": "",
+        }
+        exp = parse_experiment(exp_dir, manifest_entry=manifest_entry)
+        assert exp.exp_id == 13
+        assert exp.hardware == "H100"
+        assert exp.workload == "general"
+        assert exp.dp is None
+        assert exp.precision == "FP16"
+        assert exp.safe == "safe"
+
+    def test_workload_from_manifest_not_foldername(self, tmp_path):
+        """Workload must come from manifest to avoid suffix corruption."""
+        exp_dir = _make_exp_dir(tmp_path, folder_name="9-mixtral-8x7b-tp2-general-1",
+                                perf_subdir="results")
+        manifest_entry = {
+            "id": 9, "model": "Mixtral-8x7B", "precision": "FP16", "hw": "H100",
+            "workload": "general", "mbt": 2048, "cpu_offload": True,
+            "gpu_mem": 0.9, "tp": 2, "dp": 1, "safe": "safe", "done": True, "notes": "",
+        }
+        exp = parse_experiment(exp_dir, manifest_entry=manifest_entry)
+        assert exp.workload == "general"  # NOT "general-1"
+
+
+# ---------------------------------------------------------------------------
+# Tests: manifest-driven discover_experiments
+# ---------------------------------------------------------------------------
+
+class TestManifestDiscovery:
+    """Tests for the new manifest-driven discover_experiments."""
+
+    def test_discovers_safe_experiments(self, tmp_path):
+        """Only safe experiments with directories should be returned."""
+        manifest = [
+            {"id": 13, "model": "Qwen3-14B", "precision": "FP16", "hw": "H100",
+             "workload": "general", "mbt": 2048, "cpu_offload": False,
+             "gpu_mem": 0.9, "tp": 1, "dp": None, "safe": "safe", "done": True, "notes": ""},
+            {"id": 1, "model": "Codellama-34b", "precision": "FP16", "hw": "H100",
+             "workload": "general", "mbt": 2048, "cpu_offload": True,
+             "gpu_mem": 0.9, "tp": 2, "dp": None, "safe": "unsafe", "done": True, "notes": ""},
+        ]
+        (tmp_path / "experiments.json").write_text(json.dumps(manifest))
+        (tmp_path / "13-qwen3-14b-tp1-general").mkdir()
+        (tmp_path / "1-codellama-34b-tp2-general").mkdir()
+
+        result = discover_experiments(str(tmp_path))
+        assert len(result) == 1
+        entry, path = result[0]
+        assert entry["id"] == 13
+        assert "13-qwen3-14b" in path
+
+    def test_discovers_all_when_safe_only_false(self, tmp_path):
+        """safe_only=False returns all experiments with directories."""
+        manifest = [
+            {"id": 1, "safe": "unsafe", "done": True, "model": "m", "precision": "FP16",
+             "hw": "H100", "workload": "general", "mbt": 2048, "cpu_offload": False,
+             "gpu_mem": 0.9, "tp": 1, "dp": None, "notes": ""},
+            {"id": 2, "safe": "safe", "done": True, "model": "m", "precision": "FP16",
+             "hw": "H100", "workload": "codegen", "mbt": 2048, "cpu_offload": False,
+             "gpu_mem": 0.9, "tp": 1, "dp": None, "notes": ""},
+        ]
+        (tmp_path / "experiments.json").write_text(json.dumps(manifest))
+        (tmp_path / "1-model-tp1-general").mkdir()
+        (tmp_path / "2-model-tp1-codegen").mkdir()
+
+        result = discover_experiments(str(tmp_path), safe_only=False)
+        assert len(result) == 2
+
+    def test_skips_missing_directories(self, tmp_path):
+        """Experiments without directories are skipped with warning."""
+        manifest = [
+            {"id": 47, "safe": "safe", "done": False, "model": "m", "precision": "FP16",
+             "hw": "H100", "workload": "general", "mbt": 2048, "cpu_offload": False,
+             "gpu_mem": 0.9, "tp": 1, "dp": None, "notes": ""},
+        ]
+        (tmp_path / "experiments.json").write_text(json.dumps(manifest))
+        # No directory for id=47
+
+        result = discover_experiments(str(tmp_path))
+        assert len(result) == 0
+
+    def test_sorted_by_id(self, tmp_path):
+        """Results are sorted by experiment id."""
+        manifest = [
+            {"id": 20, "safe": "safe", "done": True, "model": "m", "precision": "FP16",
+             "hw": "H100", "workload": "a", "mbt": 2048, "cpu_offload": False,
+             "gpu_mem": 0.9, "tp": 1, "dp": None, "notes": ""},
+            {"id": 3, "safe": "safe", "done": True, "model": "m", "precision": "FP16",
+             "hw": "H100", "workload": "b", "mbt": 2048, "cpu_offload": False,
+             "gpu_mem": 0.9, "tp": 1, "dp": None, "notes": ""},
+        ]
+        (tmp_path / "experiments.json").write_text(json.dumps(manifest))
+        (tmp_path / "20-model-tp1-a").mkdir()
+        (tmp_path / "3-model-tp1-b").mkdir()
+
+        result = discover_experiments(str(tmp_path))
+        assert result[0][0]["id"] == 3
+        assert result[1][0]["id"] == 20
+
+
+# ---------------------------------------------------------------------------
+# Tests: load_manifest error handling
+# ---------------------------------------------------------------------------
+
+class TestLoadManifest:
+    def test_missing_file_raises_file_not_found(self, tmp_path):
+        with pytest.raises(FileNotFoundError, match="Manifest not found"):
+            load_manifest(str(tmp_path))
+
+    def test_malformed_json_raises_value_error(self, tmp_path):
+        (tmp_path / "experiments.json").write_text("{bad json")
+        with pytest.raises(ValueError, match="Malformed JSON"):
+            load_manifest(str(tmp_path))
+
+    def test_valid_manifest(self, tmp_path):
+        (tmp_path / "experiments.json").write_text('[{"id": 1}]')
+        result = load_manifest(str(tmp_path))
+        assert len(result) == 1
+        assert result[0]["id"] == 1
+
+
+# ---------------------------------------------------------------------------
+# Tests: resolve_experiment_dir
+# ---------------------------------------------------------------------------
+
+class TestResolveExperimentDir:
+    def test_finds_matching_dir(self, tmp_path):
+        (tmp_path / "13-qwen3-14b-tp1-general").mkdir()
+        result = resolve_experiment_dir(str(tmp_path), 13)
+        assert result is not None
+        assert "13-qwen3-14b" in result
+
+    def test_returns_none_for_no_match(self, tmp_path):
+        (tmp_path / "other-dir").mkdir()
+        result = resolve_experiment_dir(str(tmp_path), 99)
+        assert result is None
+
+    def test_warns_on_duplicate_dirs(self, tmp_path, caplog):
+        (tmp_path / "5-model-a-tp1-general").mkdir()
+        (tmp_path / "5-model-b-tp2-codegen").mkdir()
+        import logging
+        with caplog.at_level(logging.WARNING):
+            result = resolve_experiment_dir(str(tmp_path), 5)
+        assert result is not None
+        assert "Multiple directories" in caplog.text
+
+
+# ---------------------------------------------------------------------------
+# Tests: resolve_perf_dir
+# ---------------------------------------------------------------------------
+
+class TestResolvePerfDir:
+    def test_prefers_results_subdir(self, tmp_path):
+        (tmp_path / "results").mkdir()
+        (tmp_path / "inference-perf-data").mkdir()
+        assert resolve_perf_dir(str(tmp_path)).endswith("results")
+
+    def test_falls_back_to_inference_perf_data(self, tmp_path):
+        (tmp_path / "inference-perf-data").mkdir()
+        assert resolve_perf_dir(str(tmp_path)).endswith("inference-perf-data")
+
+
+# ---------------------------------------------------------------------------
+# Tests: manifest key validation in parse_experiment
+# ---------------------------------------------------------------------------
+
+class TestManifestKeyValidation:
+    def test_missing_manifest_key_raises_key_error(self, tmp_path):
+        exp_dir = _make_exp_dir(tmp_path, folder_name="1-model-tp1-general",
+                                perf_subdir="results")
+        incomplete_manifest = {"id": 1, "hw": "H100"}  # missing many keys
+        with pytest.raises(KeyError, match="missing keys"):
+            parse_experiment(exp_dir, manifest_entry=incomplete_manifest)
+
+

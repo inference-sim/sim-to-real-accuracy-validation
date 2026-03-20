@@ -149,6 +149,8 @@ class TestSaveCsv:
             "simulator", "experiment_folder", "model", "workload",
             "stage_index", "metric_name", "predicted", "actual",
             "mape", "mpe", "absolute_error",
+            "exp_id", "hardware", "dp", "cpu_offload", "gpu_mem_util", "precision",
+            "tp", "max_num_batched_tokens",
         }
         assert set(row.keys()) == expected_cols
 
@@ -270,8 +272,69 @@ class TestSaveRuntimeCsv:
         with open(path) as fh:
             reader = csv.DictReader(fh)
             row = next(reader)
-        expected_cols = {"simulator", "experiment_folder", "model", "workload", "wall_clock_seconds"}
+        expected_cols = {
+            "simulator", "experiment_folder", "model", "workload", "wall_clock_seconds",
+            "exp_id", "hardware", "dp", "cpu_offload", "gpu_mem_util", "precision",
+            "tp", "max_num_batched_tokens",
+        }
         assert set(row.keys()) == expected_cols
+
+
+class TestCsvMetadataColumns:
+    """Verify that new metadata columns appear in CSV output with correct values."""
+
+    def test_error_csv_includes_metadata(self, tmp_path):
+        record = ErrorRecord(
+            simulator="sim-a", experiment_folder="/tmp/exp",
+            model="llama-7b", workload="codegen", stage_index=0,
+            metric_name="e2e_mean", predicted=110.0, actual=100.0,
+            mape=10.0, mpe=10.0, absolute_error=10.0,
+            exp_id=42, hardware="A100-80GB", dp=2,
+            cpu_offload=True, gpu_mem_util=0.85, precision="FP8",
+        )
+        path = str(tmp_path / "out.csv")
+        save_csv([record], path)
+
+        with open(path) as fh:
+            row = next(csv.DictReader(fh))
+        assert row["exp_id"] == "42"
+        assert row["hardware"] == "A100-80GB"
+        assert row["dp"] == "2"
+        assert row["cpu_offload"] == "True"
+        assert row["gpu_mem_util"] == "0.85"
+        assert row["precision"] == "FP8"
+
+    def test_error_csv_dp_none_is_empty(self, tmp_path):
+        record = ErrorRecord(
+            simulator="sim-a", experiment_folder="/tmp/exp",
+            model="m", workload="w", stage_index=0,
+            metric_name="e2e_mean", predicted=100.0, actual=100.0,
+            mape=0.0, mpe=0.0, absolute_error=0.0,
+        )
+        path = str(tmp_path / "out.csv")
+        save_csv([record], path)
+
+        with open(path) as fh:
+            row = next(csv.DictReader(fh))
+        assert row["dp"] == ""
+
+    def test_runtime_csv_includes_metadata(self, tmp_path):
+        record = RuntimeRecord(
+            simulator="sim-a", experiment_folder="/exp/1",
+            model="llama-7b", workload="codegen", wall_clock_seconds=1.5,
+            exp_id=10, hardware="L40S", dp=None,
+            cpu_offload=False, gpu_mem_util=0.9, precision="FP16",
+        )
+        path = str(tmp_path / "runtime.csv")
+        save_runtime_csv([record], path)
+
+        with open(path) as fh:
+            row = next(csv.DictReader(fh))
+        assert row["exp_id"] == "10"
+        assert row["hardware"] == "L40S"
+        assert row["dp"] == ""
+        assert row["cpu_offload"] == "False"
+        assert row["precision"] == "FP16"
 
 
 class TestFormatTableNoneRendering:

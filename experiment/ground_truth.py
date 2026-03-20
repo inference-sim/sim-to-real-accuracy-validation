@@ -2,8 +2,14 @@
 
 Functions
 ---------
-discover_experiments(base_dir)
-    Scan for experiment directories matching the naming convention.
+discover_experiments(base_dir, *, safe_only=True)
+    Manifest-driven discovery: load ``experiments.json`` and resolve each
+    entry to its directory on disk.  Returns ``(manifest_entry, dir_path)``
+    pairs sorted by experiment id.
+load_manifest(base_dir)
+    Load ``experiments.json`` from *base_dir*.
+resolve_experiment_dir(base_dir, exp_id)
+    Find the directory matching ``<id>-*`` in *base_dir*.
 parse_experiment(folder_path)
     Load all config/metrics from a single experiment directory into an
     ``Experiment`` dataclass.
@@ -32,12 +38,18 @@ from experiment.kv_cache_extractor import extract_cpu_kv_blocks, extract_total_k
 _EXPERIMENT_DIR_RE = re.compile(r"^\d{8}-\d{6}-.+-tp\d+-\w+$")
 
 
-def discover_experiments(base_dir: str) -> list[str]:
+# ---------------------------------------------------------------------------
+# Legacy discovery (kept for backward compatibility with parse_experiment)
+# ---------------------------------------------------------------------------
+
+def _discover_experiments_legacy(base_dir: str) -> list[str]:
     """Return sorted absolute paths of experiment directories under *base_dir*.
 
     Matches directories whose name follows the pattern
     ``YYYYMMDD-HHMMSS-*-tp<N>-<workload>``.  Non-directory entries and files
     like ``SCHEMA.md`` are excluded.
+
+    .. deprecated:: Use :func:`discover_experiments` (manifest-driven) instead.
     """
     results: list[str] = []
     for entry in os.listdir(base_dir):
@@ -48,10 +60,110 @@ def discover_experiments(base_dir: str) -> list[str]:
     return results
 
 
-def parse_experiment(folder_path: str) -> Experiment:
+# ---------------------------------------------------------------------------
+# Manifest-driven discovery
+# ---------------------------------------------------------------------------
+
+def load_manifest(base_dir: str) -> list[dict]:
+    """Load experiments.json from base_dir."""
+    path = os.path.join(base_dir, "experiments.json")
+    try:
+        with open(path) as fh:
+            return json.load(fh)
+    except FileNotFoundError:
+        raise FileNotFoundError(f"Manifest not found: {path}") from None
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Malformed JSON in {path}: {exc}") from exc
+
+
+def resolve_experiment_dir(base_dir: str, exp_id: int) -> str | None:
+    """Find the directory matching '<id>-*' in base_dir."""
+    prefix = f"{exp_id}-"
+    matches = [
+        entry for entry in os.listdir(base_dir)
+        if entry.startswith(prefix) and os.path.isdir(os.path.join(base_dir, entry))
+    ]
+    if not matches:
+        return None
+    if len(matches) > 1:
+        logger.warning(
+            "Multiple directories for id=%d in %s: %s (using first)",
+            exp_id, base_dir, matches,
+        )
+    return os.path.abspath(os.path.join(base_dir, sorted(matches)[0]))
+
+
+def resolve_perf_dir(folder_path: str) -> str:
+    """Return the performance-data subdirectory for an experiment.
+
+    Prefers ``results/`` (numbered experiments) and falls back to
+    ``inference-perf-data/`` (legacy layout).
+    """
+    perf_dir = os.path.join(folder_path, "results")
+    if not os.path.isdir(perf_dir):
+        perf_dir = os.path.join(folder_path, "inference-perf-data")
+    return perf_dir
+
+
+_REQUIRED_MANIFEST_KEYS = {"id", "hw", "dp", "cpu_offload", "gpu_mem", "precision", "safe"}
+
+
+def discover_experiments(
+    base_dir: str,
+    *,
+    safe_only: bool = True,
+) -> list[tuple[dict, str]]:
+    """Return (manifest_entry, dir_path) pairs for runnable experiments.
+
+    Reads ``experiments.json`` from *base_dir* and resolves each experiment
+    to its directory on disk.  Experiments whose directory is missing are
+    skipped with a warning.
+
+    Parameters
+    ----------
+    base_dir:
+        Root directory containing ``experiments.json`` and experiment
+        sub-directories named ``<id>-<slug>``.
+    safe_only:
+        When *True* (default), only experiments marked ``"safe": "safe"``
+        in the manifest are included.
+    """
+    manifest = load_manifest(base_dir)
+    results: list[tuple[dict, str]] = []
+    for entry in manifest:
+        if safe_only and entry.get("safe") != "safe":
+            continue
+        exp_id = entry.get("id")
+        if exp_id is None:
+            logger.warning("Manifest entry missing 'id' key, skipping: %s", entry)
+            continue
+        dir_path = resolve_experiment_dir(base_dir, exp_id)
+        if dir_path is not None:
+            results.append((entry, dir_path))
+        else:
+            logger.warning(
+                "No directory found for experiment id=%d model=%s",
+                exp_id, entry.get("model", "?"),
+            )
+    if manifest and not results:
+        logger.warning("No experiment directories resolved from %d manifest entries", len(manifest))
+    results.sort(key=lambda x: x[0]["id"])
+    return results
+
+
+def parse_experiment(folder_path: str, manifest_entry: dict | None = None) -> Experiment:
     """Parse a single experiment directory into an :class:`Experiment`."""
     folder_path = os.path.abspath(folder_path)
     folder_name = os.path.basename(folder_path)
+
+    # 0. Validate manifest keys up-front (before any access)
+    if manifest_entry is not None:
+        required = _REQUIRED_MANIFEST_KEYS | {"workload"}
+        missing = required - manifest_entry.keys()
+        if missing:
+            raise KeyError(
+                f"Manifest entry for {folder_path} missing keys: {sorted(missing)}"
+            )
 
     # 1. Parse exp-config.yaml
     with open(os.path.join(folder_path, "exp-config.yaml")) as fh:
@@ -63,8 +175,11 @@ def parse_experiment(folder_path: str) -> Experiment:
     max_num_batched_tokens = exp_cfg["max_num_batched_tokens"]
     max_num_seqs = exp_cfg["max_num_seqs"]
 
-    # 2. Extract workload from folder name (last segment after -tp<N>-)
-    workload = _extract_workload(folder_name)
+    # 2. Extract workload — prefer manifest to avoid suffix corruption
+    if manifest_entry is not None:
+        workload = manifest_entry["workload"]
+    else:
+        workload = _extract_workload(folder_name)
 
     # 3. Parse profile.yaml (single-line JSON that YAML can parse)
     with open(os.path.join(folder_path, "profile.yaml")) as fh:
@@ -72,8 +187,8 @@ def parse_experiment(folder_path: str) -> Experiment:
 
     stages_config = profile_config["load"]["stages"]
 
-    # 4. Parse stage lifecycle metrics
-    perf_dir = os.path.join(folder_path, "inference-perf-data")
+    # 4. Parse stage lifecycle metrics — auto-detect results dir
+    perf_dir = resolve_perf_dir(folder_path)
     stage_files = sorted(glob.glob(os.path.join(perf_dir, "stage_*_lifecycle_metrics.json")))
     if len(stage_files) != len(stages_config):
         logger.warning(
@@ -95,7 +210,21 @@ def parse_experiment(folder_path: str) -> Experiment:
 
     # 6. Extract KV blocks
     total_kv_blocks = extract_total_kv_blocks(os.path.join(folder_path, "vllm.log"))
-    cpu_kv_blocks = extract_cpu_kv_blocks(os.path.join(folder_path, "kv_events.jsonl"))
+    kv_events_path = os.path.join(folder_path, "kv_events.jsonl")
+    cpu_kv_blocks = extract_cpu_kv_blocks(kv_events_path) if os.path.exists(kv_events_path) else 0
+
+    # 7. Manifest metadata (new fields from experiments.json)
+    kwargs = {}
+    if manifest_entry is not None:
+        kwargs = dict(
+            exp_id=manifest_entry["id"],
+            hardware=manifest_entry["hw"],
+            dp=manifest_entry["dp"],
+            cpu_offload=manifest_entry["cpu_offload"],
+            gpu_mem_util=manifest_entry["gpu_mem"],
+            precision=manifest_entry["precision"],
+            safe=manifest_entry["safe"],
+        )
 
     return Experiment(
         folder=folder_path,
@@ -110,6 +239,7 @@ def parse_experiment(folder_path: str) -> Experiment:
         stages=stages,
         summary=summary,
         profile_config=profile_config,
+        **kwargs,
     )
 
 

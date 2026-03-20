@@ -20,6 +20,8 @@ from experiment.data_model import (
     ThroughputMetrics,
 )
 
+_HW_TO_LLM_OPT: dict[str, str] = {"H100": "H100", "A100-80GB": "A100"}
+
 def get_model_config_from_hf(model_id: str):
     """Lazy import wrapper — allows mocking without requiring llm_optimizer installed."""
     from llm_optimizer.common import get_model_config_from_hf as _fn
@@ -40,7 +42,11 @@ class LLMOptimizerEstimateAdapter(SimulatorAdapter):
         return "llm-optimizer-estimate"
 
     def can_run(self, experiment: Experiment) -> bool:
-        """True only when profile config uses ``shared_prefix`` data type with required keys."""
+        """True only when hardware is supported and profile config uses ``shared_prefix``."""
+        if experiment.hardware not in _HW_TO_LLM_OPT:
+            return False
+        if experiment.precision == "FP8" and experiment.hardware == "A100-80GB":
+            return False
         try:
             data = experiment.profile_config["data"]
             if data["type"] != "shared_prefix":
@@ -80,8 +86,18 @@ class LLMOptimizerEstimateAdapter(SimulatorAdapter):
     # ------------------------------------------------------------------
 
     def run(self, experiment: Experiment) -> SimulatorResult:
+        if experiment.hardware not in _HW_TO_LLM_OPT:
+            raise ValueError(
+                f"Unsupported hardware '{experiment.hardware}' for {self.name} "
+                f"(supported: {sorted(_HW_TO_LLM_OPT)})"
+            )
+        if experiment.precision == "FP8" and experiment.hardware == "A100-80GB":
+            raise ValueError(
+                f"Unsupported precision '{experiment.precision}' on "
+                f"'{experiment.hardware}' for {self.name} (A100 has no FP8 TFLOPS)"
+            )
         model_config = get_model_config_from_hf(experiment.model)
-        precision = getattr(model_config, "inferred_precision", "fp16")
+        precision = experiment.precision.lower()  # "fp16" or "fp8"
         input_length, output_length = self._extract_lengths(experiment)
 
         stages: list[StageMetrics] = []
@@ -89,7 +105,7 @@ class LLMOptimizerEstimateAdapter(SimulatorAdapter):
             concurrency = self._derive_concurrency(gt_stage, experiment.max_num_seqs)
             perf = estimate_llm_performance(
                 num_gpus=experiment.tp,
-                gpu_name="H100",
+                gpu_name=_HW_TO_LLM_OPT[experiment.hardware],
                 model_config=model_config,
                 precision=precision,
                 concurrency=concurrency,

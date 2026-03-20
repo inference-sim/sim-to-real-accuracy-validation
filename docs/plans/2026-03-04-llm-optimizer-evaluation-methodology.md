@@ -168,7 +168,10 @@ Aggregation across experiments:
 | **No KV cache pressure modeling** | LLM-optimizer does not model GPU memory, KV block exhaustion, preemption, or CPU offloading. Under high KV pressure, real latencies spike but llm-optimizer predictions remain flat. |
 | **No prefix caching modeling** | All ground-truth experiments have prefix caching enabled. LLM-optimizer models full prefill for every request, likely over-predicting TTFT for workloads with high prefix reuse. |
 | **Fixed input/output lengths** | The adapter uses configured distribution parameters, not actual per-request token counts. Variance in real request sizes is not captured. |
-| **Single precision assumption** | Uses `model_config.inferred_precision` (typically fp16). If the real deployment uses mixed precision or quantization, predictions may diverge. |
+| **Precision now from experiment** | Previously used `model_config.inferred_precision` (HF model default). Now passes `experiment.precision.lower()` directly. This correctly uses FP8 TFLOPS (1978 on H100, 2x FP16) for FP8 experiments. A100+FP8 is excluded via `can_run()` since `A100.FP8_TFLOPS=None`. |
+| **MoE treated as dense** | Roofline hardcodes `d_ff = 4 * d_model` with no expert routing. MoE experiments (Mixtral-8x7B, Mixtral-8x22B, Llama-4-Scout) run but produce inaccurate results — the model treats all activated parameters as if they fire on every token. |
+| **Config knobs not modeled** | `max_num_batched_tokens`, `cpu_offload`, `gpu_mem_util` are not roofline inputs. Experiments sweeping these (IDs 22–25, 27–30) produce identical estimates regardless of the sweep value. |
+| **dp not in roofline** | Multi-instance experiments (IDs 32–35) are simulated as single-instance. DP exists in llm-optimizer's tuning/command-gen layer but not in the roofline estimator used by the adapter. |
 
 ---
 
