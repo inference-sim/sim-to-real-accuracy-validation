@@ -177,6 +177,25 @@ class TestBlackboxCanRun:
         exp_a100.hardware = "A100-80GB"
         assert adapter.can_run(exp_a100) is False
 
+    def test_a100_normalization_matches(self, tmp_path):
+        """A100-80GB experiment should match A100-80 coefficients via normalization."""
+        data = {
+            "models": [{
+                "id": "meta-llama/Llama-2-7b-hf",
+                "GPU": "A100-80",
+                "tensor_parallelism": 1,
+                "alpha_coeffs": [1.0, 2.0, 3.0],
+            }]
+        }
+        defaults_path = os.path.join(str(tmp_path), "defaults.yaml")
+        with open(defaults_path, "w") as fh:
+            yaml.dump(data, fh)
+
+        adapter = BLISBlackboxAdapter("/tmp/blis", defaults_yaml=defaults_path)
+        exp = _make_experiment(model="meta-llama/Llama-2-7b-hf", tp=1)
+        exp.hardware = "A100-80GB"
+        assert adapter.can_run(exp) is True
+
 
 class TestRooflineCanRun:
     def test_always_true(self):
