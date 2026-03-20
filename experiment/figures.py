@@ -480,6 +480,7 @@ def plot_aggregate_comparison(
         axes = [axes]
 
     bar_width = 0.6
+    labeled_sims = set()  # Track which simulators have been labeled
 
     for col_idx, (metric_label, agg_data, sims_for_metric) in enumerate(metrics_data):
         ax = axes[col_idx]
@@ -491,12 +492,14 @@ def plot_aggregate_comparison(
         heights = [agg_data[sim] for sim in sims_ordered]
         colors = [COLOR_PALETTE[sim] for sim in sims_ordered]
         hatches = [HATCH_PATTERNS.get(sim, "") for sim in sims_ordered]
-        labels = [SIMULATOR_DISPLAY_NAMES[sim] for sim in sims_ordered]
 
-        # Only add label on first column
-        bar_labels = labels if col_idx == 0 else [""] * len(labels)
+        for i, (pos, height, color, hatch) in enumerate(zip(x, heights, colors, hatches)):
+            sim = sims_ordered[i]
+            # Add label only the first time this simulator is plotted
+            label = SIMULATOR_DISPLAY_NAMES[sim] if sim not in labeled_sims else ""
+            if sim not in labeled_sims:
+                labeled_sims.add(sim)
 
-        for i, (pos, height, color, hatch, label) in enumerate(zip(x, heights, colors, hatches, bar_labels)):
             ax.bar(
                 pos, height, bar_width,
                 color=color, hatch=hatch,
@@ -519,12 +522,20 @@ def plot_aggregate_comparison(
         fontsize=11, fontweight="bold"
     )
 
-    # Collect legend from first axis
-    handles, labels = axes[0].get_legend_handles_labels()
-    if handles:
+    # Collect legend from all axes (not just axes[0])
+    # to include simulators that don't have data in the first metric column
+    all_handles, all_labels = [], []
+    for ax in axes:
+        h, l = ax.get_legend_handles_labels()
+        for handle, label in zip(h, l):
+            if label and label not in all_labels:  # Deduplicate by label
+                all_handles.append(handle)
+                all_labels.append(label)
+
+    if all_handles:
         fig.legend(
-            handles, labels, loc="upper center",
-            bbox_to_anchor=(0.5, -0.01), ncol=len(handles),
+            all_handles, all_labels, loc="upper center",
+            bbox_to_anchor=(0.5, -0.01), ncol=len(all_handles),
             frameon=False, handlelength=1.5, columnspacing=1.0,
         )
 
