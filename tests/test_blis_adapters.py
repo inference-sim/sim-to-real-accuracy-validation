@@ -288,6 +288,26 @@ class TestBLISCLIArgs:
         idx = called_args.index("--kv-cpu-blocks")
         assert called_args[idx + 1] == "5"
 
+        # Check hardware is passed from experiment
+        idx = called_args.index("--hardware")
+        assert called_args[idx + 1] == "H100"
+
+    @patch("experiment.adapters.blis_roofline.subprocess.run")
+    def test_hardware_from_experiment_normalized(self, mock_run):
+        """Hardware should come from experiment and be normalized."""
+        mock_run.return_value = MagicMock()
+        adapter = BLISRooflineAdapter("/usr/local/bin/blis")
+        exp = _make_experiment()
+        exp.hardware = "A100-80GB"
+
+        with patch.object(adapter, "_parse_blis_results") as mock_parse:
+            mock_parse.return_value = MagicMock()
+            adapter.run(exp)
+
+        called_args = mock_run.call_args[0][0]
+        idx = called_args.index("--hardware")
+        assert called_args[idx + 1] == "A100-80"
+
     @patch("experiment.adapters.blis_roofline.subprocess.run")
     def test_model_and_tp_in_args(self, mock_run):
         """Model and TP should be passed correctly."""

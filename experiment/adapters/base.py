@@ -79,7 +79,7 @@ class BaseBLISAdapter(SimulatorAdapter):
             self.blis_binary, "run",
             "--model", experiment.model,
             "--tp", str(experiment.tp),
-            "--hardware", "H100",
+            "--hardware", self._normalize_hardware(experiment.hardware),
             "--max-num-running-reqs", str(experiment.max_num_seqs),
             "--max-num-scheduled-tokens", str(experiment.max_num_batched_tokens),
             "--total-kv-blocks", str(experiment.total_kv_blocks),
