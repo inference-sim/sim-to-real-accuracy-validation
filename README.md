@@ -164,6 +164,7 @@ This produces 5 PDF figures and 1 LaTeX table under `results/figures/`.
 | `--vidur-dir` | `vidur` | Path to cloned Vidur repository |
 | `--output-dir` | `results` | Where reports and CSV are saved |
 | `--adapters` | all 7 | Space-separated list of adapters to run |
+| `--no-dp-scaling` | *(disabled)* | Exclude experiments with data parallelism > 1 |
 
 ### Figures CLI options
 
