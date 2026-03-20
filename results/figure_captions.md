@@ -16,6 +16,14 @@
 
 ---
 
+### Figure 0: Aggregate Comparison Across Common Experiments
+
+![Figure 0](figures/fig0_aggregate_comparison.png)
+
+Median MAPE aggregated across 19 H100 experiments where BLIS-Roofline, LLM-Optimizer, and AIConfigurator all have data. Shows three metrics: E2E Mean (BLIS and LLM-Optimizer only, since AIConfigurator does not report E2E), TTFT Mean (all three simulators), and ITL Mean (all three simulators). Experiments span four dense models (Llama-3.1-8B, Qwen3-14B, CodeLlama-34B, Llama-2-70B) with FP16 precision, tensor parallelism values of 1, 2, and 4, and five workload types (general, general-lite, codegen, roleplay, reasoning). All experiments use default vLLM serving configuration except for TP variation.
+
+---
+
 ### Figure 1: Prediction Error Across Model Architectures
 
 ![Figure 1](figures/fig1_model_sensitivity.png)
