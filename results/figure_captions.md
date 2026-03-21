@@ -20,7 +20,7 @@
 
 ![Figure 0](figures/fig0_aggregate_comparison.png)
 
-Median MAPE aggregated across experiments where BLIS-Roofline, LLM-Optimizer, and AIConfigurator all have data, using default vLLM serving configuration (each model's standard TP, no CPU KV cache offloading, 0.90 GPU memory utilization, default chunk size, no data parallelism). Shows three metrics: E2E Mean (BLIS and LLM-Optimizer only, since AIConfigurator does not report E2E), TTFT Mean (all three simulators), and ITL Mean (all three simulators). All three simulators support multi-GPU tensor parallelism, so experiments include models at their standard TP values: small models at tp=1 (Llama-3.1-8B, Qwen3-14B), medium models at tp=2 (CodeLlama-34B, Llama-4-Scout-17B-16E, Mixtral-8x7B), large models at tp=4 (Llama-2-70B), and extra-large models at tp=8 (Mixtral-8x22B).
+Median MAPE aggregated across 7 H100 experiments where BLIS-Roofline, LLM-Optimizer, and AIConfigurator all have data, using default vLLM serving configuration (each model's standard TP, no CPU KV cache offloading, 0.90 GPU memory utilization, max\_num\_batched\_tokens=2048, DP≤1) and general/general-lite workloads only. Shows three metrics: E2E Mean (BLIS and LLM-Optimizer only, since AIConfigurator does not report E2E), TTFT Mean (all three simulators), and ITL Mean (all three simulators). Experiments span four dense models at their standard TP values: Llama-3.1-8B (TP=1), Qwen3-14B (TP=1), CodeLlama-34B (TP=2), Llama-2-70B (TP=4). Default configs ensure that analytical simulators' baseline assumptions (GPU-only inference, standard memory utilization, standard batching) match the ground truth configuration. Filter criteria match Figure 2 (Hardware Portability) for consistency.
 
 ---
 

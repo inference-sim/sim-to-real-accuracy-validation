@@ -423,7 +423,8 @@ def plot_aggregate_comparison(
 
     Only includes experiments where blis-roofline, llm-optimizer-estimate,
     and aiconfigurator-estimate all have data. Filters to default configs
-    (model's default TP, cpu_offload=false, gpu_mem=0.9, dp≤1, mbt=2048).
+    (model's default TP, cpu_offload=false, gpu_mem=0.9, dp≤1, mbt=2048)
+    and general/general-lite workloads (consistent with Figure 2).
     Shows median MAPE across these experiments for E2E (blis/llm-optimizer
     only, since aiconfigurator has no E2E), TTFT, and ITL (all three simulators).
     """
@@ -444,6 +445,8 @@ def plot_aggregate_comparison(
     # All three simulators support multi-GPU configs, so we include experiments
     # at each model's default TP rather than restricting to tp=1.
     df_filtered = df_filtered[df_filtered["config_tag"] == "default"]
+    # Also filter to general/general-lite workloads to match Figure 2
+    df_filtered = df_filtered[df_filtered["workload"].isin(("general", "general-lite"))]
 
     if df_filtered.empty:
         warnings.warn("Figure 0: no experiments with default configs")
