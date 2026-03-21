@@ -422,9 +422,10 @@ def plot_aggregate_comparison(
     """Figure 0: Aggregate MAPE across experiments with data from all simulators.
 
     Only includes experiments where blis-roofline, llm-optimizer-estimate,
-    and aiconfigurator-estimate all have data. Shows median MAPE across
-    these experiments for E2E (blis/llm-optimizer only, since aiconfigurator
-    has no E2E), TTFT, and ITL (all three simulators).
+    and aiconfigurator-estimate all have data. Filters to default configs
+    (model's default TP, cpu_offload=false, gpu_mem=0.9, dp≤1, mbt=2048).
+    Shows median MAPE across these experiments for E2E (blis/llm-optimizer
+    only, since aiconfigurator has no E2E), TTFT, and ITL (all three simulators).
     """
     _apply_rc_params()
 
@@ -439,14 +440,10 @@ def plot_aggregate_comparison(
 
     df_filtered = df[df["experiment_folder"].isin(common_exps)]
 
-    # Filter to default configs only (TP=1, no CPU offload, 0.90 GPU memory)
-    # These are the only configs where analytical simulators' baseline assumptions
-    # match the ground truth configuration
-    df_filtered = df_filtered[
-        (df_filtered["tp"] == 1) &
-        (df_filtered["cpu_offload"] == False) &
-        (df_filtered["gpu_mem_util"] == 0.90)
-    ]
+    # Filter to default configs only (consistent with Figure 2).
+    # All three simulators support multi-GPU configs, so we include experiments
+    # at each model's default TP rather than restricting to tp=1.
+    df_filtered = df_filtered[df_filtered["config_tag"] == "default"]
 
     if df_filtered.empty:
         warnings.warn("Figure 0: no experiments with default configs")
@@ -533,7 +530,7 @@ def plot_aggregate_comparison(
         ax.set_title(metric_label, fontsize=10, fontweight="bold")
 
     fig.suptitle(
-        f"Aggregate Prediction Error — Default Config (H100, TP=1, n={len(common_exps)}) ↓",
+        f"Aggregate Prediction Error — Default Config (n={len(common_exps)}) ↓",
         fontsize=11, fontweight="bold"
     )
 
