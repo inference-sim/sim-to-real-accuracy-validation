@@ -149,11 +149,11 @@ _MODEL_DEFAULT_TP = {
     "meta-llama/Llama-2-7b-hf": 1,
     "meta-llama/Llama-3.1-8B-Instruct": 1,
     "Qwen/Qwen3-14B": 1,
-    "codellama/CodeLlama-34b-Instruct-hf": 1,
+    "codellama/CodeLlama-34b-Instruct-hf": 2,
     "meta-llama/Llama-2-70b-hf": 4,
     "mistralai/Mixtral-8x7B-v0.1": 2,
-    "mistralai/Mixtral-8x22B-Instruct-v0.1": 4,
-    "RedHatAI/Llama-4-Scout-17B-16E-Instruct-FP8-dynamic": 8,
+    "mistralai/Mixtral-8x22B-Instruct-v0.1": 8,
+    "RedHatAI/Llama-4-Scout-17B-16E-Instruct-FP8-dynamic": 2,
 }
 
 _MOE_MODELS = frozenset({
