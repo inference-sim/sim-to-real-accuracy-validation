@@ -16,11 +16,11 @@
 
 ---
 
-### Figure 0: Aggregate Comparison Across Common Experiments
+### Figure 0: Aggregate Comparison — Default Config
 
 ![Figure 0](figures/fig0_aggregate_comparison.png)
 
-Median MAPE aggregated across 19 H100 experiments where BLIS-Roofline, LLM-Optimizer, and AIConfigurator all have data. Shows three metrics: E2E Mean (BLIS and LLM-Optimizer only, since AIConfigurator does not report E2E), TTFT Mean (all three simulators), and ITL Mean (all three simulators). Experiments span four dense models (Llama-3.1-8B, Qwen3-14B, CodeLlama-34B, Llama-2-70B) with FP16 precision and five workload types (general, general-lite, codegen, roleplay, reasoning). Serving configurations vary: tensor parallelism (1, 2, or 4), CPU KV cache offloading (5 experiments enable it), and GPU memory utilization (18 at 0.90, 1 at 0.95).
+Median MAPE aggregated across 10 H100 experiments where BLIS-Roofline, LLM-Optimizer, and AIConfigurator all have data, using default vLLM serving configuration (TP=1, no CPU KV cache offloading, 0.90 GPU memory utilization). Shows three metrics: E2E Mean (BLIS and LLM-Optimizer only, since AIConfigurator does not report E2E), TTFT Mean (all three simulators), and ITL Mean (all three simulators). Experiments span two dense models (Llama-3.1-8B, Qwen3-14B) with FP16 precision across five workload types (general, general-lite, codegen, roleplay, reasoning). Default configs ensure that analytical simulators' baseline assumptions (GPU-only inference, standard memory utilization) match the ground truth configuration.
 
 ---
 

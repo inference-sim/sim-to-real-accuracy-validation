@@ -439,6 +439,21 @@ def plot_aggregate_comparison(
 
     df_filtered = df[df["experiment_folder"].isin(common_exps)]
 
+    # Filter to default configs only (TP=1, no CPU offload, 0.90 GPU memory)
+    # These are the only configs where analytical simulators' baseline assumptions
+    # match the ground truth configuration
+    df_filtered = df_filtered[
+        (df_filtered["tp"] == 1) &
+        (df_filtered["cpu_offload"] == False) &
+        (df_filtered["gpu_mem_util"] == 0.90)
+    ]
+
+    if df_filtered.empty:
+        warnings.warn("Figure 0: no experiments with default configs")
+        return None
+
+    common_exps = df_filtered["experiment_folder"].unique()
+
     # Prepare data for each metric
     metrics_data = []
 
@@ -518,7 +533,7 @@ def plot_aggregate_comparison(
         ax.set_title(metric_label, fontsize=10, fontweight="bold")
 
     fig.suptitle(
-        f"Aggregate Prediction Error Across Common Experiments (H100, n={len(common_exps)}) ↓",
+        f"Aggregate Prediction Error — Default Config (H100, TP=1, n={len(common_exps)}) ↓",
         fontsize=11, fontweight="bold"
     )
 
