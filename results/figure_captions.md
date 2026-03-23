@@ -76,8 +76,9 @@ Median MAPE vs. median wall-clock runtime per simulator, aggregated across all e
 
 | Simulator | Median Runtime (s) | Speedup vs. Real |
 |---|---|---|
-| Vidur | 127.1 | 9x |
-| LLM-Optimizer | 0.1 | 23,754x |
-| AIConfigurator | 3.3 | 360x |
+| BLIS-Roofline | 1.6 | 770x |
+| Vidur | 9.9 | 121x |
+| LLM-Optimizer | 0.1 | 23,094x |
+| AIConfigurator | 3.3 | 363x |
 
-Median runtime per simulator and speedup over real experiment execution (~1200s per experiment).
+Median wall-clock runtime per simulator and speedup relative to real experiment execution. BLIS-Roofline provides a middle ground between analytical speed (LLM-Optimizer, AIConfigurator) and simulation fidelity (Vidur).
