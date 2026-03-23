@@ -419,7 +419,7 @@ def plot_aggregate_comparison_analytical(
     df: pd.DataFrame,
     output_path: str | None = None,
 ) -> plt.Figure | None:
-    """Figure 0a: Analytical simulators aggregate comparison.
+    """Figure 0a: BLIS-Roofline vs LLM-Optimizer vs AIConfigurator.
 
     Only includes experiments where blis-roofline, llm-optimizer-estimate,
     and aiconfigurator-estimate all have data. Filters to default configs
@@ -533,7 +533,7 @@ def plot_aggregate_comparison_analytical(
         ax.set_title(metric_label, fontsize=10, fontweight="bold")
 
     fig.suptitle(
-        f"Analytical Simulators — Default Config (n={len(common_exps)}) ↓",
+        f"BLIS-Roofline vs LLM-Optimizer vs AIConfigurator (n={len(common_exps)}) ↓",
         fontsize=11, fontweight="bold"
     )
 
@@ -566,7 +566,7 @@ def plot_aggregate_comparison_trace(
     df: pd.DataFrame,
     output_path: str | None = None,
 ) -> plt.Figure | None:
-    """Figure 0b: Trace-replay simulators aggregate comparison (BLIS vs Vidur).
+    """Figure 0b: BLIS-Roofline vs Vidur.
 
     Only includes experiments where both blis-roofline and vidur have data.
     Filters to default configs (model's default TP, cpu_offload=false,
@@ -680,7 +680,7 @@ def plot_aggregate_comparison_trace(
         ax.set_title(metric_label, fontsize=10, fontweight="bold")
 
     fig.suptitle(
-        f"Trace-Replay Simulators — Default Config (n={len(common_exps)}) ↓",
+        f"BLIS-Roofline vs Vidur (n={len(common_exps)}) ↓",
         fontsize=11, fontweight="bold"
     )
 
