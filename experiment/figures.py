@@ -422,16 +422,19 @@ def plot_aggregate_comparison(
     """Figure 0: Aggregate MAPE across experiments with data from all simulators.
 
     Only includes experiments where blis-roofline, llm-optimizer-estimate,
-    aiconfigurator-estimate, and vidur all have data. Filters to default configs
+    and aiconfigurator-estimate all have data. Filters to default configs
     (model's default TP, cpu_offload=false, gpu_mem=0.9, dp≤1, mbt=2048)
     and general/general-lite workloads (consistent with Figure 2).
-    Shows median MAPE across these experiments for E2E (blis/llm-optimizer/vidur,
-    since aiconfigurator has no E2E), TTFT, and ITL (all four simulators).
+    Shows median MAPE across these experiments for E2E (blis/llm-optimizer
+    only, since aiconfigurator has no E2E), TTFT, and ITL (all three simulators).
+
+    Note: Vidur is excluded from this comparison due to limited model coverage
+    (only supports 3 models), which would drastically reduce the experiment count.
     """
     _apply_rc_params()
 
-    # Find experiments with data from all four target simulators
-    target_sims = {"blis-roofline", "llm-optimizer-estimate", "aiconfigurator-estimate", "vidur"}
+    # Find experiments with data from all three target simulators
+    target_sims = {"blis-roofline", "llm-optimizer-estimate", "aiconfigurator-estimate"}
     exp_sims = df.groupby("experiment_folder")["simulator"].apply(set)
     common_exps = exp_sims[exp_sims.apply(lambda s: target_sims.issubset(s))].index
 
@@ -457,16 +460,16 @@ def plot_aggregate_comparison(
     # Prepare data for each metric
     metrics_data = []
 
-    # E2E: blis-roofline, llm-optimizer-estimate, and vidur (aiconfigurator doesn't report E2E)
+    # E2E: only blis-roofline and llm-optimizer-estimate (aiconfigurator doesn't report E2E)
     e2e_df = df_filtered[
         (df_filtered["metric_name"] == "e2e_mean") &
-        (df_filtered["simulator"].isin(["blis-roofline", "llm-optimizer-estimate", "vidur"]))
+        (df_filtered["simulator"].isin(["blis-roofline", "llm-optimizer-estimate"]))
     ]
     if not e2e_df.empty:
         e2e_agg = e2e_df.groupby("simulator")["mape"].median()
-        metrics_data.append(("E2E Mean", e2e_agg, ["blis-roofline", "llm-optimizer-estimate", "vidur"]))
+        metrics_data.append(("E2E Mean", e2e_agg, ["blis-roofline", "llm-optimizer-estimate"]))
 
-    # TTFT: all four simulators
+    # TTFT: all three simulators
     ttft_df = df_filtered[
         (df_filtered["metric_name"] == "ttft_mean") &
         (df_filtered["simulator"].isin(list(target_sims)))
@@ -475,7 +478,7 @@ def plot_aggregate_comparison(
         ttft_agg = ttft_df.groupby("simulator")["mape"].median()
         metrics_data.append(("TTFT Mean", ttft_agg, list(target_sims)))
 
-    # ITL: all four simulators
+    # ITL: all three simulators
     itl_df = df_filtered[
         (df_filtered["metric_name"] == "itl_mean") &
         (df_filtered["simulator"].isin(list(target_sims)))
