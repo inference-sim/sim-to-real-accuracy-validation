@@ -46,9 +46,9 @@ CSV identifiers map to display names in figures:
 
 ### Known Simulator Limitations
 
-- **AIConfigurator:** Excludes MoE architectures (Mixtral-8x7B, Mixtral-8x22B, Scout-17B-16E). Bars absent per the missing-data rule.
+- **AIConfigurator:** Excludes MoE architectures (Mixtral-8x7B, Mixtral-8x22B, Scout-17B-16E). Bars absent per the missing-data rule. E2E latency computed analytically as `ttft + itl × output_length`.
 - **Vidur:** Requires pre-profiled GPU kernel timings. Model and hardware coverage may be incomplete; absent bars where profiles are unavailable.
-- **LLM-Optimizer and AIConfigurator:** Produce only mean estimates. P99 (tail) bars are absent for these simulators in all figures.
+- **LLM-Optimizer and AIConfigurator:** Produce only mean estimates (E2E, TTFT, ITL). P99 (tail) bars are absent for these simulators in all figures.
 
 ---
 
@@ -178,7 +178,7 @@ When a figure's x-axis dimension has multiple underlying variations (e.g., Figur
 - **Filter:** HW=H100, Workload=General or General-Lite, config=defaults (from discussion: rows 13, 16, 17, 49, 56, 57, 58; rows 57-58 use General-Lite for safe rate)
 - **Aggregation:** 1 variation per (model, simulator) — no aggregation, no error bars
 - **Note:** Llama-2-7B excluded because its default config uses DP=2 (router datapoint), making it non-comparable to single-replica baselines.
-- **Caption:** "Prediction accuracy across model architectures. MAPE of five simulators across seven LLM models spanning dense (7B-70B) and MoE (47B-141B) architectures on H100 (General-Purpose workload, default vLLM config). Top row: mean latency; bottom row: P99 tail latency. BLIS-Trained (dark blue) maintains low MAPE across all architectures. LLM-Optimizer and AIConfigurator produce only mean estimates (tail-latency bars absent)."
+- **Caption:** "Prediction accuracy across model architectures. MAPE of five simulators across seven LLM models spanning dense (7B-70B) and MoE (47B-141B) architectures on H100 (General-Purpose workload, default vLLM config). Top row: mean latency (E2E, TTFT, ITL); bottom row: P99 tail latency. BLIS-Trained (dark blue) maintains low MAPE across all architectures. LLM-Optimizer and AIConfigurator report mean estimates for all three metrics but lack tail-latency predictions (P99 bars absent)."
 
 #### Figure 2 — Hardware Portability
 

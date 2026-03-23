@@ -36,6 +36,10 @@ def convert_to_vidur_trace(
     with open(per_request_path) as fh:
         requests = json.load(fh)
 
+    # Sort requests by start_time to ensure chronological order
+    # (per_request_lifecycle_metrics.json may not be sorted)
+    requests = sorted(requests, key=lambda r: r["start_time"])
+
     first_start = requests[0]["start_time"] if requests else 0.0
 
     with open(output_csv_path, "w", newline="") as fh:

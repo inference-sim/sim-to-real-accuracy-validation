@@ -58,7 +58,8 @@ class VidurAdapter(SimulatorAdapter):
     def can_run(self, experiment: Experiment) -> bool:
         return (experiment.model in _SUPPORTED_MODELS
                 and experiment.hardware in _HW_TO_VIDUR
-                and experiment.precision != "FP8")
+                and experiment.precision != "FP8"
+                and not experiment.cpu_offload)
 
     def run(self, experiment: Experiment) -> SimulatorResult:
         if experiment.hardware not in _HW_TO_VIDUR:

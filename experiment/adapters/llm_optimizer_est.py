@@ -1,8 +1,15 @@
 """LLM-Optimizer analytical estimate adapter.
 
-Calls ``estimate_llm_performance`` from the ``llm-optimizer`` package once
-per stage, deriving concurrency via Little's Law and mapping the roofline
-result to :class:`StageMetrics`.
+Calls ``estimate_llm_performance`` from the ``llm-optimizer`` package using
+**throughput-matching** to derive concurrency without oracle data. The adapter
+sweeps concurrency levels [1, 2, 4, 8, ...] once per experiment, then matches
+each stage's arrival rate to the predicted throughput to find the equilibrium
+concurrency level.
+
+This approach avoids data leakage — no ground-truth latency is used as input.
+Instead, concurrency is determined by finding the level where the roofline
+model's predicted ``requests_per_sec`` matches the stage's arrival rate,
+creating a self-consistent solution via Little's Law.
 
 Since llm-optimizer produces only **mean** latency estimates, P90 and P99
 are left as ``None`` (the metrics layer skips comparisons where the
@@ -61,13 +68,97 @@ class LLMOptimizerEstimateAdapter(SimulatorAdapter):
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _derive_concurrency(stage: StageMetrics, max_num_seqs: int) -> int:
-        """Estimate in-flight concurrency via Little's Law: L = λ × W.
+    def _sweep_concurrency_levels(
+        num_gpus: int,
+        gpu_name: str,
+        model_config,
+        precision: str,
+        input_length: int,
+        output_length: int,
+        max_num_seqs: int,
+    ) -> list[tuple[int, object]]:
+        """Sweep concurrency levels and collect performance predictions.
 
-        Clamped to ``max_num_seqs`` to respect the scheduler's batch cap.
+        Returns a list of (concurrency, PerformanceResult) pairs, stopping
+        when VRAM is exhausted (indicated by ``ttft_ms == inf``).
         """
-        raw = max(1, round(stage.rate * stage.e2e.mean / 1000))
-        return min(raw, max_num_seqs)
+        concurrency_levels = [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024]
+        concurrency_levels = [c for c in concurrency_levels if c <= max_num_seqs]
+
+        sweep_results = []
+        for concurrency in concurrency_levels:
+            perf = estimate_llm_performance(
+                num_gpus=num_gpus,
+                gpu_name=gpu_name,
+                model_config=model_config,
+                precision=precision,
+                concurrency=concurrency,
+                input_length=input_length,
+                output_length=output_length,
+            )
+            # Stop if VRAM limit exceeded
+            if perf.ttft_ms == float("inf"):
+                break
+            sweep_results.append((concurrency, perf))
+
+        return sweep_results
+
+    @staticmethod
+    def _match_throughput(
+        stage_rate: float,
+        sweep_results: list[tuple[int, object]],
+        tolerance: float = 0.15,
+    ) -> tuple[int, object]:
+        """Find the concurrency level where predicted throughput ≈ stage rate.
+
+        Uses relative error matching: selects the concurrency whose predicted
+        ``requests_per_sec`` is closest to the stage's arrival rate.
+
+        Args:
+            stage_rate: Arrival rate in requests/sec from the stage config.
+            sweep_results: List of (concurrency, PerformanceResult) pairs.
+            tolerance: Relative tolerance for early exit (default 15%).
+
+        Returns:
+            (matched_concurrency, matched_PerformanceResult)
+
+        Raises:
+            ValueError: If stage_rate is zero or negative.
+            RuntimeError: If no valid concurrency level found (all inf or zero).
+        """
+        if stage_rate <= 0:
+            raise ValueError(
+                f"Invalid stage rate: {stage_rate}. "
+                f"Stages must have positive arrival rate."
+            )
+
+        best_match = None
+        best_error = float("inf")
+
+        for concurrency, result in sweep_results:
+            predicted_rate = result.requests_per_sec
+
+            # Skip invalid results
+            if predicted_rate == float("inf") or predicted_rate <= 0:
+                continue
+
+            # Calculate relative error
+            error = abs(predicted_rate - stage_rate) / stage_rate
+
+            if error < best_error:
+                best_error = error
+                best_match = (concurrency, result)
+
+            # Early exit if within tolerance
+            if error <= tolerance:
+                break
+
+        if best_match is None:
+            raise RuntimeError(
+                f"No valid concurrency level found for rate={stage_rate} req/s"
+            )
+
+        return best_match
 
     @staticmethod
     def _extract_lengths(experiment: Experiment) -> tuple[int, int]:
@@ -100,18 +191,26 @@ class LLMOptimizerEstimateAdapter(SimulatorAdapter):
         precision = experiment.precision.lower()  # "fp16" or "fp8"
         input_length, output_length = self._extract_lengths(experiment)
 
+        # Sweep concurrency levels ONCE per experiment
+        sweep_results = self._sweep_concurrency_levels(
+            num_gpus=experiment.tp,
+            gpu_name=_HW_TO_LLM_OPT[experiment.hardware],
+            model_config=model_config,
+            precision=precision,
+            input_length=input_length,
+            output_length=output_length,
+            max_num_seqs=experiment.max_num_seqs,
+        )
+
+        # Match each stage to its throughput-appropriate concurrency
         stages: list[StageMetrics] = []
         for gt_stage in experiment.stages:
-            concurrency = self._derive_concurrency(gt_stage, experiment.max_num_seqs)
-            perf = estimate_llm_performance(
-                num_gpus=experiment.tp,
-                gpu_name=_HW_TO_LLM_OPT[experiment.hardware],
-                model_config=model_config,
-                precision=precision,
-                concurrency=concurrency,
-                input_length=input_length,
-                output_length=output_length,
+            # Find concurrency where predicted_throughput ≈ stage_rate
+            concurrency, perf = self._match_throughput(
+                stage_rate=gt_stage.rate,
+                sweep_results=sweep_results,
             )
+
             e2e_mean_ms = perf.e2e_latency_s * 1000
             stages.append(StageMetrics(
                 stage_index=gt_stage.stage_index,

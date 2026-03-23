@@ -14,7 +14,7 @@
 
 **Why it matters:** Demonstrates BLIS generalizes across dense models (7B→70B) and MoE architectures (Mixtral, Scout FP8) without model-specific tuning. Reviewers need to see that accuracy doesn't degrade as model complexity grows.
 
-**Caption:** "Prediction accuracy across model architectures. MAPE of five simulators across seven LLM models spanning dense (7B–70B) and MoE (47B–141B) architectures on H100 (default vLLM config). Top row: mean latency; bottom row: P99 tail latency. BLIS-Trained maintains low MAPE across all architectures. LLM-Optimizer and AIConfigurator produce only mean estimates (tail-latency bars absent)."
+**Caption:** "Prediction accuracy across model architectures. MAPE of five simulators across seven LLM models spanning dense (7B–70B) and MoE (47B–141B) architectures on H100 (default vLLM config). Top row: mean latency (E2E, TTFT, ITL); bottom row: P99 tail latency. BLIS-Trained maintains low MAPE across all architectures. LLM-Optimizer and AIConfigurator report mean estimates for all three metrics but lack tail-latency predictions (P99 bars absent)."
 
 ### Figure 2 — Hardware Portability (2x3 grouped bar grid)
 

@@ -1,17 +1,24 @@
 """AIConfigurator analytical estimate adapter.
 
 Calls ``TaskConfig`` + ``TaskRunner`` from the ``aiconfigurator`` SDK once per
-experiment, then looks up per-stage concurrency in the resulting Pareto
-DataFrame to extract TTFT and TPOT values.
+experiment, which returns a Pareto DataFrame with performance predictions across
+multiple concurrency levels. For each stage, the adapter matches the stage's
+arrival rate to the predicted throughput (``seq/s`` column) to find the
+equilibrium concurrency level.
+
+This approach avoids data leakage — no ground-truth latency is used as input.
+Instead, concurrency is determined by finding the level where AIConfigurator's
+predicted ``seq/s`` matches the stage's arrival rate, creating a self-consistent
+solution via Little's Law.
 
 Since AIConfigurator produces only **mean** latency estimates (one row per
 concurrency level), P90 and P99 are left as ``None`` (the metrics layer
 skips comparisons where the simulator does not provide a value).
 
-**E2E latency is NOT reported** (set to ``None``) because AIConfigurator
-does not natively predict E2E — it only provides TTFT and TPOT. Computing
-E2E as ``ttft + tpot × output_length`` would be misleading as it ignores
-queueing, batching, and scheduling overhead.
+**E2E latency** is computed as ``ttft + itl × output_length``. This is a
+simplified model that assumes uniform decode latency and ignores queuing,
+batching, and scheduling overhead, but provides a baseline estimate for
+comparison with ground-truth E2E measurements.
 """
 
 from __future__ import annotations
@@ -106,13 +113,57 @@ class AIConfiguratorEstimateAdapter(SimulatorAdapter):
         return _MODEL_MAP.get(hf_model_id, hf_model_id)
 
     @staticmethod
-    def _derive_concurrency(stage: StageMetrics, max_num_seqs: int) -> int:
-        """Estimate in-flight concurrency via Little's Law: L = λ × W.
+    def _match_throughput(stage_rate: float, pareto_df, tolerance: float = 0.15):
+        """Find the Pareto DataFrame row where predicted throughput ≈ stage rate.
 
-        Clamped to ``max_num_seqs`` to respect the scheduler's batch cap.
+        Uses relative error matching: selects the row whose predicted ``seq/s``
+        is closest to the stage's arrival rate.
+
+        Args:
+            stage_rate: Arrival rate in requests/sec from the stage config.
+            pareto_df: AIConfigurator Pareto DataFrame with ``seq/s`` column.
+            tolerance: Relative tolerance for early exit (default 15%).
+
+        Returns:
+            DataFrame row (pandas Series) with the matched configuration.
+
+        Raises:
+            ValueError: If stage_rate is zero or negative.
+            RuntimeError: If no valid row found (all inf, zero, or negative).
         """
-        raw = max(1, round(stage.rate * stage.e2e.mean / 1000))
-        return min(raw, max_num_seqs)
+        if stage_rate <= 0:
+            raise ValueError(
+                f"Invalid stage rate: {stage_rate}. "
+                f"Stages must have positive arrival rate."
+            )
+
+        best_row = None
+        best_error = float("inf")
+
+        for idx, row in pareto_df.iterrows():
+            predicted_rate = float(row["seq/s"])
+
+            # Skip invalid results
+            if predicted_rate <= 0 or predicted_rate == float("inf"):
+                continue
+
+            # Calculate relative error
+            error = abs(predicted_rate - stage_rate) / stage_rate
+
+            if error < best_error:
+                best_error = error
+                best_row = row
+
+            # Early exit if within tolerance
+            if error <= tolerance:
+                break
+
+        if best_row is None:
+            raise RuntimeError(
+                f"No valid row found for rate={stage_rate} req/s in Pareto DataFrame"
+            )
+
+        return best_row
 
     @staticmethod
     def _extract_lengths(experiment: Experiment) -> tuple[int, int]:
@@ -125,12 +176,6 @@ class AIConfiguratorEstimateAdapter(SimulatorAdapter):
     @staticmethod
     def _make_latency_dist(mean: float) -> LatencyDistribution:
         return LatencyDistribution(mean=mean)
-
-    @staticmethod
-    def _find_nearest_concurrency(df, target: int):
-        """Return the DataFrame row whose ``concurrency`` is closest to *target*."""
-        idx = (df["concurrency"] - target).abs().idxmin()
-        return df.loc[idx]
 
     # ------------------------------------------------------------------
     # Public API
@@ -167,7 +212,10 @@ class AIConfiguratorEstimateAdapter(SimulatorAdapter):
             total_gpus=experiment.tp,
             isl=input_length,
             osl=output_length,
-            ttft=5000.0,
+            # TTFT constraint set to 150s to cover all experiments in dataset
+            # (P99=103s). Expands pareto frontier for better concurrency matching.
+            # TPOT=200ms is sufficient (actual P99=55ms).
+            ttft=150000.0,
             tpot=200.0,
             profiles=profiles,
         )
@@ -190,22 +238,24 @@ class AIConfiguratorEstimateAdapter(SimulatorAdapter):
                 f"(available tp values: {sorted(pareto_df['tp'].unique())})"
             )
 
+        # Match each stage to its throughput-appropriate row in Pareto DataFrame
         stages: list[StageMetrics] = []
         for gt_stage in experiment.stages:
-            concurrency = self._derive_concurrency(gt_stage, experiment.max_num_seqs)
-            row = self._find_nearest_concurrency(tp_df, concurrency)
+            # Find row where predicted_throughput ≈ stage_rate
+            row = self._match_throughput(gt_stage.rate, tp_df)
 
             ttft_ms = float(row["ttft"])
             tpot_ms = float(row["tpot"])
-            # E2E NOT reported - AIConfigurator doesn't natively predict it
-            # (computing ttft + tpot*output_length is oversimplified)
+            # E2E computed as: ttft + itl * output_length
+            # This is a simplified model that ignores queuing/batching overhead
+            e2e_ms = ttft_ms + tpot_ms * output_length
 
             stages.append(StageMetrics(
                 stage_index=gt_stage.stage_index,
                 rate=gt_stage.rate,
                 duration=gt_stage.duration,
                 num_requests=gt_stage.num_requests,
-                e2e=LatencyDistribution(mean=None),  # Not provided by AIConfigurator
+                e2e=self._make_latency_dist(e2e_ms),
                 ttft=self._make_latency_dist(ttft_ms),
                 itl=self._make_latency_dist(tpot_ms),
                 throughput=ThroughputMetrics(
@@ -235,16 +285,15 @@ class AIConfiguratorEstimateAdapter(SimulatorAdapter):
         quantities).  Throughput metrics use duration-weighted averaging
         (correct for rates — tokens/sec, requests/sec).
 
-        E2E is not provided (None) since AIConfigurator doesn't predict it.
+        E2E is computed from the stage predictions using request-weighted averaging.
         """
         total_reqs = sum(s.num_requests for s in stages)
         total_duration = sum(s.duration for s in stages)
         if total_reqs == 0:
-            none_dist = LatencyDistribution(mean=None)
             zero = LatencyDistribution(0)
             return StageMetrics(
                 stage_index=-1, rate=0, duration=0, num_requests=0,
-                e2e=none_dist, ttft=zero, itl=zero,
+                e2e=zero, ttft=zero, itl=zero,
                 throughput=ThroughputMetrics(0, 0, 0),
             )
 
@@ -256,7 +305,8 @@ class AIConfiguratorEstimateAdapter(SimulatorAdapter):
                 return 0.0
             return sum(getter(s) * s.duration for s in stages) / total_duration
 
-        # E2E not provided by AIConfigurator
+        # Request-weighted averages for all latency metrics
+        e2e_mean = _req_wavg(lambda s: s.e2e.mean)
         ttft_mean = _req_wavg(lambda s: s.ttft.mean)
         itl_mean = _req_wavg(lambda s: s.itl.mean)
 
@@ -265,7 +315,7 @@ class AIConfiguratorEstimateAdapter(SimulatorAdapter):
             rate=0.0,
             duration=0.0,
             num_requests=total_reqs,
-            e2e=LatencyDistribution(mean=None),  # Not provided
+            e2e=LatencyDistribution(e2e_mean),
             ttft=LatencyDistribution(ttft_mean),
             itl=LatencyDistribution(itl_mean),
             throughput=ThroughputMetrics(

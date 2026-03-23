@@ -140,3 +140,57 @@ class TestConvertToVidurTrace:
             assert header == ["arrived_at", "num_prefill_tokens", "num_decode_tokens"]
             rows = list(reader)
             assert len(rows) == 0
+
+    def test_sorts_requests_by_start_time(self, tmp_path):
+        """Requests are sorted by start_time even if input JSON is unordered."""
+        # Create requests with OUT-OF-ORDER start times
+        unordered_requests = [
+            {
+                "start_time": 103.0,  # Third
+                "end_time": 104.0,
+                "request": json.dumps({"model": "m"}),
+                "info": {"input_tokens": 300, "output_tokens": 100, "output_token_times": []},
+            },
+            {
+                "start_time": 100.0,  # First
+                "end_time": 101.0,
+                "request": json.dumps({"model": "m"}),
+                "info": {"input_tokens": 100, "output_tokens": 50, "output_token_times": []},
+            },
+            {
+                "start_time": 105.0,  # Fourth
+                "end_time": 106.0,
+                "request": json.dumps({"model": "m"}),
+                "info": {"input_tokens": 400, "output_tokens": 150, "output_token_times": []},
+            },
+            {
+                "start_time": 101.5,  # Second
+                "end_time": 102.5,
+                "request": json.dumps({"model": "m"}),
+                "info": {"input_tokens": 200, "output_tokens": 75, "output_token_times": []},
+            },
+        ]
+
+        src = _make_per_request_json(str(tmp_path), unordered_requests)
+        out_csv = os.path.join(str(tmp_path), "vidur_trace.csv")
+        convert_to_vidur_trace(src, out_csv)
+
+        with open(out_csv) as fh:
+            reader = csv.DictReader(fh)
+            rows = list(reader)
+
+        # Verify chronological order in output
+        assert float(rows[0]["arrived_at"]) == pytest.approx(0.0)    # 100.0 - 100.0
+        assert float(rows[1]["arrived_at"]) == pytest.approx(1.5)    # 101.5 - 100.0
+        assert float(rows[2]["arrived_at"]) == pytest.approx(3.0)    # 103.0 - 100.0
+        assert float(rows[3]["arrived_at"]) == pytest.approx(5.0)    # 105.0 - 100.0
+
+        # Verify token counts match the sorted order
+        assert int(rows[0]["num_prefill_tokens"]) == 100  # First request
+        assert int(rows[1]["num_prefill_tokens"]) == 200  # Second request
+        assert int(rows[2]["num_prefill_tokens"]) == 300  # Third request
+        assert int(rows[3]["num_prefill_tokens"]) == 400  # Fourth request
+
+        # Verify no negative inter-arrival times
+        for i in range(1, len(rows)):
+            assert float(rows[i]["arrived_at"]) >= float(rows[i-1]["arrived_at"])

@@ -42,24 +42,34 @@ Ground-truth latency percentiles (mean, P90, P99) for E2E, TTFT, and ITL are par
 
 ## 3. Per-Stage Evaluation Pipeline
 
-LLM-optimizer is invoked **once per stage** within each experiment, not once per experiment. Multi-stage workloads (e.g., codegen at 5 req/s then 10 req/s) produce separate predictions per load level.
+LLM-optimizer is invoked via a **concurrency sweep** once per experiment, then per-stage predictions are extracted by matching the stage's arrival rate to the predicted throughput. This approach avoids oracle data leakage by deriving concurrency from the simulator's own predictions rather than ground-truth measurements.
 
 ### 3.1 Input Derivation
 
-For each stage, three inputs are derived from the ground-truth experiment:
+For each experiment, the following inputs are extracted:
 
-#### Concurrency (via Little's Law)
+#### Concurrency (via Throughput Matching)
 
+Instead of using ground-truth E2E latency (oracle-informed), concurrency is now determined by **throughput matching**:
+
+1. **Sweep concurrency levels**: `[1, 2, 4, 8, 16, 32, 64, 128, ...]` up to `max_num_seqs`
+2. **For each concurrency N**, call `estimate_llm_performance(concurrency=N)` to get `predicted_requests_per_sec = N / predicted_E2E_latency`
+3. **For each stage with arrival rate λ**, find the concurrency N where `predicted_requests_per_sec ≈ λ`
+4. **Extract predictions** (TTFT, ITL, E2E) from the matched concurrency level
+
+This is **self-consistent via Little's Law**: at steady state, `arrival_rate = concurrency / E2E_latency`. By finding the concurrency where the roofline model's predicted throughput matches the stage's arrival rate, we establish an equilibrium point without using ground-truth latency as input.
+
+**Example**:
 ```
-concurrency = max(1, round(stage.rate × stage.e2e.mean / 1000))
+Stage rate = 10 req/s
+Sweep results:
+  N=1  → predicted_rate=6.1 req/s   (too low)
+  N=2  → predicted_rate=10.8 req/s  (MATCH! ✓)
+  N=4  → predicted_rate=18.6 req/s  (too high)
+→ Use predictions from N=2
 ```
 
-- `stage.rate` — request arrival rate (req/s) from the ground-truth load profile
-- `stage.e2e.mean` — ground-truth mean E2E latency in milliseconds
-- Division by 1000 converts ms → seconds for dimensional correctness
-- Result is clamped to `[1, max_num_seqs]` to respect the scheduler's batch cap
-
-**Important**: This uses the ground-truth E2E latency as an *input*, which means the concurrency estimate is oracle-informed. In a real deployment scenario, concurrency would need to be estimated or measured independently. This methodology choice isolates the roofline model's latency prediction accuracy from concurrency estimation error.
+**Key advantage**: No oracle data leakage. The only ground-truth input is the arrival rate (λ), which is part of the workload specification, not a measurement. All latency predictions come entirely from the roofline model.
 
 #### Input/Output Token Lengths
 
@@ -84,19 +94,37 @@ These are the *configured* lengths, not per-request actual lengths. All requests
 
 ### 3.2 LLM-Optimizer Invocation
 
+The adapter performs a **concurrency sweep** once per experiment:
+
 ```python
-result = estimate_llm_performance(
-    num_gpus=experiment.tp,
-    gpu_name="H100",
-    model_config=model_config,
-    precision=precision,
-    concurrency=concurrency,
-    input_length=input_length,
-    output_length=output_length,
-)
+# Sweep concurrency levels [1, 2, 4, 8, 16, ...]
+sweep_results = []
+for concurrency in [1, 2, 4, 8, 16, 32, 64, 128, ...]:
+    result = estimate_llm_performance(
+        num_gpus=experiment.tp,
+        gpu_name="H100",
+        model_config=model_config,
+        precision=precision,
+        concurrency=concurrency,
+        input_length=input_length,
+        output_length=output_length,
+    )
+    sweep_results.append((concurrency, result))
+
+    # Stop if VRAM exhausted
+    if result.ttft_ms == float("inf"):
+        break
+
+# Then for each stage, match throughput
+for stage in experiment.stages:
+    concurrency, perf = match_throughput(
+        stage_rate=stage.rate,
+        sweep_results=sweep_results,
+    )
+    # Use perf.ttft_ms, perf.itl_ms, perf.e2e_latency_s
 ```
 
-The function returns a single `PerformanceResult` object with mean latency and throughput values.
+Each sweep call returns a `PerformanceResult` object with mean latency and throughput values. The sweep stops when VRAM capacity is exceeded (indicated by `ttft_ms == inf`).
 
 ### 3.3 Unit Conversion
 
@@ -163,7 +191,7 @@ Aggregation across experiments:
 | Limitation | Impact on Evaluation |
 |------------|---------------------|
 | **No batching simulation** | LLM-optimizer models a single concurrency level, not dynamic batch formation. Real vLLM batching decisions (continuous batching, chunked prefill) are not captured. Expect over-prediction of TTFT under high load. |
-| **Oracle concurrency** | Concurrency is derived from ground-truth E2E latency. This gives llm-optimizer an advantage it would not have in practice. |
+| **Throughput-matching concurrency** | Concurrency is now derived via throughput matching (no oracle data). This is realistic but assumes the roofline model's throughput predictions are accurate. Errors in predicted throughput propagate to concurrency selection, which then affects latency predictions. |
 | **No percentile modeling** | P90 and P99 are not produced — only mean estimates are available. The report shows N/A for these columns. |
 | **No KV cache pressure modeling** | LLM-optimizer does not model GPU memory, KV block exhaustion, preemption, or CPU offloading. Under high KV pressure, real latencies spike but llm-optimizer predictions remain flat. |
 | **No prefix caching modeling** | All ground-truth experiments have prefix caching enabled. LLM-optimizer models full prefill for every request, likely over-predicting TTFT for workloads with high prefix reuse. |
@@ -175,7 +203,24 @@ Aggregation across experiments:
 
 ---
 
-## 8. Expected Error Profile
+## 8. Computational Cost
+
+The throughput-matching approach changes the cost profile compared to the previous oracle-informed method:
+
+**Previous (oracle-informed)**:
+- Per stage: 1 call to `estimate_llm_performance()`
+- Total for N-stage experiment: N calls
+
+**Current (throughput-matching)**:
+- One-time sweep: ~10 calls to `estimate_llm_performance()` (stops at VRAM limit)
+- Per stage: O(log N) lookup/interpolation to match throughput
+- Total for N-stage experiment: ~10 calls (amortized across all stages)
+
+**Result**: For multi-stage experiments, throughput-matching can be **more efficient** than oracle-informed, since the sweep cost is amortized across all stages. For single-stage experiments, throughput-matching is ~10× slower (10 calls vs 1).
+
+---
+
+## 9. Expected Error Profile
 
 Based on the methodology's constraints, the expected error pattern is:
 
