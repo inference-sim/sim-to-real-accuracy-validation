@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 # Constants
 # ---------------------------------------------------------------------------
 
-EXCLUDED_SIMULATORS = frozenset({"blis-blackbox", "blis-crossmodel", "llm-optimizer-estimate", "aiconfigurator-estimate"})
+EXCLUDED_SIMULATORS = frozenset({"blis-blackbox", "blis-crossmodel"})
 
 SIMULATOR_ORDER = [
     "blis-trained-roofline",
@@ -1274,7 +1274,7 @@ def main(argv: list[str] | None = None) -> None:
         excluded = set(args.exclude_simulators)
         error_df = error_df_full[~error_df_full["simulator"].isin(excluded)].reset_index(drop=True)
         runtime_df = runtime_df_full[~runtime_df_full["simulator"].isin(excluded)].reset_index(drop=True)
-        print(f"Excluding simulators from Figs 1-4: {', '.join(sorted(excluded))}")
+        print(f"Excluding simulators from Figs 0a, 1-4: {', '.join(sorted(excluded))}")
     else:
         error_df = error_df_full
         runtime_df = runtime_df_full
@@ -1283,7 +1283,7 @@ def main(argv: list[str] | None = None) -> None:
     runtime_df = enrich_with_metadata(runtime_df, args.metadata)
     error_df = _add_config_tags(error_df)
 
-    # Fig 5 (Pareto) always uses all simulators
+    # Figs 0b and 5 always use all simulators (ignore exclusions)
     error_df_all = enrich_with_metadata(error_df_full, args.metadata)
     runtime_df_all = enrich_with_metadata(runtime_df_full, args.metadata)
     error_df_all = _add_config_tags(error_df_all)
@@ -1295,7 +1295,7 @@ def main(argv: list[str] | None = None) -> None:
         ("fig0a_aggregate_analytical.pdf",
          lambda: plot_aggregate_comparison_analytical(error_df, os.path.join(out, "fig0a_aggregate_analytical.pdf"))),
         ("fig0b_aggregate_trace.pdf",
-         lambda: plot_aggregate_comparison_trace(error_df, os.path.join(out, "fig0b_aggregate_trace.pdf"))),
+         lambda: plot_aggregate_comparison_trace(error_df_all, os.path.join(out, "fig0b_aggregate_trace.pdf"))),
         ("fig1_model_sensitivity.pdf",
          lambda: plot_model_sensitivity(error_df, os.path.join(out, "fig1_model_sensitivity.pdf"))),
         ("fig2_hardware_portability.pdf",
