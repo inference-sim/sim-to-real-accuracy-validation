@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 # Constants
 # ---------------------------------------------------------------------------
 
-EXCLUDED_SIMULATORS = frozenset({"blis-blackbox", "blis-crossmodel"})
+EXCLUDED_SIMULATORS = frozenset({"blis-blackbox", "blis-crossmodel", "vidur"})
 
 SIMULATOR_ORDER = [
     "blis-trained-roofline",
@@ -1283,10 +1283,18 @@ def main(argv: list[str] | None = None) -> None:
     runtime_df = enrich_with_metadata(runtime_df, args.metadata)
     error_df = _add_config_tags(error_df)
 
-    # Figs 0b and 5 always use all simulators (ignore exclusions)
+    # Fig 5 (Pareto) uses all simulators (ignore CLI exclusions)
     error_df_all = enrich_with_metadata(error_df_full, args.metadata)
     runtime_df_all = enrich_with_metadata(runtime_df_full, args.metadata)
     error_df_all = _add_config_tags(error_df_all)
+
+    # Fig 0b (BLIS vs Vidur) needs Vidur data, which is excluded from error_df_full
+    # Load raw CSV and filter to just blis-roofline and vidur
+    error_df_0b = pd.read_csv(error_csv)
+    error_df_0b = error_df_0b[error_df_0b["stage_index"] == -1]  # summary rows only
+    error_df_0b = error_df_0b[error_df_0b["simulator"].isin(["blis-roofline", "vidur"])]
+    error_df_0b = enrich_with_metadata(error_df_0b, args.metadata)
+    error_df_0b = _add_config_tags(error_df_0b)
 
     out = args.output_dir
     os.makedirs(out, exist_ok=True)
@@ -1295,7 +1303,7 @@ def main(argv: list[str] | None = None) -> None:
         ("fig0a_aggregate_analytical.pdf",
          lambda: plot_aggregate_comparison_analytical(error_df, os.path.join(out, "fig0a_aggregate_analytical.pdf"))),
         ("fig0b_aggregate_trace.pdf",
-         lambda: plot_aggregate_comparison_trace(error_df_all, os.path.join(out, "fig0b_aggregate_trace.pdf"))),
+         lambda: plot_aggregate_comparison_trace(error_df_0b, os.path.join(out, "fig0b_aggregate_trace.pdf"))),
         ("fig1_model_sensitivity.pdf",
          lambda: plot_model_sensitivity(error_df, os.path.join(out, "fig1_model_sensitivity.pdf"))),
         ("fig2_hardware_portability.pdf",
