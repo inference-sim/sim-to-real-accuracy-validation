@@ -151,6 +151,51 @@ class TestBlackboxCanRun:
         exp = _make_experiment()
         assert adapter.can_run(exp) is False
 
+    def test_gpu_mismatch_rejects(self, tmp_path):
+        """Coefficients for H100 should not match A100-80GB experiment."""
+        data = {
+            "models": [{
+                "id": "meta-llama/Llama-2-7b-hf",
+                "GPU": "H100",
+                "tensor_parallelism": 1,
+                "alpha_coeffs": [1.0, 2.0, 3.0],
+            }]
+        }
+        defaults_path = os.path.join(str(tmp_path), "defaults.yaml")
+        with open(defaults_path, "w") as fh:
+            yaml.dump(data, fh)
+
+        adapter = BLISBlackboxAdapter("/tmp/blis", defaults_yaml=defaults_path)
+
+        # H100 should match
+        exp_h100 = _make_experiment(model="meta-llama/Llama-2-7b-hf", tp=1)
+        exp_h100.hardware = "H100"
+        assert adapter.can_run(exp_h100) is True
+
+        # A100-80GB should NOT match
+        exp_a100 = _make_experiment(model="meta-llama/Llama-2-7b-hf", tp=1)
+        exp_a100.hardware = "A100-80GB"
+        assert adapter.can_run(exp_a100) is False
+
+    def test_a100_normalization_matches(self, tmp_path):
+        """A100-80GB experiment should match A100-80 coefficients via normalization."""
+        data = {
+            "models": [{
+                "id": "meta-llama/Llama-2-7b-hf",
+                "GPU": "A100-80",
+                "tensor_parallelism": 1,
+                "alpha_coeffs": [1.0, 2.0, 3.0],
+            }]
+        }
+        defaults_path = os.path.join(str(tmp_path), "defaults.yaml")
+        with open(defaults_path, "w") as fh:
+            yaml.dump(data, fh)
+
+        adapter = BLISBlackboxAdapter("/tmp/blis", defaults_yaml=defaults_path)
+        exp = _make_experiment(model="meta-llama/Llama-2-7b-hf", tp=1)
+        exp.hardware = "A100-80GB"
+        assert adapter.can_run(exp) is True
+
 
 class TestRooflineCanRun:
     def test_always_true(self):
@@ -171,6 +216,28 @@ class TestTrainedRooflineCanRun:
         adapter = BLISTrainedRooflineAdapter("/tmp/blis")
         exp = _make_experiment()
         assert adapter.can_run(exp) is True
+
+
+# ---------------------------------------------------------------------------
+# Tests: hardware normalization
+# ---------------------------------------------------------------------------
+
+
+class TestHardwareNormalization:
+    def test_a100_80gb_normalization(self):
+        """A100-80GB from manifest should normalize to A100-80 for BLIS."""
+        adapter = BLISRooflineAdapter("/tmp/blis")
+        assert adapter._normalize_hardware("A100-80GB") == "A100-80"
+
+    def test_h100_passes_through(self):
+        """H100 should pass through unchanged."""
+        adapter = BLISRooflineAdapter("/tmp/blis")
+        assert adapter._normalize_hardware("H100") == "H100"
+
+    def test_l40s_passes_through(self):
+        """L40S should pass through unchanged."""
+        adapter = BLISRooflineAdapter("/tmp/blis")
+        assert adapter._normalize_hardware("L40S") == "L40S"
 
 
 # ---------------------------------------------------------------------------
@@ -265,6 +332,26 @@ class TestBLISCLIArgs:
         assert called_args[idx + 1] == "7463"
         idx = called_args.index("--kv-cpu-blocks")
         assert called_args[idx + 1] == "5"
+
+        # Check hardware is passed from experiment
+        idx = called_args.index("--hardware")
+        assert called_args[idx + 1] == "H100"
+
+    @patch("experiment.adapters.blis_roofline.subprocess.run")
+    def test_hardware_from_experiment_normalized(self, mock_run):
+        """Hardware should come from experiment and be normalized."""
+        mock_run.return_value = MagicMock()
+        adapter = BLISRooflineAdapter("/usr/local/bin/blis")
+        exp = _make_experiment()
+        exp.hardware = "A100-80GB"
+
+        with patch.object(adapter, "_parse_blis_results") as mock_parse:
+            mock_parse.return_value = MagicMock()
+            adapter.run(exp)
+
+        called_args = mock_run.call_args[0][0]
+        idx = called_args.index("--hardware")
+        assert called_args[idx + 1] == "A100-80"
 
     @patch("experiment.adapters.blis_roofline.subprocess.run")
     def test_model_and_tp_in_args(self, mock_run):

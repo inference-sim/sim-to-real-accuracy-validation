@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 # Constants
 # ---------------------------------------------------------------------------
 
-EXCLUDED_SIMULATORS = frozenset({"blis-blackbox", "blis-crossmodel"})
+EXCLUDED_SIMULATORS = frozenset({"blis-blackbox", "blis-crossmodel", "vidur"})
 
 SIMULATOR_ORDER = [
     "blis-trained-roofline",
@@ -149,11 +149,11 @@ _MODEL_DEFAULT_TP = {
     "meta-llama/Llama-2-7b-hf": 1,
     "meta-llama/Llama-3.1-8B-Instruct": 1,
     "Qwen/Qwen3-14B": 1,
-    "codellama/CodeLlama-34b-Instruct-hf": 1,
+    "codellama/CodeLlama-34b-Instruct-hf": 2,
     "meta-llama/Llama-2-70b-hf": 4,
     "mistralai/Mixtral-8x7B-v0.1": 2,
-    "mistralai/Mixtral-8x22B-Instruct-v0.1": 4,
-    "RedHatAI/Llama-4-Scout-17B-16E-Instruct-FP8-dynamic": 8,
+    "mistralai/Mixtral-8x22B-Instruct-v0.1": 8,
+    "RedHatAI/Llama-4-Scout-17B-16E-Instruct-FP8-dynamic": 2,
 }
 
 _MOE_MODELS = frozenset({
@@ -329,6 +329,7 @@ def _grouped_bar(
     bar_width = 0.8 / n_sims
     x = np.arange(n_groups)
     col_maxes = [0.0] * n_cols
+    labeled_sims = set()  # Track which simulators have been labeled
 
     for col_idx, (metric_key, metric_label) in enumerate(metrics):
         ax = axes[col_idx]
@@ -354,7 +355,10 @@ def _grouped_bar(
                 continue
             col_maxes[col_idx] = max(col_maxes[col_idx], max(heights))
 
-            label = SIMULATOR_DISPLAY_NAMES[sim] if col_idx == 0 else ""
+            # Add label only the first time this simulator is plotted
+            label = SIMULATOR_DISPLAY_NAMES[sim] if sim not in labeled_sims else ""
+            if sim not in labeled_sims:
+                labeled_sims.add(sim)
             ax.bar(
                 positions, heights, bar_width,
                 color=COLOR_PALETTE[sim],
@@ -380,10 +384,19 @@ def _grouped_bar(
 
     fig.suptitle(title, fontsize=11, fontweight="bold")
 
-    handles, labels = axes[0].get_legend_handles_labels()
-    if handles:
+    # Collect legend handles/labels from all axes (not just axes[0])
+    # to include simulators that don't have data in the first metric column
+    all_handles, all_labels = [], []
+    for ax in axes:
+        h, l = ax.get_legend_handles_labels()
+        for handle, label in zip(h, l):
+            if label and label not in all_labels:  # Deduplicate by label
+                all_handles.append(handle)
+                all_labels.append(label)
+
+    if all_handles:
         fig.legend(
-            handles, labels, loc="upper center",
+            all_handles, all_labels, loc="upper center",
             bbox_to_anchor=(0.5, -0.01), ncol=n_sims,
             frameon=False, handlelength=1.5, columnspacing=1.0,
         )
@@ -402,6 +415,299 @@ def _grouped_bar(
 # ---------------------------------------------------------------------------
 
 
+def plot_aggregate_comparison_analytical(
+    df: pd.DataFrame,
+    output_path: str | None = None,
+) -> plt.Figure | None:
+    """Figure 0a: BLIS-Roofline vs LLM-Optimizer vs AIConfigurator.
+
+    Only includes experiments where blis-roofline, llm-optimizer-estimate,
+    and aiconfigurator-estimate all have data. Filters to default configs
+    (model's default TP, cpu_offload=false, gpu_mem=0.9, dp≤1, mbt=2048)
+    and general/general-lite workloads (consistent with Figure 2).
+    Shows median MAPE across these experiments for E2E, TTFT, and ITL
+    (all three simulators).
+    """
+    _apply_rc_params()
+
+    # Find experiments with data from all three target simulators
+    target_sims = {"blis-roofline", "llm-optimizer-estimate", "aiconfigurator-estimate"}
+    exp_sims = df.groupby("experiment_folder")["simulator"].apply(set)
+    common_exps = exp_sims[exp_sims.apply(lambda s: target_sims.issubset(s))].index
+
+    if len(common_exps) == 0:
+        warnings.warn("Figure 0: no experiments with data from all simulators")
+        return None
+
+    df_filtered = df[df["experiment_folder"].isin(common_exps)]
+
+    # Filter to default configs only (consistent with Figure 2).
+    # All three simulators support multi-GPU configs, so we include experiments
+    # at each model's default TP rather than restricting to tp=1.
+    df_filtered = df_filtered[df_filtered["config_tag"] == "default"]
+    # Also filter to general/general-lite workloads to match Figure 2
+    df_filtered = df_filtered[df_filtered["workload"].isin(("general", "general-lite"))]
+
+    if df_filtered.empty:
+        warnings.warn("Figure 0: no experiments with default configs")
+        return None
+
+    common_exps = df_filtered["experiment_folder"].unique()
+
+    # Prepare data for each metric
+    metrics_data = []
+
+    # E2E: all three simulators
+    e2e_df = df_filtered[
+        (df_filtered["metric_name"] == "e2e_mean") &
+        (df_filtered["simulator"].isin(list(target_sims)))
+    ]
+    if not e2e_df.empty:
+        e2e_agg = e2e_df.groupby("simulator")["mape"].median()
+        metrics_data.append(("E2E Mean", e2e_agg, list(target_sims)))
+
+    # TTFT: all three simulators
+    ttft_df = df_filtered[
+        (df_filtered["metric_name"] == "ttft_mean") &
+        (df_filtered["simulator"].isin(list(target_sims)))
+    ]
+    if not ttft_df.empty:
+        ttft_agg = ttft_df.groupby("simulator")["mape"].median()
+        metrics_data.append(("TTFT Mean", ttft_agg, list(target_sims)))
+
+    # ITL: all three simulators
+    itl_df = df_filtered[
+        (df_filtered["metric_name"] == "itl_mean") &
+        (df_filtered["simulator"].isin(list(target_sims)))
+    ]
+    if not itl_df.empty:
+        itl_agg = itl_df.groupby("simulator")["mape"].median()
+        metrics_data.append(("ITL Mean", itl_agg, list(target_sims)))
+
+    if not metrics_data:
+        warnings.warn("Figure 0: no metrics data after aggregation")
+        return None
+
+    # Create figure
+    n_metrics = len(metrics_data)
+    fig, axes = plt.subplots(1, n_metrics, figsize=(10, 4))
+    if n_metrics == 1:
+        axes = [axes]
+
+    bar_width = 0.6
+    labeled_sims = set()  # Track which simulators have been labeled
+
+    for col_idx, (metric_label, agg_data, sims_for_metric) in enumerate(metrics_data):
+        ax = axes[col_idx]
+
+        # Sort simulators by SIMULATOR_ORDER
+        sims_ordered = [s for s in SIMULATOR_ORDER if s in sims_for_metric and s in agg_data.index]
+
+        x = np.arange(len(sims_ordered))
+        heights = [agg_data[sim] for sim in sims_ordered]
+        colors = [COLOR_PALETTE[sim] for sim in sims_ordered]
+        hatches = [HATCH_PATTERNS.get(sim, "") for sim in sims_ordered]
+
+        for i, (pos, height, color, hatch) in enumerate(zip(x, heights, colors, hatches)):
+            sim = sims_ordered[i]
+            # Add label only the first time this simulator is plotted
+            label = SIMULATOR_DISPLAY_NAMES[sim] if sim not in labeled_sims else ""
+            if sim not in labeled_sims:
+                labeled_sims.add(sim)
+
+            ax.bar(
+                pos, height, bar_width,
+                color=color, hatch=hatch,
+                edgecolor="black", linewidth=0.5,
+                label=label,
+            )
+
+        ax.set_xticks([])
+        ax.set_xlim(-0.5, len(sims_ordered) - 0.5)
+
+        y_top = max(heights) * 1.20 if heights else 1.0
+        ax.set_ylim(bottom=0, top=y_top)
+
+        pct = r"\%" if matplotlib.rcParams.get("text.usetex") else "%"
+        ax.set_ylabel(f"MAPE ({pct})")
+        ax.set_title(metric_label, fontsize=10, fontweight="bold")
+
+    fig.suptitle(
+        f"BLIS-Roofline vs LLM-Optimizer vs AIConfigurator (n={len(common_exps)}) ↓",
+        fontsize=11, fontweight="bold"
+    )
+
+    # Collect legend from all axes (not just axes[0])
+    # to include simulators that don't have data in the first metric column
+    all_handles, all_labels = [], []
+    for ax in axes:
+        h, l = ax.get_legend_handles_labels()
+        for handle, label in zip(h, l):
+            if label and label not in all_labels:  # Deduplicate by label
+                all_handles.append(handle)
+                all_labels.append(label)
+
+    if all_handles:
+        fig.legend(
+            all_handles, all_labels, loc="upper center",
+            bbox_to_anchor=(0.5, -0.01), ncol=len(all_handles),
+            frameon=False, handlelength=1.5, columnspacing=1.0,
+        )
+
+    fig.tight_layout()
+    fig.subplots_adjust(top=0.88)
+
+    if output_path:
+        _save_figure(fig, output_path)
+    return fig
+
+
+def plot_aggregate_comparison_trace(
+    df: pd.DataFrame,
+    output_path: str | None = None,
+) -> plt.Figure | None:
+    """Figure 0b: BLIS-Roofline vs Vidur.
+
+    Only includes experiments where both blis-roofline and vidur have data.
+    Filters to default configs (model's default TP, cpu_offload=false,
+    gpu_mem=0.9, dp≤1, mbt=2048) and general/general-lite workloads.
+    Shows median MAPE across these experiments for E2E, TTFT, and ITL
+    (both simulators report all three metrics with full distributions).
+
+    Note: Vidur only supports 3 models (Llama-2-7b, Llama-2-70b, CodeLlama-34b),
+    so experiment count is limited by Vidur's model coverage.
+    """
+    _apply_rc_params()
+
+    # Find experiments with data from both trace-replay simulators
+    target_sims = {"blis-roofline", "vidur"}
+    exp_sims = df.groupby("experiment_folder")["simulator"].apply(set)
+    common_exps = exp_sims[exp_sims.apply(lambda s: target_sims.issubset(s))].index
+
+    if len(common_exps) == 0:
+        warnings.warn("Figure 0b: no experiments with data from both BLIS and Vidur")
+        return None
+
+    df_filtered = df[df["experiment_folder"].isin(common_exps)]
+
+    # Filter to default configs only (consistent with Figure 0a and Figure 2)
+    df_filtered = df_filtered[df_filtered["config_tag"] == "default"]
+    # Also filter to general/general-lite workloads
+    df_filtered = df_filtered[df_filtered["workload"].isin(("general", "general-lite"))]
+
+    if df_filtered.empty:
+        warnings.warn("Figure 0b: no experiments with default configs")
+        return None
+
+    common_exps = df_filtered["experiment_folder"].unique()
+
+    # Prepare data for each metric (both simulators report all three)
+    metrics_data = []
+
+    # E2E: both simulators
+    e2e_df = df_filtered[
+        (df_filtered["metric_name"] == "e2e_mean") &
+        (df_filtered["simulator"].isin(list(target_sims)))
+    ]
+    if not e2e_df.empty:
+        e2e_agg = e2e_df.groupby("simulator")["mape"].median()
+        metrics_data.append(("E2E Mean", e2e_agg, list(target_sims)))
+
+    # TTFT: both simulators
+    ttft_df = df_filtered[
+        (df_filtered["metric_name"] == "ttft_mean") &
+        (df_filtered["simulator"].isin(list(target_sims)))
+    ]
+    if not ttft_df.empty:
+        ttft_agg = ttft_df.groupby("simulator")["mape"].median()
+        metrics_data.append(("TTFT Mean", ttft_agg, list(target_sims)))
+
+    # ITL: both simulators
+    itl_df = df_filtered[
+        (df_filtered["metric_name"] == "itl_mean") &
+        (df_filtered["simulator"].isin(list(target_sims)))
+    ]
+    if not itl_df.empty:
+        itl_agg = itl_df.groupby("simulator")["mape"].median()
+        metrics_data.append(("ITL Mean", itl_agg, list(target_sims)))
+
+    if not metrics_data:
+        warnings.warn("Figure 0b: no metrics data after aggregation")
+        return None
+
+    # Create figure
+    n_metrics = len(metrics_data)
+    fig, axes = plt.subplots(1, n_metrics, figsize=(10, 4))
+    if n_metrics == 1:
+        axes = [axes]
+
+    bar_width = 0.6
+    labeled_sims = set()  # Track which simulators have been labeled
+
+    for col_idx, (metric_label, agg_data, sims_for_metric) in enumerate(metrics_data):
+        ax = axes[col_idx]
+
+        # Sort simulators by SIMULATOR_ORDER
+        sims_ordered = [s for s in SIMULATOR_ORDER if s in sims_for_metric and s in agg_data.index]
+
+        x = np.arange(len(sims_ordered))
+        heights = [agg_data[sim] for sim in sims_ordered]
+        colors = [COLOR_PALETTE[sim] for sim in sims_ordered]
+        hatches = [HATCH_PATTERNS.get(sim, "") for sim in sims_ordered]
+
+        for i, (pos, height, color, hatch) in enumerate(zip(x, heights, colors, hatches)):
+            sim = sims_ordered[i]
+            # Add label only the first time this simulator is plotted
+            label = SIMULATOR_DISPLAY_NAMES[sim] if sim not in labeled_sims else ""
+            if sim not in labeled_sims:
+                labeled_sims.add(sim)
+
+            ax.bar(
+                pos, height, bar_width,
+                color=color, hatch=hatch,
+                edgecolor="black", linewidth=0.5,
+                label=label,
+            )
+
+        ax.set_xticks([])
+        ax.set_xlim(-0.5, len(sims_ordered) - 0.5)
+
+        y_top = max(heights) * 1.20 if heights else 1.0
+        ax.set_ylim(bottom=0, top=y_top)
+
+        pct = r"\%" if matplotlib.rcParams.get("text.usetex") else "%"
+        ax.set_ylabel(f"MAPE ({pct})")
+        ax.set_title(metric_label, fontsize=10, fontweight="bold")
+
+    fig.suptitle(
+        f"BLIS-Roofline vs Vidur (n={len(common_exps)}) ↓",
+        fontsize=11, fontweight="bold"
+    )
+
+    # Collect legend from all axes
+    all_handles, all_labels = [], []
+    for ax in axes:
+        h, l = ax.get_legend_handles_labels()
+        for handle, label in zip(h, l):
+            if label and label not in all_labels:  # Deduplicate by label
+                all_handles.append(handle)
+                all_labels.append(label)
+
+    if all_handles:
+        fig.legend(
+            all_handles, all_labels, loc="upper center",
+            bbox_to_anchor=(0.5, -0.01), ncol=len(all_handles),
+            frameon=False, handlelength=1.5, columnspacing=1.0,
+        )
+
+    fig.tight_layout()
+    fig.subplots_adjust(top=0.88)
+
+    if output_path:
+        _save_figure(fig, output_path)
+    return fig
+
+
 def plot_model_sensitivity(
     df: pd.DataFrame,
     output_path: str | None = None,
@@ -418,7 +724,7 @@ def plot_model_sensitivity(
 
     fig = _grouped_bar(
         df, group_col="model", group_order=MODEL_ORDER,
-        title="Prediction Error Across Model Architectures",
+        title="Prediction Error Across Model Architectures ↓",
         output_path=output_path,
         group_labels=MODEL_SHORT_LABELS,
         metrics=[
@@ -453,7 +759,7 @@ def plot_hardware_portability(
         df, group_col="hardware", group_order=HARDWARE_ORDER,
         group_labels={"A100-80GB": "A100"},
         xlabel_rotation=0,
-        title="Prediction Error Across GPU Types",
+        title="Prediction Error Across GPU Types ↓",
         output_path=output_path,
         aggregate=True,
         metrics=[
@@ -483,7 +789,7 @@ def plot_workload_sensitivity(
 
     fig = _grouped_bar(
         df, group_col="workload", group_order=WORKLOAD_ORDER,
-        title="Prediction Error Across Workload Types",
+        title="Prediction Error Across Workload Types ↓",
         output_path=output_path,
         group_labels=WORKLOAD_DISPLAY_NAMES, aggregate=True,
         metrics=[
@@ -745,7 +1051,7 @@ def plot_config_sensitivity_dense(
     short = _short_model_name(model)
     return _plot_config_sensitivity(
         df, model=model,
-        title="Config Sensitivity (Dense)",
+        title="Config Sensitivity (Dense) ↓",
         subtitle=f"{short} — {FIG4_METRIC_LABEL} MAPE",
         output_path=output_path,
     )
@@ -761,7 +1067,7 @@ def plot_config_sensitivity_moe(
     short = _short_model_name(model)
     return _plot_config_sensitivity(
         df, model=model,
-        title="Config Sensitivity (MoE)",
+        title="Config Sensitivity (MoE) ↓",
         subtitle=f"{short} — {FIG4_METRIC_LABEL} MAPE",
         output_path=output_path,
     )
@@ -968,7 +1274,7 @@ def main(argv: list[str] | None = None) -> None:
         excluded = set(args.exclude_simulators)
         error_df = error_df_full[~error_df_full["simulator"].isin(excluded)].reset_index(drop=True)
         runtime_df = runtime_df_full[~runtime_df_full["simulator"].isin(excluded)].reset_index(drop=True)
-        print(f"Excluding simulators from Figs 1-4: {', '.join(sorted(excluded))}")
+        print(f"Excluding simulators from Figs 0a, 1-4: {', '.join(sorted(excluded))}")
     else:
         error_df = error_df_full
         runtime_df = runtime_df_full
@@ -977,15 +1283,27 @@ def main(argv: list[str] | None = None) -> None:
     runtime_df = enrich_with_metadata(runtime_df, args.metadata)
     error_df = _add_config_tags(error_df)
 
-    # Fig 5 (Pareto) always uses all simulators
+    # Fig 5 (Pareto) uses all simulators (ignore CLI exclusions)
     error_df_all = enrich_with_metadata(error_df_full, args.metadata)
     runtime_df_all = enrich_with_metadata(runtime_df_full, args.metadata)
     error_df_all = _add_config_tags(error_df_all)
+
+    # Fig 0b (BLIS vs Vidur) needs Vidur data, which is excluded from error_df_full
+    # Load raw CSV and filter to just blis-roofline and vidur
+    error_df_0b = pd.read_csv(error_csv)
+    error_df_0b = error_df_0b[error_df_0b["stage_index"] == -1]  # summary rows only
+    error_df_0b = error_df_0b[error_df_0b["simulator"].isin(["blis-roofline", "vidur"])]
+    error_df_0b = enrich_with_metadata(error_df_0b, args.metadata)
+    error_df_0b = _add_config_tags(error_df_0b)
 
     out = args.output_dir
     os.makedirs(out, exist_ok=True)
 
     figures = [
+        ("fig0a_aggregate_analytical.pdf",
+         lambda: plot_aggregate_comparison_analytical(error_df, os.path.join(out, "fig0a_aggregate_analytical.pdf"))),
+        ("fig0b_aggregate_trace.pdf",
+         lambda: plot_aggregate_comparison_trace(error_df_0b, os.path.join(out, "fig0b_aggregate_trace.pdf"))),
         ("fig1_model_sensitivity.pdf",
          lambda: plot_model_sensitivity(error_df, os.path.join(out, "fig1_model_sensitivity.pdf"))),
         ("fig2_hardware_portability.pdf",

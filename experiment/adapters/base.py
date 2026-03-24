@@ -56,6 +56,18 @@ class BaseBLISAdapter(SimulatorAdapter):
         self.blis_binary = os.path.abspath(blis_binary)
         self._blis_dir = os.path.dirname(self.blis_binary)
 
+    @staticmethod
+    def _normalize_hardware(hardware: str) -> str:
+        """Normalize manifest hardware names to BLIS-compatible names.
+
+        The manifest uses "A100-80GB" but BLIS expects "A100-80" in its
+        hardware_config.json and defaults.yaml. Other hardware types
+        (H100, L40S) pass through unchanged.
+        """
+        if hardware == "A100-80GB":
+            return "A100-80"
+        return hardware
+
     def _build_common_args(
         self,
         experiment: Experiment,
@@ -67,14 +79,14 @@ class BaseBLISAdapter(SimulatorAdapter):
             self.blis_binary, "run",
             "--model", experiment.model,
             "--tp", str(experiment.tp),
-            "--hardware", "H100",
+            "--hardware", self._normalize_hardware(experiment.hardware),
             "--max-num-running-reqs", str(experiment.max_num_seqs),
             "--max-num-scheduled-tokens", str(experiment.max_num_batched_tokens),
             "--total-kv-blocks", str(experiment.total_kv_blocks),
             "--kv-cpu-blocks", str(experiment.cpu_kv_blocks),
             "--kv-offload-threshold", "0.9",
-            "--kv-transfer-bandwidth", "100.0",
-            "--seed", "0",
+            "--kv-transfer-bandwidth", "0.2",
+            "--seed", "42",
             "--workload-spec", trace_spec,
             "--results-path", results_path,
         ]
@@ -97,7 +109,7 @@ class BaseBLISAdapter(SimulatorAdapter):
 
         spec = {
             "version": "2",
-            "seed": 0,
+            "seed": 42,
             "num_requests": total_requests,
             "inference_perf": {
                 "stages": [

@@ -209,9 +209,9 @@ def parse_experiment(folder_path: str, manifest_entry: dict | None = None) -> Ex
     summary = _parse_stage_metrics(summary_data, stage_index=-1, stage_cfg=None)
 
     # 6. Extract KV blocks
-    total_kv_blocks = extract_total_kv_blocks(os.path.join(folder_path, "vllm.log"))
-    kv_events_path = os.path.join(folder_path, "kv_events.jsonl")
-    cpu_kv_blocks = extract_cpu_kv_blocks(kv_events_path) if os.path.exists(kv_events_path) else 0
+    vllm_log = os.path.join(folder_path, "vllm.log")
+    total_kv_blocks = extract_total_kv_blocks(vllm_log)
+    cpu_kv_blocks = extract_cpu_kv_blocks(vllm_log)
 
     # 7. Manifest metadata (new fields from experiments.json)
     kwargs = {}
@@ -275,7 +275,16 @@ def _parse_stage_metrics(
     # Latencies: seconds → milliseconds
     e2e = _parse_latency_dist(latency["request_latency"])
     ttft = _parse_latency_dist(latency["time_to_first_token"])
-    itl = _parse_latency_dist(latency["inter_token_latency"])
+
+    # Calculate standard TPOT (Time Per Output Token) using industry formula:
+    # TPOT = (E2E - TTFT) / (output_tokens - 1)
+    # This matches the definition from GCP docs and is the standard metric.
+    output_tokens = successes["output_len"]["mean"]
+    tpot_seconds = (latency["request_latency"]["mean"] - latency["time_to_first_token"]["mean"]) / max(output_tokens - 1, 1)
+    tpot_ms = tpot_seconds * 1000
+
+    # TPOT is what simulators predict as ITL (inter-token latency)
+    itl = LatencyDistribution(mean=tpot_ms, p90=None, p99=None)
 
     # Throughput (already in tokens/sec or req/sec)
     tp_data = successes["throughput"]

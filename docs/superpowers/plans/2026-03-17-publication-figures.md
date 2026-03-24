@@ -468,9 +468,10 @@ git commit -m "feat(figures): add _bar_chart_grid() helper"
 "Prediction accuracy across model architectures. MAPE of {n_simulators}
 simulators across {n_models} LLM models spanning dense (7B--70B) and MoE
 (47B--141B) architectures on H100 (General-Purpose workload, default vLLM
-config). Top row: mean latency; bottom row: P99 tail latency. BLIS-Trained
-(dark blue) maintains low MAPE across all architectures. LLM-Optimizer and
-AIConfigurator produce only mean estimates (tail-latency bars absent)."
+config). Top row: mean latency (E2E, TTFT, ITL); bottom row: P99 tail latency.
+BLIS-Trained (dark blue) maintains low MAPE across all architectures.
+LLM-Optimizer and AIConfigurator report mean estimates for all three metrics
+but lack tail-latency predictions (P99 bars absent)."
 ```
 
 - [ ] **Step 1: Write failing tests**
@@ -1263,9 +1264,10 @@ Placeholders in `{braces}` are filled at render time from the data. These captio
 Prediction accuracy across model architectures. MAPE of {n_simulators}
 simulators across {n_models} LLM models spanning dense (7B--70B) and MoE
 (47B--141B) architectures on H100 (General-Purpose workload, default vLLM
-config). Top row: mean latency; bottom row: P99 tail latency. BLIS-Trained
-(dark blue) maintains low MAPE across all architectures. LLM-Optimizer and
-AIConfigurator produce only mean estimates (tail-latency bars absent).
+config). Top row: mean latency (E2E, TTFT, ITL); bottom row: P99 tail latency.
+BLIS-Trained (dark blue) maintains low MAPE across all architectures.
+LLM-Optimizer and AIConfigurator report mean estimates for all three metrics
+but lack tail-latency predictions (P99 bars absent).
 ```
 
 ### Figure 2 — Hardware Portability

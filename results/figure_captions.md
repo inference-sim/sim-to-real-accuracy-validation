@@ -16,11 +16,19 @@
 
 ---
 
+### Figure 0: Aggregate Comparison — Default Config
+
+![Figure 0](figures/fig0_aggregate_comparison.png)
+
+Median MAPE aggregated across 5 H100 experiments where BLIS-Roofline, LLM-Optimizer, and AIConfigurator all have data, using default vLLM serving configuration (each model's standard TP, no CPU KV cache offloading, 0.90 GPU memory utilization, max\_num\_batched\_tokens=2048, DP≤1) and general/general-lite workloads only. Aggregation treats each experiment as an independent data point — Qwen3-14B contributes two experiments (one general, one general-lite workload), while other models contribute one each. Shows three metrics: E2E Mean (BLIS and LLM-Optimizer only, since AIConfigurator does not report E2E), TTFT Mean (all three simulators), and ITL Mean (all three simulators). Experiments span four dense models at their standard TP values: Llama-3.1-8B (TP=1), Qwen3-14B (TP=1), CodeLlama-34B (TP=2), Llama-2-70B (TP=4). Default configs ensure that analytical simulators' baseline assumptions (GPU-only inference, standard memory utilization, standard batching) match the ground truth configuration. Filter criteria match Figure 2 (Hardware Portability) for consistency.
+
+---
+
 ### Figure 1: Prediction Error Across Model Architectures
 
 ![Figure 1](figures/fig1_model_sensitivity.png)
 
-MAPE of each simulator across 7 models on H100 with default serving configuration and general-purpose workload: Llama-3.1-8B, Qwen3-14B, CodeLlama-34B, Llama-2-70B (dense), Mixtral-8x7B, Mixtral-8x22B, and Llama-4-Scout-17B-16E (MoE/FP8). Simulators absent from a model either lack a pre-built profile for that architecture (Vidur) or exclude MoE models entirely (Vidur, AIConfigurator). LLM-Optimizer runs MoE models using its dense approximation (see methodology).
+MAPE for individual experiments across 7 models on H100 with default serving configuration and general/general-lite workloads: Llama-3.1-8B, Qwen3-14B, CodeLlama-34B, Llama-2-70B (dense), Mixtral-8x7B, Mixtral-8x22B, and Llama-4-Scout-17B-16E (MoE/FP8). No aggregation across experiments — shows one experiment per model to reveal per-architecture variation. Simulators absent from a model either lack a pre-built profile for that architecture (Vidur) or exclude MoE models entirely (Vidur, AIConfigurator). LLM-Optimizer runs MoE models using its dense approximation (see methodology).
 
 ---
 
@@ -28,7 +36,7 @@ MAPE of each simulator across 7 models on H100 with default serving configuratio
 
 ![Figure 2](figures/fig2_hardware_portability.png)
 
-Median MAPE across models for three GPU types (H100, A100-80GB, L40S) with default configuration. No non-BLIS simulator supports L40S. AIConfigurator is limited to H100. Vidur coverage varies by GPU due to per-model profiling requirements.
+Median MAPE across models for three GPU types (H100, A100-80GB, L40S) with default configuration (each model's standard TP, no CPU KV cache offloading, 0.90 GPU memory utilization, max\_num\_batched\_tokens=2048, DP≤1) and general/general-lite workloads only. No non-BLIS simulator supports L40S. AIConfigurator is limited to H100. Vidur coverage varies by GPU due to per-model profiling requirements.
 
 ---
 
@@ -36,7 +44,7 @@ Median MAPE across models for three GPU types (H100, A100-80GB, L40S) with defau
 
 ![Figure 3](figures/fig3_workload_sensitivity.png)
 
-Median MAPE for four workload types — general-purpose, code generation, roleplay, and reasoning — on H100 with default configuration. Aggregated over four models spanning the architecture space: Llama-3.1-8B (small dense), Qwen3-14B (medium dense), Llama-4-Scout-17B-16E (quantized MoE, FP8), and Mixtral-8x22B (large MoE). These were chosen to cover small-to-large parameter counts and both dense and mixture-of-experts architectures.
+Median MAPE for four workload types — general-purpose, code generation, roleplay, and reasoning — on H100 with default configuration (each model's standard TP, no CPU KV cache offloading, 0.90 GPU memory utilization, max\_num\_batched\_tokens=2048, DP≤1). Aggregated across experiments from four models: Llama-3.1-8B (small dense), Qwen3-14B (medium dense), Llama-4-Scout-17B-16E (quantized MoE, FP8), and Mixtral-8x22B (large MoE). Coverage varies by simulator — Vidur and AIConfigurator exclude MoE models entirely; Llama-4-Scout may lack data from some simulators depending on available profiles.
 
 ---
 
@@ -44,7 +52,7 @@ Median MAPE for four workload types — general-purpose, code generation, rolepl
 
 ![Figure 4a](figures/fig4a_config_dense.png)
 
-MAPE under controlled single-parameter sweeps on a dense model (H100, general-purpose workload). Each group varies one serving parameter — TP, chunk size, GPU memory utilization, or KV cache offloading — while holding all others at baseline. Analytical estimators (LLM-Optimizer, AIConfigurator) do not accept chunk size, offloading, or memory utilization as inputs, so their predictions remain constant across those sweeps (see methodology). Vidur is absent when it lacks a profile for the selected model.
+E2E Mean MAPE for individual config values under controlled single-parameter sweeps on a dense model (H100, general/general-lite workloads). No aggregation — each bar shows one experiment with a specific parameter value. Each group varies one serving parameter — TP, chunk size (max\_num\_batched\_tokens), GPU memory utilization, or KV cache offloading — while holding all others at baseline. Analytical estimators (LLM-Optimizer, AIConfigurator) do not accept chunk size, offloading, or memory utilization as inputs, so their predictions remain constant across those sweeps (see methodology). Vidur is absent when it lacks a profile for the selected model.
 
 ---
 
@@ -52,7 +60,7 @@ MAPE under controlled single-parameter sweeps on a dense model (H100, general-pu
 
 ![Figure 4b](figures/fig4b_config_moe.png)
 
-Same controlled single-parameter sweeps as Figure 4a, applied to a MoE model (Mixtral-8x7B, H100, general-purpose workload), with expert parallelism (DP) as an additional swept dimension. Vidur and AIConfigurator exclude MoE architectures entirely. LLM-Optimizer runs using its dense approximation and does not model DP, chunk size, offloading, or memory utilization (see methodology).
+E2E Mean MAPE for individual config values under controlled single-parameter sweeps on a MoE model (Mixtral-8x7B, H100, general/general-lite workloads). No aggregation — each bar shows one experiment with a specific parameter value. Same parameter sweeps as Figure 4a (TP, chunk size, GPU memory utilization, KV cache offloading), with expert parallelism (DP) as an additional swept dimension. Vidur and AIConfigurator exclude MoE architectures entirely. LLM-Optimizer runs using its dense approximation and does not model DP, chunk size, offloading, or memory utilization (see methodology).
 
 ---
 
@@ -60,7 +68,7 @@ Same controlled single-parameter sweeps as Figure 4a, applied to a MoE model (Mi
 
 ![Figure 5](figures/fig5_pareto.png)
 
-Median MAPE vs. median wall-clock runtime per simulator, aggregated across all experiments. Error bars show interquartile range. The shaded region marks the Pareto-dominated quadrant — simulators there are strictly worse on both accuracy and speed. All simulators are shown regardless of any exclusion flags applied to other figures.
+Median MAPE vs. median wall-clock runtime per simulator, aggregated across all experiments without filtering (includes all models, hardware types, workloads, and config parameters). Two-level aggregation: first, median MAPE per (simulator, experiment) to handle outliers; then, median and interquartile range (Q1, Q3) across experiments per simulator. Error bars show IQR. The shaded region marks the Pareto-dominated quadrant — simulators there are strictly worse on both accuracy and speed. All simulators are shown regardless of any exclusion flags applied to other figures.
 
 ---
 
@@ -68,8 +76,9 @@ Median MAPE vs. median wall-clock runtime per simulator, aggregated across all e
 
 | Simulator | Median Runtime (s) | Speedup vs. Real |
 |---|---|---|
-| Vidur | 127.1 | 9x |
-| LLM-Optimizer | 0.1 | 23,754x |
-| AIConfigurator | 3.3 | 360x |
+| BLIS-Roofline | 1.6 | 770x |
+| Vidur | 9.9 | 121x |
+| LLM-Optimizer | 0.1 | 23,094x |
+| AIConfigurator | 3.3 | 363x |
 
-Median runtime per simulator and speedup over real experiment execution (~1200s per experiment).
+Median wall-clock runtime per simulator and speedup relative to real experiment execution. BLIS-Roofline provides a middle ground between analytical speed (LLM-Optimizer, AIConfigurator) and simulation fidelity (Vidur).

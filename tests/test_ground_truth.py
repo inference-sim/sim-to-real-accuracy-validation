@@ -77,11 +77,21 @@ def _make_exp_dir(
     (exp_dir / "profile.yaml").write_text(json.dumps(profile))
 
     # vllm.log
-    vllm_log = (
-        "INFO 2026-02-17 some line\n"
-        f"INFO vllm.v1.core.kv_cache_utils: GPU KV cache size: {vllm_log_tokens:,} tokens\n"
-        "INFO 2026-02-17 another line\n"
-    )
+    # Include CPU offloading config if kv_events will be present
+    if include_kv_events:
+        vllm_log = (
+            "INFO 2026-02-17 some line\n"
+            "INFO vllm.v1.worker.gpu_worker: Available KV cache memory: 12.50 GiB\n"
+            f"INFO vllm.v1.core.kv_cache_utils: GPU KV cache size: {vllm_log_tokens:,} tokens\n"
+            "INFO vllm.v1.worker.gpu_worker: kv_connector_extra_config={'cpu_bytes_to_use': 8589934592.0}\n"
+            "INFO 2026-02-17 another line\n"
+        )
+    else:
+        vllm_log = (
+            "INFO 2026-02-17 some line\n"
+            f"INFO vllm.v1.core.kv_cache_utils: GPU KV cache size: {vllm_log_tokens:,} tokens\n"
+            "INFO 2026-02-17 another line\n"
+        )
     (exp_dir / "vllm.log").write_text(vllm_log)
 
     # kv_events.jsonl
@@ -161,6 +171,8 @@ def _make_stage_metrics(count, rate, duration, e2e_mean, ttft_mean, itl_mean, is
                 "request_latency": _latency_dist(e2e_mean),
                 "time_to_first_token": _latency_dist(ttft_mean),
                 "inter_token_latency": _latency_dist(itl_mean),
+                "time_per_output_token": _latency_dist(itl_mean),
+                "normalized_time_per_output_token": _latency_dist(itl_mean),
             },
             "throughput": {
                 "input_tokens_per_sec": 2950.0,
@@ -168,6 +180,8 @@ def _make_stage_metrics(count, rate, duration, e2e_mean, ttft_mean, itl_mean, is
                 "total_tokens_per_sec": 3916.0,
                 "requests_per_sec": 5.0,
             },
+            "prompt_len": _latency_dist(590),  # input tokens ≈ 2950 / 5 rps
+            "output_len": _latency_dist(193),  # output tokens ≈ 966 / 5 rps
         },
         "failures": {"count": 0, "request_latency": None, "prompt_len": None},
     }
@@ -239,8 +253,10 @@ class TestParseExperiment:
     def test_cpu_kv_blocks_extracted(self, tmp_path):
         exp_path = _make_exp_dir(tmp_path)
         exp = parse_experiment(exp_path)
-        # Synthetic: 5 GPU→CPU, then 2 CPU→GPU → peak = 5, final = 3
-        assert exp.cpu_kv_blocks == 5
+        # Extracts CPU capacity from cpu_bytes_to_use (8 GB = 8589934592 bytes)
+        # With 119,408 tokens GPU and 12.50 GiB available → ~4776 CPU blocks
+        assert exp.cpu_kv_blocks > 4700
+        assert exp.cpu_kv_blocks < 4800
 
     def test_stages_parsed(self, tmp_path):
         exp_path = _make_exp_dir(tmp_path)
@@ -279,8 +295,9 @@ class TestParseExperiment:
         exp = parse_experiment(exp_path)
 
         s0 = exp.stages[0]
-        # itl_mean 0.0036s → 3.6 ms
-        assert abs(s0.itl.mean - 3.6) < 0.01
+        # ITL is now calculated as standard TPOT: (E2E - TTFT) / (output_tokens - 1)
+        # (1800 - 25) / (193 - 1) = 1775 / 192 = 9.245 ms
+        assert abs(s0.itl.mean - 9.245) < 0.01
 
     def test_summary_parsed(self, tmp_path):
         exp_path = _make_exp_dir(tmp_path)

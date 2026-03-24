@@ -116,6 +116,13 @@ class TestVidurAdapterBasics:
         exp.hardware = "A100-80GB"
         assert adapter.can_run(exp) is True
 
+    def test_can_run_rejects_cpu_offload(self):
+        """Vidur doesn't model CPU KV cache offloading."""
+        adapter = VidurAdapter("/tmp/vidur")
+        exp = _make_experiment()
+        exp.cpu_offload = True
+        assert adapter.can_run(exp) is False
+
 
 # ---------------------------------------------------------------------------
 # Tests: CLI args

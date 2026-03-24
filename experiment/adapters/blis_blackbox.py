@@ -16,7 +16,7 @@ class BLISBlackboxAdapter(BaseBLISAdapter):
     """BLIS simulator in blackbox mode (trained coefficients).
 
     ``can_run()`` returns True only when ``defaults.yaml`` contains trained
-    coefficients matching the experiment's (model, TP) pair.
+    coefficients matching the experiment's (model, GPU, TP) tuple.
     """
 
     def __init__(self, blis_binary: str, defaults_yaml: str | None = None):
@@ -30,7 +30,7 @@ class BLISBlackboxAdapter(BaseBLISAdapter):
         return "blis-blackbox"
 
     def can_run(self, experiment: Experiment) -> bool:
-        """True if defaults.yaml has trained coefficients for this (model, TP) pair."""
+        """True if defaults.yaml has trained coefficients for (model, GPU, TP) tuple."""
         try:
             with open(self._defaults_yaml) as fh:
                 data = yaml.safe_load(fh)
@@ -38,10 +38,13 @@ class BLISBlackboxAdapter(BaseBLISAdapter):
             return False
 
         model_lower = experiment.model.lower()
+        normalized_hw = self._normalize_hardware(experiment.hardware)
+
         for entry in (data or {}).get("models", []):
             if (
                 entry.get("id", "").lower() == model_lower
                 and entry.get("tensor_parallelism") == experiment.tp
+                and entry.get("GPU") == normalized_hw
                 and any(c != 0 for c in entry.get("alpha_coeffs", []))
             ):
                 return True

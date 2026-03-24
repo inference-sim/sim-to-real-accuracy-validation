@@ -79,6 +79,14 @@ class TestParseArgs:
         assert args.blis_binary == "/bin/blis"
         assert args.adapters == ["vidur", "blis-roofline"]
 
+    def test_no_dp_scaling_default_false(self):
+        args = parse_args([])
+        assert args.no_dp_scaling is False
+
+    def test_no_dp_scaling_flag_present(self):
+        args = parse_args(["--no-dp-scaling"])
+        assert args.no_dp_scaling is True
+
 
 # ---------------------------------------------------------------------------
 # Tests: build_adapter_registry
@@ -301,3 +309,101 @@ class TestRunPipeline:
         assert error_records == []
         assert runtime_records == []
         mock_report.assert_not_called()
+
+    @patch("experiment.run.generate_report")
+    @patch("experiment.run.parse_experiment")
+    @patch("experiment.run.discover_experiments")
+    @patch("experiment.run.build_adapter_registry")
+    def test_no_dp_scaling_false_runs_all_experiments(
+        self, mock_registry, mock_discover, mock_parse, mock_report
+    ):
+        """When no_dp_scaling=False, all experiments should run."""
+        exp_dp_null = _make_experiment(folder="/tmp/exp1")
+        exp_dp_null.dp = None
+        exp_dp_1 = _make_experiment(folder="/tmp/exp2")
+        exp_dp_1.dp = 1
+        exp_dp_2 = _make_experiment(folder="/tmp/exp3")
+        exp_dp_2.dp = 2
+
+        mock_discover.return_value = [
+            (_MANIFEST_STUB, "/tmp/exp1"),
+            (_MANIFEST_STUB, "/tmp/exp2"),
+            (_MANIFEST_STUB, "/tmp/exp3"),
+        ]
+        mock_parse.side_effect = lambda path, manifest_entry=None: {
+            "/tmp/exp1": exp_dp_null,
+            "/tmp/exp2": exp_dp_1,
+            "/tmp/exp3": exp_dp_2,
+        }[path]
+        mock_registry.return_value = {}
+
+        run_pipeline(
+            data_dir="/data",
+            blis_binary="/bin/blis",
+            vidur_dir="/opt/vidur",
+            output_dir="/out",
+            adapter_names=[],
+            no_dp_scaling=False,
+        )
+
+        # All 3 experiments should be parsed
+        assert mock_parse.call_count == 3
+
+    @patch("experiment.run.generate_report")
+    @patch("experiment.run.parse_experiment")
+    @patch("experiment.run.discover_experiments")
+    @patch("experiment.run.build_adapter_registry")
+    def test_no_dp_scaling_true_filters_dp_gt_1(
+        self, mock_registry, mock_discover, mock_parse, mock_report
+    ):
+        """When no_dp_scaling=True, only dp<=1 experiments should run."""
+        exp_dp_null = _make_experiment(folder="/tmp/exp1")
+        exp_dp_null.dp = None
+        exp_dp_1 = _make_experiment(folder="/tmp/exp2")
+        exp_dp_1.dp = 1
+        exp_dp_2 = _make_experiment(folder="/tmp/exp3")
+        exp_dp_2.dp = 2
+        exp_dp_4 = _make_experiment(folder="/tmp/exp4")
+        exp_dp_4.dp = 4
+
+        mock_discover.return_value = [
+            (_MANIFEST_STUB, "/tmp/exp1"),
+            (_MANIFEST_STUB, "/tmp/exp2"),
+            (_MANIFEST_STUB, "/tmp/exp3"),
+            (_MANIFEST_STUB, "/tmp/exp4"),
+        ]
+        mock_parse.side_effect = lambda path, manifest_entry=None: {
+            "/tmp/exp1": exp_dp_null,
+            "/tmp/exp2": exp_dp_1,
+            "/tmp/exp3": exp_dp_2,
+            "/tmp/exp4": exp_dp_4,
+        }[path]
+
+        # Mock adapter that runs on all experiments
+        mock_adapter = MagicMock()
+        mock_adapter.name = "mock-sim"
+        mock_adapter.can_run.return_value = True
+        mock_adapter.run.return_value = SimulatorResult(
+            adapter_name="mock-sim",
+            experiment_folder="/tmp/exp",
+            stages=[_make_stage(0)],
+            summary=_make_stage(-1),
+        )
+        mock_registry.return_value = {"mock-sim": mock_adapter}
+
+        run_pipeline(
+            data_dir="/data",
+            blis_binary="/bin/blis",
+            vidur_dir="/opt/vidur",
+            output_dir="/out",
+            adapter_names=["mock-sim"],
+            no_dp_scaling=True,
+        )
+
+        # All 4 experiments should be parsed
+        assert mock_parse.call_count == 4
+        # But only 2 should run through adapters (dp=null and dp=1)
+        assert mock_adapter.run.call_count == 2
+        # Verify the filtered experiments are the ones with dp<=1
+        run_folders = {call.args[0].folder for call in mock_adapter.run.call_args_list}
+        assert run_folders == {"/tmp/exp1", "/tmp/exp2"}

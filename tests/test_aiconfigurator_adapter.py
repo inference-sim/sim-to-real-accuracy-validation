@@ -94,10 +94,19 @@ def _make_experiment(
 def _make_pareto_df(tp: int = 1) -> pd.DataFrame:
     """Build a synthetic Pareto DataFrame mimicking AIConfigurator output.
 
-    Contains rows for concurrency values 1, 5, 10, 20, 50 at the given TP.
+    Contains rows with different concurrency and throughput values.
+    Throughput (seq/s) is designed to match test stage rates (5.0, 10.0).
     """
     rows = []
-    for conc in [1, 5, 10, 20, 50]:
+    # Concurrency and corresponding throughput (seq/s)
+    configs = [
+        (1, 5.0),    # Matches stage 0 rate=5.0
+        (2, 10.0),   # Matches stage 1 rate=10.0
+        (4, 18.0),   # Higher throughput
+        (8, 30.0),   # Even higher
+        (16, 45.0),  # Saturating
+    ]
+    for conc, seq_per_s in configs:
         rows.append({
             "model": "LLAMA2_7B",
             "isl": 566,
@@ -109,7 +118,7 @@ def _make_pareto_df(tp: int = 1) -> pd.DataFrame:
             "pp": 1,
             "dp": 1,
             "num_total_gpus": tp,
-            "seq/s": 5.0 + conc * 0.2,
+            "seq/s": seq_per_s,
             "tokens/s": 1000.0 + conc * 10.0,
             "tokens/s/gpu": 1000.0 + conc * 10.0,
         })
@@ -214,39 +223,62 @@ class TestModelNameMapping:
         assert AIConfiguratorEstimateAdapter._resolve_model_name(hf_id) == hf_id
 
 
-class TestConcurrencyDerivation:
-    def test_littles_law_stage0(self):
-        """Stage 0: rate=5, e2e_mean=1800ms → concurrency = 5 * 1.8 = 9."""
-        exp = _make_experiment()
-        c = AIConfiguratorEstimateAdapter._derive_concurrency(exp.stages[0], exp.max_num_seqs)
-        assert c == 9
+class TestThroughputMatching:
+    def test_match_throughput_exact_match(self):
+        """Exact match: stage_rate=5.0, predicted seq/s=5.0."""
+        df = _make_pareto_df()
+        row = AIConfiguratorEstimateAdapter._match_throughput(5.0, df)
+        assert row["concurrency"] == 1
+        assert row["seq/s"] == 5.0
 
-    def test_littles_law_stage1(self):
-        """Stage 1: rate=10, e2e_mean=2100ms → concurrency = 10 * 2.1 = 21."""
-        exp = _make_experiment()
-        c = AIConfiguratorEstimateAdapter._derive_concurrency(exp.stages[1], exp.max_num_seqs)
-        assert c == 21
+    def test_match_throughput_exact_match_stage1(self):
+        """Exact match: stage_rate=10.0, predicted seq/s=10.0."""
+        df = _make_pareto_df()
+        row = AIConfiguratorEstimateAdapter._match_throughput(10.0, df)
+        assert row["concurrency"] == 2
+        assert row["seq/s"] == 10.0
 
-    def test_minimum_concurrency_is_one(self):
-        zero_lat = LatencyDistribution(mean=0.0, p90=0.0, p99=0.0)
-        stage = StageMetrics(
-            stage_index=0, rate=0.01, duration=60.0, num_requests=1,
-            e2e=zero_lat, ttft=zero_lat, itl=zero_lat,
-            throughput=ThroughputMetrics(0, 0, 0),
-        )
-        c = AIConfiguratorEstimateAdapter._derive_concurrency(stage, 128)
-        assert c >= 1
+    def test_match_throughput_closest_match(self):
+        """No exact match: select closest by relative error."""
+        df = _make_pareto_df()
+        # stage_rate=12.0, closest is conc=2 with seq/s=10.0 (17% error)
+        # vs conc=4 with seq/s=18.0 (50% error)
+        row = AIConfiguratorEstimateAdapter._match_throughput(12.0, df)
+        assert row["concurrency"] == 2
 
-    def test_concurrency_clamped_to_max_num_seqs(self):
-        stage = StageMetrics(
-            stage_index=0, rate=100.0, duration=600.0, num_requests=60000,
-            e2e=LatencyDistribution(mean=50000.0, p90=0.0, p99=0.0),
-            ttft=LatencyDistribution(mean=0.0, p90=0.0, p99=0.0),
-            itl=LatencyDistribution(mean=0.0, p90=0.0, p99=0.0),
-            throughput=ThroughputMetrics(0, 0, 0),
-        )
-        c = AIConfiguratorEstimateAdapter._derive_concurrency(stage, 32)
-        assert c == 32
+    def test_match_throughput_skips_invalid(self):
+        """Should skip rows with zero or negative seq/s."""
+        df = _make_pareto_df()
+        # Add a row with invalid seq/s
+        bad_row = df.iloc[0].copy()
+        bad_row["seq/s"] = 0.0
+        bad_row["concurrency"] = 999
+        df = pd.concat([pd.DataFrame([bad_row]), df], ignore_index=True)
+
+        # Should still match valid row
+        row = AIConfiguratorEstimateAdapter._match_throughput(5.0, df)
+        assert row["concurrency"] == 1
+
+    def test_match_throughput_raises_if_no_valid(self):
+        """Should raise if all rows have invalid seq/s."""
+        df = _make_pareto_df()
+        # Make all seq/s values invalid
+        df["seq/s"] = 0.0
+
+        with pytest.raises(RuntimeError, match="No valid row found"):
+            AIConfiguratorEstimateAdapter._match_throughput(5.0, df)
+
+    def test_match_throughput_raises_on_zero_rate(self):
+        """Should raise ValueError if stage_rate is zero."""
+        df = _make_pareto_df()
+        with pytest.raises(ValueError, match="Invalid stage rate"):
+            AIConfiguratorEstimateAdapter._match_throughput(0.0, df)
+
+    def test_match_throughput_raises_on_negative_rate(self):
+        """Should raise ValueError if stage_rate is negative."""
+        df = _make_pareto_df()
+        with pytest.raises(ValueError, match="Invalid stage rate"):
+            AIConfiguratorEstimateAdapter._match_throughput(-5.0, df)
 
 
 class TestInputOutputExtraction:
@@ -255,25 +287,6 @@ class TestInputOutputExtraction:
         inp, out = AIConfiguratorEstimateAdapter._extract_lengths(exp)
         assert inp == 566   # 466 + 100
         assert out == 247
-
-
-class TestFindNearestConcurrency:
-    def test_exact_match(self):
-        df = _make_pareto_df()
-        row = AIConfiguratorEstimateAdapter._find_nearest_concurrency(df, 10)
-        assert row["concurrency"] == 10
-
-    def test_nearest_below(self):
-        """Concurrency 9 should snap to 10 (nearest)."""
-        df = _make_pareto_df()
-        row = AIConfiguratorEstimateAdapter._find_nearest_concurrency(df, 9)
-        assert row["concurrency"] == 10
-
-    def test_nearest_above(self):
-        """Concurrency 21 should snap to 20 (nearest)."""
-        df = _make_pareto_df()
-        row = AIConfiguratorEstimateAdapter._find_nearest_concurrency(df, 21)
-        assert row["concurrency"] == 20
 
 
 class TestRunWithMock:
@@ -310,15 +323,15 @@ class TestRunWithMock:
             total_gpus=1,
             isl=566,
             osl=247,
-            ttft=5000.0,
+            ttft=150000.0,
             tpot=200.0,
             profiles=["float16_default"],
         )
 
     @patch("experiment.adapters.aiconfigurator_est._run_task")
     @patch("experiment.adapters.aiconfigurator_est._create_task_config")
-    def test_e2e_computation(self, mock_create, mock_run):
-        """E2E = ttft + tpot × output_length."""
+    def test_e2e_computed_from_formula(self, mock_create, mock_run):
+        """E2E = ttft + tpot × (output_length - 1)."""
         mock_create.return_value = MagicMock()
         mock_run.return_value = {"pareto_df": _make_pareto_df(), "pareto_frontier_df": None}
 
@@ -326,13 +339,14 @@ class TestRunWithMock:
         exp = _make_experiment()
         result = adapter.run(exp)
 
-        # Stage 0: concurrency=9 → snaps to row with concurrency=10
-        # ttft = 20.0 + 10*0.5 = 25.0, tpot = 3.0 + 10*0.1 = 4.0
-        # e2e = 25.0 + 4.0 * 247 = 25.0 + 988.0 = 1013.0
+        # Stage 0: rate=5.0 → matches row with seq/s=5.0, concurrency=1
+        # ttft = 20.0 + 1*0.5 = 20.5, tpot = 3.0 + 1*0.1 = 3.1
+        # E2E = ttft + tpot * (output_length - 1) = 20.5 + 3.1 * (247 - 1) = 783.1
         s0 = result.stages[0]
-        assert abs(s0.ttft.mean - 25.0) < 0.01
-        assert abs(s0.itl.mean - 4.0) < 0.01
-        assert abs(s0.e2e.mean - 1013.0) < 0.01
+        assert abs(s0.ttft.mean - 20.5) < 0.01
+        assert abs(s0.itl.mean - 3.1) < 0.01
+        expected_e2e = 20.5 + 3.1 * (247 - 1)
+        assert abs(s0.e2e.mean - expected_e2e) < 0.01
 
     @patch("experiment.adapters.aiconfigurator_est._run_task")
     @patch("experiment.adapters.aiconfigurator_est._create_task_config")
@@ -363,18 +377,18 @@ class TestRunWithMock:
         exp = _make_experiment()
         result = adapter.run(exp)
 
-        # Stage 0: concurrency=9 → row concurrency=10
-        # seq/s = 5.0 + 10*0.2 = 7.0, tokens/s = 1000 + 10*10 = 1100
+        # Stage 0: rate=5.0 → matches row with seq/s=5.0, concurrency=1
+        # seq/s = 5.0, tokens/s = 1000 + 1*10 = 1010
         s0 = result.stages[0]
-        assert abs(s0.throughput.requests_per_sec - 7.0) < 0.01
-        assert abs(s0.throughput.output_tokens_per_sec - 1100.0) < 0.01
-        # input_tokens_per_sec = seq/s * isl = 7.0 * 566 = 3962.0
-        assert abs(s0.throughput.input_tokens_per_sec - 3962.0) < 0.01
+        assert abs(s0.throughput.requests_per_sec - 5.0) < 0.01
+        assert abs(s0.throughput.output_tokens_per_sec - 1010.0) < 0.01
+        # input_tokens_per_sec = seq/s * isl = 5.0 * 566 = 2830.0
+        assert abs(s0.throughput.input_tokens_per_sec - 2830.0) < 0.01
 
     @patch("experiment.adapters.aiconfigurator_est._run_task")
     @patch("experiment.adapters.aiconfigurator_est._create_task_config")
     def test_summary_is_weighted_average(self, mock_create, mock_run):
-        """Summary E2E mean should be request-weighted average across stages."""
+        """Summary E2E/TTFT/ITL means should be request-weighted average across stages."""
         mock_create.return_value = MagicMock()
         mock_run.return_value = {"pareto_df": _make_pareto_df(), "pareto_frontier_df": None}
 
@@ -382,11 +396,19 @@ class TestRunWithMock:
         exp = _make_experiment()
         result = adapter.run(exp)
 
-        # Stage 0 (3000 reqs): concurrency=9 → row 10 → e2e=1013.0
-        # Stage 1 (6000 reqs): concurrency=21 → row 20 → ttft=30, tpot=5.0
-        #   e2e = 30.0 + 5.0 * 247 = 1265.0
-        # Weighted mean = (1013*3000 + 1265*6000) / 9000
-        expected_e2e = (1013.0 * 3000 + 1265.0 * 6000) / 9000
+        # output_length = 247
+        # Stage 0 (3000 reqs): rate=5.0 → row conc=1 → ttft=20.5, tpot=3.1
+        #   E2E = 20.5 + 3.1*(247-1) = 783.1
+        # Stage 1 (6000 reqs): rate=10.0 → row conc=2 → ttft=21.0, tpot=3.2
+        #   E2E = 21.0 + 3.2*(247-1) = 808.2
+        # Weighted mean for TTFT = (20.5*3000 + 21.0*6000) / 9000
+        expected_ttft = (20.5 * 3000 + 21.0 * 6000) / 9000
+        assert abs(result.summary.ttft.mean - expected_ttft) < 0.01
+
+        # Weighted mean for E2E = (783.1*3000 + 808.2*6000) / 9000
+        e2e_0 = 20.5 + 3.1 * (247 - 1)
+        e2e_1 = 21.0 + 3.2 * (247 - 1)
+        expected_e2e = (e2e_0 * 3000 + e2e_1 * 6000) / 9000
         assert abs(result.summary.e2e.mean - expected_e2e) < 0.01
 
     @patch("experiment.adapters.aiconfigurator_est._run_task")

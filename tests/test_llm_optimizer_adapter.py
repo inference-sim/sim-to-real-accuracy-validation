@@ -169,42 +169,95 @@ class TestLLMOptimizerCanRun:
         assert LLMOptimizerEstimateAdapter().can_run(exp) is True
 
 
-class TestConcurrencyDerivation:
-    def test_littles_law_stage0(self):
-        """Stage 0: rate=5, e2e_mean=1800ms → concurrency = 5 * 1.8 = 9."""
-        exp = _make_experiment()
-        c = LLMOptimizerEstimateAdapter._derive_concurrency(exp.stages[0], exp.max_num_seqs)
-        assert c == 9  # round(5 * 1800 / 1000)
+class TestThroughputMatching:
+    def test_match_throughput_exact_match(self):
+        """Exact match: stage_rate=10, predicted_rate=10."""
+        sweep = [
+            (1, _FakePerformanceResult(
+                ttft_ms=25.0, itl_ms=3.5, e2e_latency_s=0.2,
+                output_throughput_tps=980.0, input_throughput_tps=2900.0,
+                requests_per_sec=5.0, concurrency=1,
+            )),
+            (2, _FakePerformanceResult(
+                ttft_ms=26.0, itl_ms=3.6, e2e_latency_s=0.2,
+                output_throughput_tps=990.0, input_throughput_tps=2950.0,
+                requests_per_sec=10.0, concurrency=2,
+            )),
+        ]
+        conc, perf = LLMOptimizerEstimateAdapter._match_throughput(10.0, sweep)
+        assert conc == 2
+        assert perf.requests_per_sec == 10.0
 
-    def test_littles_law_stage1(self):
-        """Stage 1: rate=10, e2e_mean=2100ms → concurrency = 10 * 2.1 = 21."""
-        exp = _make_experiment()
-        c = LLMOptimizerEstimateAdapter._derive_concurrency(exp.stages[1], exp.max_num_seqs)
-        assert c == 21  # round(10 * 2100 / 1000)
+    def test_match_throughput_closest_match(self):
+        """No exact match: select closest."""
+        sweep = [
+            (1, _FakePerformanceResult(
+                ttft_ms=25.0, itl_ms=3.5, e2e_latency_s=0.2,
+                output_throughput_tps=980.0, input_throughput_tps=2900.0,
+                requests_per_sec=6.0, concurrency=1,
+            )),
+            (2, _FakePerformanceResult(
+                ttft_ms=26.0, itl_ms=3.6, e2e_latency_s=0.2,
+                output_throughput_tps=990.0, input_throughput_tps=2950.0,
+                requests_per_sec=10.5, concurrency=2,
+            )),
+        ]
+        # stage_rate=10.0: closest is conc=2 with 10.5 (5% error)
+        conc, _ = LLMOptimizerEstimateAdapter._match_throughput(10.0, sweep)
+        assert conc == 2
 
-    def test_minimum_concurrency_is_one(self):
-        """Very low rate/latency should still yield concurrency >= 1."""
-        zero_lat = LatencyDistribution(mean=0.0, p90=0.0, p99=0.0)
-        stage = StageMetrics(
-            stage_index=0, rate=0.01, duration=60.0, num_requests=1,
-            e2e=zero_lat, ttft=zero_lat, itl=zero_lat,
-            throughput=ThroughputMetrics(0, 0, 0),
-        )
-        c = LLMOptimizerEstimateAdapter._derive_concurrency(stage, 128)
-        assert c >= 1
+    def test_match_throughput_skips_inf(self):
+        """Should skip results with infinite throughput (OOM)."""
+        sweep = [
+            (64, _FakePerformanceResult(
+                ttft_ms=float("inf"), itl_ms=float("inf"), e2e_latency_s=float("inf"),
+                output_throughput_tps=0.0, input_throughput_tps=0.0,
+                requests_per_sec=float("inf"), concurrency=64,
+            )),
+            (32, _FakePerformanceResult(
+                ttft_ms=26.0, itl_ms=3.6, e2e_latency_s=0.2,
+                output_throughput_tps=990.0, input_throughput_tps=2950.0,
+                requests_per_sec=10.0, concurrency=32,
+            )),
+        ]
+        conc, _ = LLMOptimizerEstimateAdapter._match_throughput(10.0, sweep)
+        assert conc == 32
 
-    def test_concurrency_clamped_to_max_num_seqs(self):
-        """Concurrency should not exceed max_num_seqs."""
-        stage = StageMetrics(
-            stage_index=0, rate=100.0, duration=600.0, num_requests=60000,
-            e2e=LatencyDistribution(mean=50000.0, p90=0.0, p99=0.0),
-            ttft=LatencyDistribution(mean=0.0, p90=0.0, p99=0.0),
-            itl=LatencyDistribution(mean=0.0, p90=0.0, p99=0.0),
-            throughput=ThroughputMetrics(0, 0, 0),
-        )
-        # raw = round(100 * 50000 / 1000) = 5000, clamped to 32
-        c = LLMOptimizerEstimateAdapter._derive_concurrency(stage, 32)
-        assert c == 32
+    def test_match_throughput_raises_if_no_valid(self):
+        """Should raise if all results are invalid."""
+        sweep = [
+            (64, _FakePerformanceResult(
+                ttft_ms=float("inf"), itl_ms=float("inf"), e2e_latency_s=float("inf"),
+                output_throughput_tps=0.0, input_throughput_tps=0.0,
+                requests_per_sec=float("inf"), concurrency=64,
+            )),
+        ]
+        with pytest.raises(RuntimeError, match="No valid concurrency level"):
+            LLMOptimizerEstimateAdapter._match_throughput(10.0, sweep)
+
+    def test_match_throughput_raises_on_zero_rate(self):
+        """Should raise ValueError if stage_rate is zero."""
+        sweep = [
+            (1, _FakePerformanceResult(
+                ttft_ms=25.0, itl_ms=3.5, e2e_latency_s=0.2,
+                output_throughput_tps=980.0, input_throughput_tps=2900.0,
+                requests_per_sec=10.0, concurrency=1,
+            )),
+        ]
+        with pytest.raises(ValueError, match="Invalid stage rate"):
+            LLMOptimizerEstimateAdapter._match_throughput(0.0, sweep)
+
+    def test_match_throughput_raises_on_negative_rate(self):
+        """Should raise ValueError if stage_rate is negative."""
+        sweep = [
+            (1, _FakePerformanceResult(
+                ttft_ms=25.0, itl_ms=3.5, e2e_latency_s=0.2,
+                output_throughput_tps=980.0, input_throughput_tps=2900.0,
+                requests_per_sec=10.0, concurrency=1,
+            )),
+        ]
+        with pytest.raises(ValueError, match="Invalid stage rate"):
+            LLMOptimizerEstimateAdapter._match_throughput(-5.0, sweep)
 
 
 class TestInputOutputExtraction:
@@ -221,16 +274,37 @@ class TestRunWithMock:
     @patch("experiment.adapters.llm_optimizer_est.estimate_llm_performance")
     @patch("experiment.adapters.llm_optimizer_est.get_model_config_from_hf")
     def test_run_returns_simulator_result(self, mock_get_cfg, mock_estimate):
+        """Test that run() returns a valid SimulatorResult with throughput matching."""
         mock_get_cfg.return_value = MagicMock()
-        mock_estimate.return_value = _FakePerformanceResult(
-            ttft_ms=25.0,
-            itl_ms=3.5,
-            e2e_latency_s=1.8,
-            output_throughput_tps=980.0,
-            input_throughput_tps=2900.0,
-            requests_per_sec=5.2,
-            concurrency=9,
-        )
+
+        # Mock the sweep: different results for different concurrency levels
+        # Stage 0 has rate=5, stage 1 has rate=10
+        def mock_perf_fn(**kwargs):
+            conc = kwargs["concurrency"]
+            # Simulate requests_per_sec = concurrency / E2E
+            # For rate=5, we want conc=1 to give ~5 req/s
+            # For rate=10, we want conc=2 to give ~10 req/s
+            if conc == 1:
+                return _FakePerformanceResult(
+                    ttft_ms=25.0, itl_ms=3.5, e2e_latency_s=0.2,
+                    output_throughput_tps=980.0, input_throughput_tps=2900.0,
+                    requests_per_sec=5.0, concurrency=1,
+                )
+            elif conc == 2:
+                return _FakePerformanceResult(
+                    ttft_ms=26.0, itl_ms=3.6, e2e_latency_s=0.2,
+                    output_throughput_tps=990.0, input_throughput_tps=2950.0,
+                    requests_per_sec=10.0, concurrency=2,
+                )
+            else:
+                # Higher concurrency → higher throughput
+                return _FakePerformanceResult(
+                    ttft_ms=30.0, itl_ms=4.0, e2e_latency_s=0.3,
+                    output_throughput_tps=1000.0, input_throughput_tps=3000.0,
+                    requests_per_sec=conc / 0.3, concurrency=conc,
+                )
+
+        mock_estimate.side_effect = mock_perf_fn
 
         adapter = LLMOptimizerEstimateAdapter()
         exp = _make_experiment()
@@ -245,15 +319,23 @@ class TestRunWithMock:
     def test_latency_unit_conversion(self, mock_get_cfg, mock_estimate):
         """e2e_latency_s is in seconds → should be converted to ms."""
         mock_get_cfg.return_value = MagicMock()
-        mock_estimate.return_value = _FakePerformanceResult(
-            ttft_ms=25.0,
-            itl_ms=3.5,
-            e2e_latency_s=1.8,
-            output_throughput_tps=980.0,
-            input_throughput_tps=2900.0,
-            requests_per_sec=5.2,
-            concurrency=9,
-        )
+
+        def mock_perf_fn(**kwargs):
+            conc = kwargs["concurrency"]
+            if conc == 1:
+                return _FakePerformanceResult(
+                    ttft_ms=25.0, itl_ms=3.5, e2e_latency_s=1.8,
+                    output_throughput_tps=980.0, input_throughput_tps=2900.0,
+                    requests_per_sec=5.0, concurrency=1,
+                )
+            else:
+                return _FakePerformanceResult(
+                    ttft_ms=30.0, itl_ms=4.0, e2e_latency_s=2.0,
+                    output_throughput_tps=1000.0, input_throughput_tps=3000.0,
+                    requests_per_sec=conc / 0.2, concurrency=conc,
+                )
+
+        mock_estimate.side_effect = mock_perf_fn
 
         adapter = LLMOptimizerEstimateAdapter()
         exp = _make_experiment()
@@ -272,15 +354,16 @@ class TestRunWithMock:
     def test_percentiles_are_none(self, mock_get_cfg, mock_estimate):
         """P90/P99 should be None (point-estimate simulator)."""
         mock_get_cfg.return_value = MagicMock()
-        mock_estimate.return_value = _FakePerformanceResult(
-            ttft_ms=25.0,
-            itl_ms=3.5,
-            e2e_latency_s=1.8,
-            output_throughput_tps=980.0,
-            input_throughput_tps=2900.0,
-            requests_per_sec=5.2,
-            concurrency=9,
-        )
+
+        def mock_perf_fn(**kwargs):
+            conc = kwargs["concurrency"]
+            return _FakePerformanceResult(
+                ttft_ms=25.0, itl_ms=3.5, e2e_latency_s=1.8,
+                output_throughput_tps=980.0, input_throughput_tps=2900.0,
+                requests_per_sec=conc / 0.2, concurrency=conc,
+            )
+
+        mock_estimate.side_effect = mock_perf_fn
 
         adapter = LLMOptimizerEstimateAdapter()
         exp = _make_experiment()
@@ -298,43 +381,65 @@ class TestRunWithMock:
     @patch("experiment.adapters.llm_optimizer_est.get_model_config_from_hf")
     def test_throughput_from_result(self, mock_get_cfg, mock_estimate):
         mock_get_cfg.return_value = MagicMock()
-        mock_estimate.return_value = _FakePerformanceResult(
-            ttft_ms=25.0,
-            itl_ms=3.5,
-            e2e_latency_s=1.8,
-            output_throughput_tps=980.0,
-            input_throughput_tps=2900.0,
-            requests_per_sec=5.2,
-            concurrency=9,
-        )
+
+        def mock_perf_fn(**kwargs):
+            conc = kwargs["concurrency"]
+            if conc == 1:
+                return _FakePerformanceResult(
+                    ttft_ms=25.0, itl_ms=3.5, e2e_latency_s=1.8,
+                    output_throughput_tps=980.0, input_throughput_tps=2900.0,
+                    requests_per_sec=5.0, concurrency=1,
+                )
+            else:
+                return _FakePerformanceResult(
+                    ttft_ms=30.0, itl_ms=4.0, e2e_latency_s=2.0,
+                    output_throughput_tps=1000.0, input_throughput_tps=3000.0,
+                    requests_per_sec=conc / 0.2, concurrency=conc,
+                )
+
+        mock_estimate.side_effect = mock_perf_fn
 
         adapter = LLMOptimizerEstimateAdapter()
         exp = _make_experiment()
         result = adapter.run(exp)
 
         s0 = result.stages[0]
+        # Stage 0 has rate=5, so should match concurrency=1 with requests_per_sec=5.0
         assert abs(s0.throughput.output_tokens_per_sec - 980.0) < 0.01
         assert abs(s0.throughput.input_tokens_per_sec - 2900.0) < 0.01
-        assert abs(s0.throughput.requests_per_sec - 5.2) < 0.01
+        assert abs(s0.throughput.requests_per_sec - 5.0) < 0.01
 
     @patch("experiment.adapters.llm_optimizer_est.estimate_llm_performance")
     @patch("experiment.adapters.llm_optimizer_est.get_model_config_from_hf")
     def test_summary_is_weighted_average(self, mock_get_cfg, mock_estimate):
         """Summary E2E mean should be weighted average across stages."""
         mock_get_cfg.return_value = MagicMock()
-        # Return different values for stage 0 and stage 1
-        mock_estimate.side_effect = [
-            _FakePerformanceResult(
-                ttft_ms=25.0, itl_ms=3.5, e2e_latency_s=1.8,
-                output_throughput_tps=980.0, input_throughput_tps=2900.0,
-                requests_per_sec=5.2, concurrency=9,
-            ),
-            _FakePerformanceResult(
-                ttft_ms=30.0, itl_ms=4.5, e2e_latency_s=2.1,
-                output_throughput_tps=920.0, input_throughput_tps=2800.0,
-                requests_per_sec=10.1, concurrency=21,
-            ),
-        ]
+
+        # Mock sweep with different throughput for different concurrency
+        def mock_perf_fn(**kwargs):
+            conc = kwargs["concurrency"]
+            if conc == 1:
+                # Matches stage 0 rate=5
+                return _FakePerformanceResult(
+                    ttft_ms=25.0, itl_ms=3.5, e2e_latency_s=1.8,
+                    output_throughput_tps=980.0, input_throughput_tps=2900.0,
+                    requests_per_sec=5.0, concurrency=1,
+                )
+            elif conc == 2:
+                # Matches stage 1 rate=10
+                return _FakePerformanceResult(
+                    ttft_ms=30.0, itl_ms=4.5, e2e_latency_s=2.1,
+                    output_throughput_tps=920.0, input_throughput_tps=2800.0,
+                    requests_per_sec=10.0, concurrency=2,
+                )
+            else:
+                return _FakePerformanceResult(
+                    ttft_ms=35.0, itl_ms=5.0, e2e_latency_s=2.5,
+                    output_throughput_tps=900.0, input_throughput_tps=2700.0,
+                    requests_per_sec=conc / 0.25, concurrency=conc,
+                )
+
+        mock_estimate.side_effect = mock_perf_fn
 
         adapter = LLMOptimizerEstimateAdapter()
         exp = _make_experiment()
@@ -345,8 +450,8 @@ class TestRunWithMock:
         assert abs(result.summary.e2e.mean - 2000.0) < 0.01
 
         # Throughput: duration-weighted.  stage0=600s, stage1=600s (equal duration)
-        # requests_per_sec: (5.2*600 + 10.1*600) / 1200 = 7.65
-        expected_rps = (5.2 * 600 + 10.1 * 600) / 1200
+        # requests_per_sec: (5.0*600 + 10.0*600) / 1200 = 7.5
+        expected_rps = (5.0 * 600 + 10.0 * 600) / 1200
         assert abs(result.summary.throughput.requests_per_sec - expected_rps) < 0.01
 
     @patch("experiment.adapters.llm_optimizer_est.estimate_llm_performance")
@@ -354,11 +459,16 @@ class TestRunWithMock:
     def test_model_config_called_once(self, mock_get_cfg, mock_estimate):
         """get_model_config_from_hf should be called once (cached)."""
         mock_get_cfg.return_value = MagicMock()
-        mock_estimate.return_value = _FakePerformanceResult(
-            ttft_ms=25.0, itl_ms=3.5, e2e_latency_s=1.8,
-            output_throughput_tps=980.0, input_throughput_tps=2900.0,
-            requests_per_sec=5.2, concurrency=9,
-        )
+
+        def mock_perf_fn(**kwargs):
+            conc = kwargs["concurrency"]
+            return _FakePerformanceResult(
+                ttft_ms=25.0, itl_ms=3.5, e2e_latency_s=1.8,
+                output_throughput_tps=980.0, input_throughput_tps=2900.0,
+                requests_per_sec=conc / 0.2, concurrency=conc,
+            )
+
+        mock_estimate.side_effect = mock_perf_fn
 
         adapter = LLMOptimizerEstimateAdapter()
         exp = _make_experiment()
@@ -371,17 +481,24 @@ class TestRunWithMock:
     def test_run_passes_experiment_precision(self, mock_get_cfg, mock_estimate):
         """Precision should come from experiment, not model_config.inferred_precision."""
         mock_get_cfg.return_value = MagicMock()
-        mock_estimate.return_value = _FakePerformanceResult(
-            ttft_ms=25.0, itl_ms=3.5, e2e_latency_s=1.8,
-            output_throughput_tps=980.0, input_throughput_tps=2900.0,
-            requests_per_sec=5.2, concurrency=9,
-        )
+
+        def mock_perf_fn(**kwargs):
+            conc = kwargs["concurrency"]
+            return _FakePerformanceResult(
+                ttft_ms=25.0, itl_ms=3.5, e2e_latency_s=1.8,
+                output_throughput_tps=980.0, input_throughput_tps=2900.0,
+                requests_per_sec=conc / 0.2, concurrency=conc,
+            )
+
+        mock_estimate.side_effect = mock_perf_fn
+
         adapter = LLMOptimizerEstimateAdapter()
         exp = _make_experiment()
         exp.precision = "FP8"
         adapter.run(exp)
-        _, kwargs = mock_estimate.call_args
-        assert kwargs["precision"] == "fp8"
+        # Check the first call (concurrency=1)
+        first_call_kwargs = mock_estimate.call_args_list[0][1]
+        assert first_call_kwargs["precision"] == "fp8"
 
     def test_run_rejects_unsupported_hardware(self):
         """run() should raise ValueError for unsupported hardware."""
@@ -402,14 +519,21 @@ class TestRunWithMock:
     def test_run_uses_hardware_gpu_name(self, mock_get_cfg, mock_estimate):
         """gpu_name should come from experiment hardware, not hardcoded H100."""
         mock_get_cfg.return_value = MagicMock()
-        mock_estimate.return_value = _FakePerformanceResult(
-            ttft_ms=25.0, itl_ms=3.5, e2e_latency_s=1.8,
-            output_throughput_tps=980.0, input_throughput_tps=2900.0,
-            requests_per_sec=5.2, concurrency=9,
-        )
+
+        def mock_perf_fn(**kwargs):
+            conc = kwargs["concurrency"]
+            return _FakePerformanceResult(
+                ttft_ms=25.0, itl_ms=3.5, e2e_latency_s=1.8,
+                output_throughput_tps=980.0, input_throughput_tps=2900.0,
+                requests_per_sec=conc / 0.2, concurrency=conc,
+            )
+
+        mock_estimate.side_effect = mock_perf_fn
+
         adapter = LLMOptimizerEstimateAdapter()
         exp = _make_experiment()
         exp.hardware = "A100-80GB"
         adapter.run(exp)
-        _, kwargs = mock_estimate.call_args
-        assert kwargs["gpu_name"] == "A100"
+        # Check the first call (concurrency=1)
+        first_call_kwargs = mock_estimate.call_args_list[0][1]
+        assert first_call_kwargs["gpu_name"] == "A100"

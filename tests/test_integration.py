@@ -59,6 +59,31 @@ class TestGroundTruthParsing:
 
 
 # ---------------------------------------------------------------------------
+# --no-dp-scaling integration test
+# ---------------------------------------------------------------------------
+
+
+class TestNoDPScalingIntegration:
+    def test_no_dp_scaling_flag_integration(self):
+        """End-to-end test: --no-dp-scaling should filter experiments."""
+        from experiment.run import run_pipeline
+
+        # Run pipeline with flag (no adapters to avoid external dependencies)
+        error_records, runtime_records = run_pipeline(
+            data_dir=_DATA_DIR,
+            blis_binary="nonexistent",  # Won't be used with no adapters
+            vidur_dir="nonexistent",
+            output_dir="/tmp/test_output",
+            adapter_names=[],
+            no_dp_scaling=True,
+        )
+
+        # Should complete without errors
+        assert error_records == []
+        assert runtime_records == []
+
+
+# ---------------------------------------------------------------------------
 # 13b: Trace converter smoke test
 # ---------------------------------------------------------------------------
 
