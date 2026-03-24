@@ -62,39 +62,45 @@ def run(self, experiment: Experiment) -> SimulatorResult:
 
 ### 2.2 Model Name Mapper
 
-**Purpose**: Translate ground-truth model names to LLMServingSim format
+**Purpose**: Translate ground-truth model names to LLMServingSim performance model paths
 
 **Mapping**:
 ```python
+# Ground-truth exp-config.yaml contains full HuggingFace model IDs with suffixes
+# LLMServingSim perf models use base model names without suffixes
 MODEL_MAP = {
-    "Llama-3.1-8b": "meta-llama/Llama-3.1-8B",
-    "Mixtral-8x7B": "mistralai/Mixtral-8x7B-v0.1",
+    "meta-llama/Llama-3.1-8B-Instruct": "meta-llama/Llama-3.1-8B",
+    "mistralai/Mixtral-8x7B-v0.1": "mistralai/Mixtral-8x7B-v0.1",  # No change needed
 }
 ```
+
+**Note**: The `Experiment.model` field contains the full HuggingFace model ID from `exp-config.yaml` (e.g., `"meta-llama/Llama-3.1-8B-Instruct"`). LLMServingSim's perf model directories drop the `-Instruct` suffix.
 
 ### 2.3 Cluster Config Generator
 
 **Purpose**: Create experiment-specific cluster_config JSON files
 
 **Strategy**:
-- Load base template: `LLMServingSim/cluster_config/single_node_single_instance.json`
+- Load base template: `LLMServingSim/cluster_config/single_node_single_instance_H100.json` (H100-specific template with correct bandwidth values)
 - Modify fields:
-  - Hardware type: "H100"
+  - Model name: from `MODEL_MAP[experiment.model]`
   - TP degree: from `experiment.tp`
   - Instance count: 1 for dp≤1, `experiment.dp` for dp>1
-  - GPU memory: compute from `experiment.total_kv_blocks`
-  - CPU memory: compute from `experiment.cpu_kv_blocks` (if offloading enabled)
+  - GPU memory: Use fixed H100 value (80GB HBM3)
+  - CPU memory bandwidth: Keep template defaults
   - Routing policy: "RR" via CLI for dp>1
 - Write to temp file
 
-**Memory Calculation**:
+**Memory Configuration**:
 ```python
-# GPU memory (from total_kv_blocks)
-gpu_mem_gb = (experiment.total_kv_blocks * 16 * 2) / (1024**3)  # FP16 = 2 bytes/value
+# GPU memory: Use H100's fixed memory capacity
+# LLMServingSim's npu_mem.mem_size represents total GPU memory in GB
+# The simulator internally subtracts model weight to derive KV cache capacity
+config["nodes"][0]["instances"][0]["npu_mem"]["mem_size"] = 80.0  # H100 HBM3
 
-# CPU memory (from cpu_kv_blocks, if offloading enabled)
-if experiment.cpu_offload and experiment.cpu_kv_blocks > 0:
-    cpu_mem_gb = (experiment.cpu_kv_blocks * 16 * 2) / (1024**3)
+# CPU memory: Keep template default (1024 GB)
+# The simulator uses cpu_kv_blocks info from vLLM's block manager for offloading
+# No need to compute from experiment.cpu_kv_blocks
 ```
 
 **Note on Terminology**: LLMServingSim uses `npu_mem`, `npu_num` as generic **accelerator** configuration fields. For H100 experiments, these configure **GPU** memory (80GB HBM3) and GPU device count.
@@ -208,24 +214,25 @@ Experiment → can_run() → run() → SimulatorResult
 
 **Template Modifications**:
 ```python
+# Load H100-specific template (has correct mem_bw=3350, link_bw=900)
+template_path = os.path.join(llmservingsim_dir, "cluster_config/single_node_single_instance_H100.json")
 config = load_json(template_path)
 
-# 1. Model and hardware
+# 1. Model name
+llmservingsim_model = MODEL_MAP[experiment.model]
 config["nodes"][0]["instances"][0]["model_name"] = llmservingsim_model
-config["nodes"][0]["instances"][0]["hardware"] = "H100"
 
 # 2. Tensor parallelism
 config["nodes"][0]["instances"][0]["npu_num"] = experiment.tp  # Number of GPUs
 config["nodes"][0]["instances"][0]["npu_group"] = experiment.tp  # TP group size
 
-# 3. GPU memory (from total_kv_blocks)
-gpu_mem_gb = (experiment.total_kv_blocks * 16 * 2) / (1024**3)  # FP16 = 2 bytes
-config["nodes"][0]["instances"][0]["npu_mem"]["mem_size"] = gpu_mem_gb
+# 3. GPU memory - use H100 fixed value (80GB)
+# LLMServingSim's npu_mem.mem_size = total GPU memory
+# Simulator internally computes KV capacity by subtracting model weight
+config["nodes"][0]["instances"][0]["npu_mem"]["mem_size"] = 80.0  # H100 HBM3
 
-# 4. CPU memory (from cpu_kv_blocks, if offloading enabled)
-if experiment.cpu_offload and experiment.cpu_kv_blocks > 0:
-    cpu_mem_gb = (experiment.cpu_kv_blocks * 16 * 2) / (1024**3)
-    config["nodes"][0]["cpu_mem"]["mem_size"] = cpu_mem_gb
+# 4. CPU memory - keep template default (1024 GB)
+# No need to modify based on cpu_kv_blocks
 
 # 5. Multi-instance (for dp > 1)
 if experiment.dp and experiment.dp > 1:
@@ -502,11 +509,46 @@ def run(self, experiment: Experiment) -> SimulatorResult:
 **Adapter registry addition**:
 ```python
 # In experiment/run.py
-def build_adapter_registry(...):
+
+# Add CLI argument
+parser.add_argument(
+    "--llmservingsim-dir",
+    default="LLMServingSim",
+    help="Path to LLMServingSim directory",
+)
+
+# Update build_adapter_registry signature
+def build_adapter_registry(
+    blis_binary: str,
+    vidur_dir: str,
+    llmservingsim_dir: str,  # New parameter
+    adapter_names: list[str] | None = None,
+) -> dict[str, SimulatorAdapter]:
     factories = {
+        "blis-blackbox": lambda: BLISBlackboxAdapter(blis_binary),
         ...
-        "llmservingsim": lambda: LLMServingSimAdapter(llmservingsim_dir),
+        "vidur": lambda: VidurAdapter(vidur_dir),
+        "llmservingsim": lambda: LLMServingSimAdapter(llmservingsim_dir),  # New adapter
     }
+    ...
+
+# Update run_pipeline call
+def run_pipeline(...):
+    adapters = build_adapter_registry(
+        blis_binary,
+        vidur_dir,
+        llmservingsim_dir,  # Pass through
+        adapter_names
+    )
+    ...
+
+# Update main() call
+def main():
+    args = parser.parse_args()
+    run_pipeline(
+        ...,
+        llmservingsim_dir=args.llmservingsim_dir,  # New argument
+    )
 ```
 
 ### Configuration Management
