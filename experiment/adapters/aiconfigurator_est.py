@@ -15,10 +15,8 @@ Since AIConfigurator produces only **mean** latency estimates (one row per
 concurrency level), P90 and P99 are left as ``None`` (the metrics layer
 skips comparisons where the simulator does not provide a value).
 
-**E2E latency** is computed as ``ttft + itl × output_length``. This is a
-simplified model that assumes uniform decode latency and ignores queuing,
-batching, and scheduling overhead, but provides a baseline estimate for
-comparison with ground-truth E2E measurements.
+E2E latency is derived using the standard formula:
+``E2E = TTFT + TPOT × (output_length - 1)``
 """
 
 from __future__ import annotations
@@ -258,9 +256,8 @@ class AIConfiguratorEstimateAdapter(SimulatorAdapter):
 
             ttft_ms = float(row["ttft"])
             tpot_ms = float(row["tpot"])
-            # E2E computed as: ttft + itl * output_length
-            # This is a simplified model that ignores queuing/batching overhead
-            e2e_ms = ttft_ms + tpot_ms * output_length
+            # Standard TPOT formula: E2E = TTFT + TPOT × (N - 1)
+            e2e_ms = ttft_ms + tpot_ms * (output_length - 1)
 
             stages.append(StageMetrics(
                 stage_index=gt_stage.stage_index,

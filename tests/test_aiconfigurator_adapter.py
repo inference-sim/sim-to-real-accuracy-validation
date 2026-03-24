@@ -331,7 +331,7 @@ class TestRunWithMock:
     @patch("experiment.adapters.aiconfigurator_est._run_task")
     @patch("experiment.adapters.aiconfigurator_est._create_task_config")
     def test_e2e_computed_from_formula(self, mock_create, mock_run):
-        """E2E is computed as: ttft + itl * output_length."""
+        """E2E = ttft + tpot × (output_length - 1)."""
         mock_create.return_value = MagicMock()
         mock_run.return_value = {"pareto_df": _make_pareto_df(), "pareto_frontier_df": None}
 
@@ -340,12 +340,12 @@ class TestRunWithMock:
         result = adapter.run(exp)
 
         # Stage 0: rate=5.0 → matches row with seq/s=5.0, concurrency=1
-        # ttft = 20.0 + 1*0.5 = 20.5, itl = 3.0 + 1*0.1 = 3.1
-        # E2E = ttft + itl * output_length = 20.5 + 3.1 * 247 = 786.2
+        # ttft = 20.0 + 1*0.5 = 20.5, tpot = 3.0 + 1*0.1 = 3.1
+        # E2E = ttft + tpot * (output_length - 1) = 20.5 + 3.1 * (247 - 1) = 783.1
         s0 = result.stages[0]
         assert abs(s0.ttft.mean - 20.5) < 0.01
         assert abs(s0.itl.mean - 3.1) < 0.01
-        expected_e2e = 20.5 + 3.1 * 247
+        expected_e2e = 20.5 + 3.1 * (247 - 1)
         assert abs(s0.e2e.mean - expected_e2e) < 0.01
 
     @patch("experiment.adapters.aiconfigurator_est._run_task")
@@ -397,17 +397,17 @@ class TestRunWithMock:
         result = adapter.run(exp)
 
         # output_length = 247
-        # Stage 0 (3000 reqs): rate=5.0 → row conc=1 → ttft=20.5, itl=3.1
-        #   E2E = 20.5 + 3.1*247 = 786.2
-        # Stage 1 (6000 reqs): rate=10.0 → row conc=2 → ttft=21.0, itl=3.2
-        #   E2E = 21.0 + 3.2*247 = 811.4
+        # Stage 0 (3000 reqs): rate=5.0 → row conc=1 → ttft=20.5, tpot=3.1
+        #   E2E = 20.5 + 3.1*(247-1) = 783.1
+        # Stage 1 (6000 reqs): rate=10.0 → row conc=2 → ttft=21.0, tpot=3.2
+        #   E2E = 21.0 + 3.2*(247-1) = 808.2
         # Weighted mean for TTFT = (20.5*3000 + 21.0*6000) / 9000
         expected_ttft = (20.5 * 3000 + 21.0 * 6000) / 9000
         assert abs(result.summary.ttft.mean - expected_ttft) < 0.01
 
-        # Weighted mean for E2E = (786.2*3000 + 811.4*6000) / 9000
-        e2e_0 = 20.5 + 3.1 * 247
-        e2e_1 = 21.0 + 3.2 * 247
+        # Weighted mean for E2E = (783.1*3000 + 808.2*6000) / 9000
+        e2e_0 = 20.5 + 3.1 * (247 - 1)
+        e2e_1 = 21.0 + 3.2 * (247 - 1)
         expected_e2e = (e2e_0 * 3000 + e2e_1 * 6000) / 9000
         assert abs(result.summary.e2e.mean - expected_e2e) < 0.01
 
