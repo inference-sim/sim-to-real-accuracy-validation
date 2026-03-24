@@ -18,6 +18,8 @@ simulator does not provide a value).
 
 from __future__ import annotations
 
+import logging
+
 from experiment.adapters.base import SimulatorAdapter
 from experiment.data_model import (
     Experiment,
@@ -26,6 +28,8 @@ from experiment.data_model import (
     StageMetrics,
     ThroughputMetrics,
 )
+
+logger = logging.getLogger(__name__)
 
 _HW_TO_LLM_OPT: dict[str, str] = {"H100": "H100", "A100-80GB": "A100"}
 
@@ -209,6 +213,11 @@ class LLMOptimizerEstimateAdapter(SimulatorAdapter):
             concurrency, perf = self._match_throughput(
                 stage_rate=gt_stage.rate,
                 sweep_results=sweep_results,
+            )
+            logger.info(
+                f"llm-optimizer stage {gt_stage.stage_index}: "
+                f"rate={gt_stage.rate:.1f} req/s → concurrency={concurrency} "
+                f"(predicted_rate={perf.requests_per_sec:.2f} req/s)"
             )
 
             e2e_mean_ms = perf.e2e_latency_s * 1000

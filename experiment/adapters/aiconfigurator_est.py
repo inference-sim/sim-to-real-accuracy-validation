@@ -23,6 +23,8 @@ comparison with ground-truth E2E measurements.
 
 from __future__ import annotations
 
+import logging
+
 from experiment.adapters.base import SimulatorAdapter
 from experiment.data_model import (
     Experiment,
@@ -31,6 +33,8 @@ from experiment.data_model import (
     StageMetrics,
     ThroughputMetrics,
 )
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Model-name mapping: HuggingFace ID → AIConfigurator SupportedModels key
@@ -243,6 +247,14 @@ class AIConfiguratorEstimateAdapter(SimulatorAdapter):
         for gt_stage in experiment.stages:
             # Find row where predicted_throughput ≈ stage_rate
             row = self._match_throughput(gt_stage.rate, tp_df)
+
+            predicted_rate = float(row["seq/s"])
+            concurrency = int(row.get("concurrency", -1))  # -1 if not present
+            logger.info(
+                f"aiconfigurator stage {gt_stage.stage_index}: "
+                f"rate={gt_stage.rate:.1f} req/s → concurrency={concurrency} "
+                f"(predicted_rate={predicted_rate:.2f} req/s)"
+            )
 
             ttft_ms = float(row["ttft"])
             tpot_ms = float(row["tpot"])

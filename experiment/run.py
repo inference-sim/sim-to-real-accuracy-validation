@@ -194,11 +194,23 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="Exclude experiments with data parallelism > 1 (multi-replica).",
     )
+    parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Enable verbose logging (INFO level).",
+    )
     return parser.parse_args(argv)
 
 
 def main(argv: list[str] | None = None) -> None:
     args = parse_args(argv)
+
+    # Configure logging level based on --verbose flag
+    log_level = logging.INFO if args.verbose else logging.WARNING
+    logging.basicConfig(
+        level=log_level,
+        format="%(levelname)s - %(name)s - %(message)s",
+    )
 
     run_pipeline(
         data_dir=args.data_dir,
