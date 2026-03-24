@@ -180,6 +180,8 @@ def _make_stage_metrics(count, rate, duration, e2e_mean, ttft_mean, itl_mean, is
                 "total_tokens_per_sec": 3916.0,
                 "requests_per_sec": 5.0,
             },
+            "prompt_len": _latency_dist(590),  # input tokens ≈ 2950 / 5 rps
+            "output_len": _latency_dist(193),  # output tokens ≈ 966 / 5 rps
         },
         "failures": {"count": 0, "request_latency": None, "prompt_len": None},
     }
@@ -293,8 +295,9 @@ class TestParseExperiment:
         exp = parse_experiment(exp_path)
 
         s0 = exp.stages[0]
-        # itl_mean 0.0036s → 3.6 ms
-        assert abs(s0.itl.mean - 3.6) < 0.01
+        # ITL is now calculated as standard TPOT: (E2E - TTFT) / (output_tokens - 1)
+        # (1800 - 25) / (193 - 1) = 1775 / 192 = 9.245 ms
+        assert abs(s0.itl.mean - 9.245) < 0.01
 
     def test_summary_parsed(self, tmp_path):
         exp_path = _make_exp_dir(tmp_path)

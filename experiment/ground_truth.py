@@ -275,9 +275,16 @@ def _parse_stage_metrics(
     # Latencies: seconds → milliseconds
     e2e = _parse_latency_dist(latency["request_latency"])
     ttft = _parse_latency_dist(latency["time_to_first_token"])
-    # Use normalized_time_per_output_token (per-token decode time) not inter_token_latency
-    # (which includes prefill intervals). This ensures E2E = TTFT + ITL × output_tokens.
-    itl = _parse_latency_dist(latency["normalized_time_per_output_token"])
+
+    # Calculate standard TPOT (Time Per Output Token) using industry formula:
+    # TPOT = (E2E - TTFT) / (output_tokens - 1)
+    # This matches the definition from GCP docs and is the standard metric.
+    output_tokens = successes["output_len"]["mean"]
+    tpot_seconds = (latency["request_latency"]["mean"] - latency["time_to_first_token"]["mean"]) / max(output_tokens - 1, 1)
+    tpot_ms = tpot_seconds * 1000
+
+    # TPOT is what simulators predict as ITL (inter-token latency)
+    itl = LatencyDistribution(mean=tpot_ms, p90=None, p99=None)
 
     # Throughput (already in tokens/sec or req/sec)
     tp_data = successes["throughput"]
