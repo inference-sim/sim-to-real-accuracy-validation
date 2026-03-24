@@ -171,6 +171,8 @@ def _make_stage_metrics(count, rate, duration, e2e_mean, ttft_mean, itl_mean, is
                 "request_latency": _latency_dist(e2e_mean),
                 "time_to_first_token": _latency_dist(ttft_mean),
                 "inter_token_latency": _latency_dist(itl_mean),
+                "time_per_output_token": _latency_dist(itl_mean),
+                "normalized_time_per_output_token": _latency_dist(itl_mean),
             },
             "throughput": {
                 "input_tokens_per_sec": 2950.0,

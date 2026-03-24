@@ -275,7 +275,9 @@ def _parse_stage_metrics(
     # Latencies: seconds → milliseconds
     e2e = _parse_latency_dist(latency["request_latency"])
     ttft = _parse_latency_dist(latency["time_to_first_token"])
-    itl = _parse_latency_dist(latency["inter_token_latency"])
+    # Use normalized_time_per_output_token (per-token decode time) not inter_token_latency
+    # (which includes prefill intervals). This ensures E2E = TTFT + ITL × output_tokens.
+    itl = _parse_latency_dist(latency["normalized_time_per_output_token"])
 
     # Throughput (already in tokens/sec or req/sec)
     tp_data = successes["throughput"]
