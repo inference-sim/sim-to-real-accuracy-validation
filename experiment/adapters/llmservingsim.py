@@ -119,9 +119,11 @@ class LLMServingSimAdapter(SimulatorAdapter):
                 "Must contain main.py"
             )
 
+        # Set container name before checking Docker availability
+        self.container_name = "llmservingsim-container"
+
         # Check Docker availability
         self.use_docker = use_docker and self._is_docker_available()
-        self.container_name = "llmservingsim-container"
 
         # Ensure LLMServingSim is built if using Docker
         if self.use_docker:
