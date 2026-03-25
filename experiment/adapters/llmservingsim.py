@@ -3,14 +3,23 @@
 from __future__ import annotations
 
 import copy
+import csv
 import json
 import os
 from typing import TYPE_CHECKING
 
+import numpy as np
+
 if TYPE_CHECKING:
-    from experiment.data_model import Experiment, SimulatorResult
+    from experiment.data_model import Experiment
 
 from experiment.adapters.base import SimulatorAdapter
+from experiment.data_model import (
+    LatencyDistribution,
+    SimulatorResult,
+    StageMetrics,
+    ThroughputMetrics,
+)
 
 
 # Map ground-truth model IDs (with suffixes) to LLMServingSim perf model names
@@ -46,6 +55,38 @@ def _generate_arrivals(stages: list[dict]) -> list[float]:
             t += inter_arrival
 
     return arrivals
+
+
+def _split_by_stage(rows: list[dict], stages: list[dict]) -> list[list[dict]]:
+    """Split CSV rows by stage based on arrival time.
+
+    Args:
+        rows: CSV rows as dicts (arrival times in nanoseconds)
+        stages: Stage config with rate/duration
+
+    Returns:
+        List of row buckets, one per stage
+    """
+    # Calculate stage boundaries in nanoseconds
+    boundaries: list[float] = []
+    cumulative_time = 0.0
+    for stage in stages:
+        cumulative_time += stage["duration"]
+        boundaries.append(cumulative_time * 1e9)
+
+    # Bucket rows by stage
+    buckets: list[list[dict]] = [[] for _ in stages]
+    for row in rows:
+        arrival_ns = float(row["arrival"])
+        for i, boundary_ns in enumerate(boundaries):
+            if arrival_ns < boundary_ns:  # Strict < to assign boundary to next stage
+                buckets[i].append(row)
+                break
+        else:
+            # Fallback to last stage if beyond all boundaries
+            buckets[-1].append(row)
+
+    return buckets
 
 
 class LLMServingSimAdapter(SimulatorAdapter):
@@ -252,6 +293,120 @@ class LLMServingSimAdapter(SimulatorAdapter):
             args.extend(["--request-routing-policy", "RR"])
 
         return args
+
+    def _parse_results(self, csv_path: str, experiment: "Experiment") -> SimulatorResult:
+        """Parse LLMServingSim CSV output into SimulatorResult.
+
+        Args:
+            csv_path: Path to LLMServingSim output CSV
+            experiment: Experiment configuration (for folder, stages)
+
+        Returns:
+            SimulatorResult with per-stage and summary metrics
+        """
+        if not os.path.exists(csv_path):
+            raise FileNotFoundError(f"LLMServingSim output CSV not found: {csv_path}")
+
+        # Read CSV
+        with open(csv_path) as f:
+            reader = csv.DictReader(f)
+            rows = list(reader)
+
+        if not rows:
+            raise ValueError(f"LLMServingSim output CSV is empty: {csv_path}")
+
+        # Get stage config
+        stages_config = experiment.profile_config["load"]["stages"]
+
+        # Split by stage
+        buckets = _split_by_stage(rows, stages_config)
+
+        # Compute per-stage metrics
+        stage_metrics: list[StageMetrics] = []
+        for i, bucket in enumerate(buckets):
+            stage_metrics.append(self._compute_stage(bucket, i, stages_config[i]))
+
+        # Compute summary (all rows together)
+        total_duration = sum(s["duration"] for s in stages_config)
+        summary = self._compute_stage(rows, -1, {"rate": 0, "duration": total_duration})
+
+        return SimulatorResult(
+            adapter_name=self.name,
+            experiment_folder=experiment.folder,
+            stages=stage_metrics,
+            summary=summary,
+        )
+
+    @staticmethod
+    def _compute_stage(
+        bucket: list[dict],
+        stage_index: int,
+        stage_cfg: dict,
+    ) -> StageMetrics:
+        """Compute metrics for a stage.
+
+        Args:
+            bucket: CSV rows for this stage
+            stage_index: Stage number (-1 for summary)
+            stage_cfg: Stage config with rate/duration
+
+        Returns:
+            StageMetrics with nested LatencyDistribution and ThroughputMetrics
+        """
+        zero_lat = LatencyDistribution(mean=0.0, p90=0.0, p99=0.0)
+        dur = max(1.0, stage_cfg.get("duration", 0))
+
+        if not bucket:
+            return StageMetrics(
+                stage_index=stage_index,
+                rate=float(stage_cfg.get("rate", 0)),
+                duration=float(stage_cfg.get("duration", 0)),
+                num_requests=0,
+                e2e=zero_lat,
+                ttft=zero_lat,
+                itl=zero_lat,
+                throughput=ThroughputMetrics(
+                    input_tokens_per_sec=0.0,
+                    output_tokens_per_sec=0.0,
+                    requests_per_sec=0.0,
+                ),
+            )
+
+        # Convert nanoseconds to milliseconds
+        e2e_vals = np.array([float(r["latency"]) / 1e6 for r in bucket])
+        ttft_vals = np.array([float(r["TTFT"]) / 1e6 for r in bucket])
+        tpot_vals = np.array([float(r["TPOT"]) / 1e6 for r in bucket])
+
+        # Calculate throughput
+        input_tokens = sum(int(r["input"]) for r in bucket)
+        output_tokens = sum(int(r["output"]) for r in bucket)
+
+        return StageMetrics(
+            stage_index=stage_index,
+            rate=float(stage_cfg.get("rate", 0)),
+            duration=float(stage_cfg.get("duration", 0)),
+            num_requests=len(bucket),
+            e2e=LatencyDistribution(
+                mean=float(np.mean(e2e_vals)),
+                p90=float(np.percentile(e2e_vals, 90)),
+                p99=float(np.percentile(e2e_vals, 99)),
+            ),
+            ttft=LatencyDistribution(
+                mean=float(np.mean(ttft_vals)),
+                p90=float(np.percentile(ttft_vals, 90)),
+                p99=float(np.percentile(ttft_vals, 99)),
+            ),
+            itl=LatencyDistribution(
+                mean=float(np.mean(tpot_vals)),
+                p90=float(np.percentile(tpot_vals, 90)),
+                p99=float(np.percentile(tpot_vals, 99)),
+            ),
+            throughput=ThroughputMetrics(
+                input_tokens_per_sec=input_tokens / dur,
+                output_tokens_per_sec=output_tokens / dur,
+                requests_per_sec=len(bucket) / dur,
+            ),
+        )
 
     def run(self, experiment: Experiment) -> SimulatorResult:
         """Execute LLMServingSim and return predicted metrics.

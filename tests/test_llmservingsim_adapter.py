@@ -413,3 +413,117 @@ def test_build_cli_args_multi_instance(adapter):
     # Should have routing policy for multi-instance
     assert "--request-routing-policy" in args
     assert "RR" in args
+
+
+# ---------------------------------------------------------------------------
+# Tests: stage splitting (_split_by_stage)
+# ---------------------------------------------------------------------------
+
+
+def test_split_by_stage_single():
+    """Test stage splitting with single stage"""
+    from experiment.adapters.llmservingsim import _split_by_stage
+
+    rows = [
+        {"arrival": "0", "latency": "1000"},
+        {"arrival": "1000000000", "latency": "2000"},  # 1s
+        {"arrival": "2000000000", "latency": "3000"},  # 2s
+    ]
+    stages = [{"rate": 1, "duration": 3}]
+
+    buckets = _split_by_stage(rows, stages)
+    assert len(buckets) == 1
+    assert len(buckets[0]) == 3
+
+
+def test_split_by_stage_multi():
+    """Test stage splitting with multiple stages"""
+    from experiment.adapters.llmservingsim import _split_by_stage
+
+    rows = [
+        {"arrival": "0", "latency": "1000"},
+        {"arrival": "500000000", "latency": "2000"},   # 0.5s (stage 1)
+        {"arrival": "1000000000", "latency": "3000"},  # 1.0s (stage 1)
+        {"arrival": "2000000001", "latency": "4000"},  # 2.0s + 1ns (stage 2)
+        {"arrival": "3000000000", "latency": "5000"},  # 3.0s (stage 2)
+    ]
+    stages = [
+        {"rate": 2, "duration": 2},  # 0-2s
+        {"rate": 1, "duration": 2},  # 2-4s
+    ]
+
+    buckets = _split_by_stage(rows, stages)
+    assert len(buckets) == 2
+    assert len(buckets[0]) == 3  # arrivals at 0, 0.5, 1s
+    assert len(buckets[1]) == 2  # arrivals at 2s+1ns, 3s
+
+
+# ---------------------------------------------------------------------------
+# Tests: result parsing (_parse_results / _compute_stage)
+# ---------------------------------------------------------------------------
+
+
+import csv
+import numpy as np
+
+
+def test_parse_results_single_stage(adapter, tmp_path):
+    """Test result parsing for single-stage experiment"""
+    # Create mock CSV output
+    csv_path = tmp_path / "output.csv"
+    with open(csv_path, "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=[
+            "instance id", "request id", "model", "input", "output",
+            "arrival", "end_time", "latency", "queuing_delay",
+            "TTFT", "TPOT", "ITL"
+        ])
+        writer.writeheader()
+        writer.writerow({
+            "instance id": "0",
+            "request id": "0",
+            "model": "meta-llama/Llama-3.1-8B",
+            "input": "100",
+            "output": "50",
+            "arrival": "0",
+            "end_time": "2000000000",
+            "latency": "2000000000",  # 2s = 2000ms
+            "queuing_delay": "0",
+            "TTFT": "100000000",      # 100ms
+            "TPOT": "30000000",       # 30ms
+            "ITL": "[30000000, 30000000]",
+        })
+        writer.writerow({
+            "instance id": "0",
+            "request id": "1",
+            "model": "meta-llama/Llama-3.1-8B",
+            "input": "120",
+            "output": "60",
+            "arrival": "1000000000",
+            "end_time": "3500000000",
+            "latency": "2500000000",  # 2.5s = 2500ms
+            "queuing_delay": "0",
+            "TTFT": "120000000",      # 120ms
+            "TPOT": "35000000",       # 35ms
+            "ITL": "[35000000, 35000000]",
+        })
+
+    exp = _make_experiment(
+        folder="test-exp",
+        profile_config={"load": {"stages": [{"rate": 1, "duration": 2}]}},
+    )
+
+    result = adapter._parse_results(str(csv_path), exp)
+
+    # Check adapter_name and experiment_folder
+    assert result.adapter_name == "llmservingsim"
+    assert result.experiment_folder == "test-exp"
+
+    # Check summary metrics (average of 2 requests)
+    assert result.summary.e2e.mean == pytest.approx(2250.0)  # (2000 + 2500) / 2
+    assert result.summary.ttft.mean == pytest.approx(110.0)  # (100 + 120) / 2
+    assert result.summary.itl.mean == pytest.approx(32.5)    # (30 + 35) / 2
+
+    # Check stage metrics
+    assert len(result.stages) == 1
+    assert result.stages[0].e2e.mean == pytest.approx(2250.0)
+    assert result.stages[0].num_requests == 2
