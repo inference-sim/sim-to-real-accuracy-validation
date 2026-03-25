@@ -55,11 +55,34 @@ class LLMServingSimAdapter(SimulatorAdapter):
     def can_run(self, experiment: Experiment) -> bool:
         """Check if this adapter supports the given experiment.
 
-        Returns True when hardware is H100, model is in MODEL_MAP,
-        precision is FP16, and the required perf model directory exists.
+        Returns True only if:
+        - Hardware is H100
+        - Model is in MODEL_MAP
+        - Performance model exists for the TP configuration
+        - Precision is FP16
         """
-        # TODO: implement eligibility checks (Task 2)
-        return False
+        # Check hardware
+        if experiment.hardware != "H100":
+            return False
+
+        # Check model mapping
+        model_sim = MODEL_MAP.get(experiment.model)
+        if not model_sim:
+            return False
+
+        # Check perf model exists
+        perf_model_path = os.path.join(
+            self.llmservingsim_dir,
+            f"llm_profile/perf_models/H100/{model_sim}/tp{experiment.tp}",
+        )
+        if not os.path.exists(perf_model_path):
+            return False
+
+        # Check precision
+        if experiment.precision != "FP16":
+            return False
+
+        return True
 
     def run(self, experiment: Experiment) -> SimulatorResult:
         """Execute LLMServingSim and return predicted metrics.
