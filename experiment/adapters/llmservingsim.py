@@ -620,24 +620,32 @@ class LLMServingSimAdapter(SimulatorAdapter):
             sampled_stages = original_stages
 
         try:
-            with tempfile.TemporaryDirectory() as tmpdir:
+            # Create temp directory inside LLMServingSim directory
+            # This is necessary because LLMServingSim internally changes cwd to astra-sim/
+            # and adds ../ prefix to all paths
+            temp_dir = os.path.join(self.llmservingsim_dir, "temp_experiments")
+            os.makedirs(temp_dir, exist_ok=True)
+
+            # Use experiment ID for unique temp file names
+            exp_id = os.path.basename(experiment.folder)
+            cluster_config_path = os.path.join(temp_dir, f"{exp_id}_cluster.json")
+            workload_path = os.path.join(temp_dir, f"{exp_id}_workload.jsonl")
+            output_path = os.path.join(temp_dir, f"{exp_id}_output.csv")
+
+            try:
                 # Generate cluster config
-                cluster_config_path = os.path.join(tmpdir, "cluster.json")
                 self._generate_cluster_config(experiment, cluster_config_path)
 
                 # Generate workload
-                workload_path = os.path.join(tmpdir, "workload.jsonl")
                 self._generate_workload(experiment, workload_path)
 
-                # Build CLI args
-                output_path = os.path.join(tmpdir, "output.csv")
-
-                # Convert absolute paths to relative paths from llmservingsim_dir
-                # LLMServingSim expects paths relative to its working directory
+                # Convert to relative paths from llmservingsim_dir
+                # LLMServingSim expects paths like "temp_experiments/cluster.json"
                 cluster_config_rel = os.path.relpath(cluster_config_path, self.llmservingsim_dir)
                 workload_rel = os.path.relpath(workload_path, self.llmservingsim_dir)
                 output_rel = os.path.relpath(output_path, self.llmservingsim_dir)
 
+                # Build CLI args
                 args = self._build_cli_args(
                     experiment,
                     cluster_config_rel,
@@ -687,7 +695,19 @@ class LLMServingSimAdapter(SimulatorAdapter):
                     )
 
                 # Parse results
-                return self._parse_results(output_path, experiment)
+                result = self._parse_results(output_path, experiment)
+
+                # Clean up temp files
+                for path in [cluster_config_path, workload_path, output_path]:
+                    if os.path.exists(path):
+                        os.remove(path)
+
+                return result
+            finally:
+                # Clean up temp files even if parsing fails
+                for path in [cluster_config_path, workload_path, output_path]:
+                    if os.path.exists(path):
+                        os.remove(path)
         finally:
             # Restore original stages
             experiment.profile_config["load"]["stages"] = original_stages
