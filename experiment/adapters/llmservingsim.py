@@ -184,7 +184,8 @@ class LLMServingSimAdapter(SimulatorAdapter):
             )
 
         # Set container name before checking Docker availability
-        self.container_name = "llmservingsim-container"
+        # The official LLMServingSim docker.sh creates "servingsim_docker"
+        self.container_name = "servingsim_docker"
 
         # Check Docker availability
         self.use_docker = use_docker and self._is_docker_available()
