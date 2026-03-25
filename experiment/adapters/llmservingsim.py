@@ -209,6 +209,7 @@ class LLMServingSimAdapter(SimulatorAdapter):
         - Hardware is H100
         - Model is in MODEL_MAP
         - Performance model exists for the TP configuration
+        - Attention predictions exist (required for simulation)
         - Precision is FP16
         """
         # Check hardware
@@ -220,12 +221,21 @@ class LLMServingSimAdapter(SimulatorAdapter):
         if not model_sim:
             return False
 
-        # Check perf model exists
+        # Check perf model directory exists
         perf_model_path = os.path.join(
             self.llmservingsim_dir,
             f"llm_profile/perf_models/H100/{model_sim}/tp{experiment.tp}",
         )
         if not os.path.exists(perf_model_path):
+            return False
+
+        # Check that attention predictions exist
+        # LLMServingSim requires these files to run simulations
+        predictions_dir = os.path.join(perf_model_path, "predictions")
+        attn_prefill_csv = os.path.join(predictions_dir, "attn_prefill_predictions.csv")
+        attn_decode_csv = os.path.join(predictions_dir, "attn_decode_predictions.csv")
+
+        if not os.path.exists(attn_prefill_csv) or not os.path.exists(attn_decode_csv):
             return False
 
         # Check precision
