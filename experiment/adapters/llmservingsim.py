@@ -607,9 +607,10 @@ class LLMServingSimAdapter(SimulatorAdapter):
             RuntimeError: If LLMServingSim times out or exits with a
                 non-zero return code.
         """
-        # Apply proportional sampling if max_requests is set
+        # Apply proportional sampling if max_requests is set (and > 0)
+        # max_requests_per_experiment of 0 means unlimited
         original_stages = experiment.profile_config["load"]["stages"]
-        if self.max_requests_per_experiment is not None:
+        if self.max_requests_per_experiment and self.max_requests_per_experiment > 0:
             sampled_stages = _sample_stages_proportionally(
                 original_stages, self.max_requests_per_experiment
             )
