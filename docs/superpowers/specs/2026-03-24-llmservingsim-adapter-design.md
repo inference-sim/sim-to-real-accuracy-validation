@@ -223,8 +223,11 @@ llmservingsim_model = MODEL_MAP[experiment.model]
 config["nodes"][0]["instances"][0]["model_name"] = llmservingsim_model
 
 # 2. Tensor parallelism
-config["nodes"][0]["instances"][0]["npu_num"] = experiment.tp  # Number of GPUs
-config["nodes"][0]["instances"][0]["npu_group"] = experiment.tp  # TP group size
+# npu_num = total number of GPUs
+# npu_group = group size (npus_per_group = npu_num // npu_group = TP degree)
+# For TP=N, set npu_num=N and npu_group=1
+config["nodes"][0]["instances"][0]["npu_num"] = experiment.tp
+config["nodes"][0]["instances"][0]["npu_group"] = 1
 
 # 3. GPU memory - use H100 fixed value (80GB)
 # LLMServingSim's npu_mem.mem_size = total GPU memory
@@ -559,9 +562,11 @@ def main():
 - Must contain: `main.py`, `llm_profile/perf_models/`, `cluster_config/`
 
 **Template selection**:
-- Base template: `LLMServingSim/cluster_config/single_node_single_instance.json`
+- Base template: `LLMServingSim/cluster_config/single_node_single_instance_H100.json` (H100-specific with correct bandwidth)
 - Always modify dynamically per experiment (no separate templates needed)
 - Each experiment gets its own modified config in a temp directory
+
+**Path handling note**: LLMServingSim internally changes directory to `astra-sim/` and prepends `../` to `--cluster-config` and `--output` paths. Use paths relative to the LLMServingSim root directory to avoid path resolution issues.
 
 ### Limitations and Scope
 
