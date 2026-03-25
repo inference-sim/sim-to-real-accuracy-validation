@@ -200,6 +200,59 @@ class LLMServingSimAdapter(SimulatorAdapter):
                 }
                 f.write(json.dumps(record) + "\n")
 
+    def _build_cli_args(
+        self,
+        experiment: "Experiment",
+        cluster_config: str,
+        workload: str,
+        output: str,
+    ) -> list[str]:
+        """Build LLMServingSim CLI arguments.
+
+        Args:
+            experiment: Experiment configuration
+            cluster_config: Path to cluster config JSON
+            workload: Path to workload .jsonl
+            output: Path to output CSV
+
+        Returns:
+            List of CLI arguments
+        """
+        # Calculate total requests
+        total_requests = sum(
+            round(stage["rate"] * stage["duration"])
+            for stage in experiment.profile_config["load"]["stages"]
+        )
+
+        args = [
+            "python",
+            "main.py",
+            "--cluster-config",
+            cluster_config,
+            "--dataset",
+            workload,
+            "--output",
+            output,
+            "--fp",
+            "16",
+            "--block-size",
+            "16",
+            "--max-batch",
+            str(experiment.max_num_seqs),
+            "--max-num-batched-tokens",
+            str(experiment.max_num_batched_tokens),
+            "--num-req",
+            str(total_requests),
+            "--log-level",
+            "WARNING",
+        ]
+
+        # Add routing policy for multi-instance
+        if experiment.dp and experiment.dp > 1:
+            args.extend(["--request-routing-policy", "RR"])
+
+        return args
+
     def run(self, experiment: Experiment) -> SimulatorResult:
         """Execute LLMServingSim and return predicted metrics.
 

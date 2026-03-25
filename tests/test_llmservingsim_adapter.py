@@ -345,3 +345,71 @@ def test_generate_workload_file(adapter, tmp_path):
     # Check arrivals are spaced at 1s intervals
     assert lines[1]["arrival_time_ns"] == 1_000_000_000
     assert lines[2]["arrival_time_ns"] == 2_000_000_000
+
+
+# ---------------------------------------------------------------------------
+# Tests: CLI arguments builder
+# ---------------------------------------------------------------------------
+
+
+def test_build_cli_args_single_instance(adapter):
+    """Test CLI args for single-instance experiment"""
+    exp = _make_experiment(
+        profile_config={
+            "load": {"stages": [{"rate": 10, "duration": 5}]}
+        },
+        max_num_seqs=256,
+        max_num_batched_tokens=8192,
+        dp=1,
+    )
+
+    args = adapter._build_cli_args(
+        exp,
+        cluster_config="/path/to/cluster.json",
+        workload="/path/to/workload.jsonl",
+        output="/path/to/output.csv",
+    )
+
+    assert args[0:2] == ["python", "main.py"]
+    assert "--cluster-config" in args
+    assert "/path/to/cluster.json" in args
+    assert "--dataset" in args
+    assert "/path/to/workload.jsonl" in args
+    assert "--output" in args
+    assert "/path/to/output.csv" in args
+    assert "--fp" in args
+    assert "16" in args
+    assert "--block-size" in args
+    assert "16" in args
+    assert "--max-batch" in args
+    assert "256" in args
+    assert "--max-num-batched-tokens" in args
+    assert "8192" in args
+    assert "--num-req" in args
+    assert "50" in args  # 10 req/s * 5s = 50
+
+    # Should NOT have routing policy for single instance
+    assert "--request-routing-policy" not in args
+
+
+def test_build_cli_args_multi_instance(adapter):
+    """Test CLI args for multi-instance experiment"""
+    exp = _make_experiment(
+        profile_config={
+            "load": {"stages": [{"rate": 8, "duration": 3}]}
+        },
+        max_num_seqs=128,
+        max_num_batched_tokens=4096,
+        dp=3,
+    )
+
+    args = adapter._build_cli_args(
+        exp,
+        cluster_config="/path/to/cluster.json",
+        workload="/path/to/workload.jsonl",
+        output="/path/to/output.csv",
+    )
+
+    # Should have routing policy for multi-instance
+    assert "--request-routing-policy" in args
+    assert "RR" in args
