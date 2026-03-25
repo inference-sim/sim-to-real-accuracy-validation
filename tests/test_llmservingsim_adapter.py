@@ -657,5 +657,5 @@ def test_run_handles_subprocess_error(adapter, tmp_path):
             cmd="python main.py",
             stderr=b"Segfault or other error",
         )
-        with pytest.raises(RuntimeError, match="LLMServingSim failed"):
+        with pytest.raises(RuntimeError, match=r"LLMServingSim \((native|Docker)\) failed"):
             adapter.run(exp)
