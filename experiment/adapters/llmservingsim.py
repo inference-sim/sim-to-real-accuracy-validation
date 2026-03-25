@@ -434,11 +434,18 @@ class LLMServingSimAdapter(SimulatorAdapter):
 
             # Build CLI args
             output_path = os.path.join(tmpdir, "output.csv")
+
+            # Convert absolute paths to relative paths from llmservingsim_dir
+            # LLMServingSim expects paths relative to its working directory
+            cluster_config_rel = os.path.relpath(cluster_config_path, self.llmservingsim_dir)
+            workload_rel = os.path.relpath(workload_path, self.llmservingsim_dir)
+            output_rel = os.path.relpath(output_path, self.llmservingsim_dir)
+
             args = self._build_cli_args(
                 experiment,
-                cluster_config_path,
-                workload_path,
-                output_path,
+                cluster_config_rel,
+                workload_rel,
+                output_rel,
             )
 
             # Execute LLMServingSim
