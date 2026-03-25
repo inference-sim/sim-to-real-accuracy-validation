@@ -46,6 +46,7 @@ def build_adapter_registry(
     llmservingsim_dir: str,
     adapter_names: list[str] | None = None,
     no_docker: bool = False,
+    max_requests_per_experiment: int | None = None,
 ) -> dict[str, SimulatorAdapter]:
     """Build a name → adapter instance mapping.
 
@@ -59,7 +60,11 @@ def build_adapter_registry(
         "vidur": lambda: VidurAdapter(vidur_dir),
         "llm-optimizer-estimate": lambda: LLMOptimizerEstimateAdapter(),
         "aiconfigurator-estimate": lambda: AIConfiguratorEstimateAdapter(),
-        "llmservingsim": lambda: LLMServingSimAdapter(llmservingsim_dir, use_docker=not no_docker),
+        "llmservingsim": lambda: LLMServingSimAdapter(
+            llmservingsim_dir,
+            use_docker=not no_docker,
+            max_requests_per_experiment=max_requests_per_experiment,
+        ),
     }
     if adapter_names is None:
         adapter_names = list(factories.keys())
@@ -75,6 +80,7 @@ def run_pipeline(
     adapter_names: list[str] | None = None,
     no_dp_scaling: bool = False,
     no_docker: bool = False,
+    max_requests_per_experiment: int | None = None,
 ) -> tuple[list[ErrorRecord], list[RuntimeRecord]]:
     """Core pipeline: discover → run → compute errors → report.
 
@@ -113,7 +119,9 @@ def run_pipeline(
               f"(excluded {filtered_count} with DP > 1)")
 
     # 3. Build adapter registry (only requested adapters)
-    adapters = build_adapter_registry(blis_binary, vidur_dir, llmservingsim_dir, adapter_names, no_docker)
+    adapters = build_adapter_registry(
+        blis_binary, vidur_dir, llmservingsim_dir, adapter_names, no_docker, max_requests_per_experiment
+    )
 
     # 4. Run all (experiment, adapter) pairs
     all_records: list[ErrorRecord] = []
@@ -216,6 +224,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="Enable verbose logging (INFO level).",
     )
+    parser.add_argument(
+        "--max-requests-per-experiment",
+        type=int,
+        default=None,
+        help="Limit number of requests per experiment (for quick testing with LLMServingSim).",
+    )
     return parser.parse_args(argv)
 
 
@@ -238,6 +252,7 @@ def main(argv: list[str] | None = None) -> None:
         adapter_names=args.adapters,
         no_dp_scaling=args.no_dp_scaling,
         no_docker=args.no_docker,
+        max_requests_per_experiment=args.max_requests_per_experiment,
     )
 
 

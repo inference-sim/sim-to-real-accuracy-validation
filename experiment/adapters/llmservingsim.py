@@ -100,7 +100,12 @@ class LLMServingSimAdapter(SimulatorAdapter):
     into standardised metrics for comparison with vLLM ground truth.
     """
 
-    def __init__(self, llmservingsim_dir: str, use_docker: bool = True):
+    def __init__(
+        self,
+        llmservingsim_dir: str,
+        use_docker: bool = True,
+        max_requests_per_experiment: int | None = None,
+    ):
         """Initialize adapter.
 
         Args:
@@ -108,6 +113,9 @@ class LLMServingSimAdapter(SimulatorAdapter):
                 main.py.
             use_docker: Whether to use Docker for execution (default True).
                 If False or Docker is unavailable, falls back to native execution.
+            max_requests_per_experiment: Optional limit on number of requests
+                per experiment. If set, only the first N requests will be simulated.
+                Useful for quick testing (e.g., 100 requests instead of 16,800).
 
         Raises:
             ValueError: If the directory does not contain main.py.
@@ -124,6 +132,9 @@ class LLMServingSimAdapter(SimulatorAdapter):
 
         # Check Docker availability
         self.use_docker = use_docker and self._is_docker_available()
+
+        # Store request limit
+        self.max_requests_per_experiment = max_requests_per_experiment
 
         # Ensure LLMServingSim is built if using Docker
         if self.use_docker:
@@ -381,6 +392,10 @@ class LLMServingSimAdapter(SimulatorAdapter):
             round(stage["rate"] * stage["duration"])
             for stage in experiment.profile_config["load"]["stages"]
         )
+
+        # Apply request limit if set
+        if self.max_requests_per_experiment is not None:
+            total_requests = min(total_requests, self.max_requests_per_experiment)
 
         args = [
             "python",
