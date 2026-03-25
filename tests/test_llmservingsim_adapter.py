@@ -250,3 +250,98 @@ class TestGenerateClusterConfig:
             assert instance["npu_num"] == 4
             assert instance["npu_group"] == 1
             assert instance["npu_mem"]["mem_size"] == 80.0
+
+
+# ---------------------------------------------------------------------------
+# Tests: arrival generation
+# ---------------------------------------------------------------------------
+
+
+def test_generate_arrivals_single_stage():
+    """Test constant-rate arrival times for single stage"""
+    from experiment.adapters.llmservingsim import _generate_arrivals
+
+    stages = [{"rate": 10, "duration": 5}]  # 10 req/s for 5 seconds
+    arrivals = _generate_arrivals(stages)
+
+    # Should have 50 requests
+    assert len(arrivals) == 50
+
+    # Check uniform spacing (0.1s = 100ms)
+    for i in range(1, len(arrivals)):
+        spacing = arrivals[i] - arrivals[i - 1]
+        assert abs(spacing - 0.1) < 1e-9  # Constant 100ms spacing
+
+
+def test_generate_arrivals_multi_stage():
+    """Test constant-rate arrivals for multiple stages"""
+    from experiment.adapters.llmservingsim import _generate_arrivals
+
+    stages = [
+        {"rate": 8, "duration": 2},   # 16 requests, 0-2s
+        {"rate": 12, "duration": 3},  # 36 requests, 2-5s
+    ]
+    arrivals = _generate_arrivals(stages)
+
+    assert len(arrivals) == 52
+
+    # Check stage 1 arrivals (0-2s)
+    stage1 = [a for a in arrivals if a < 2.0]
+    assert len(stage1) == 16
+    for i in range(1, len(stage1)):
+        assert abs((stage1[i] - stage1[i - 1]) - 0.125) < 1e-9  # 1/8 = 0.125s
+
+    # Check stage 2 arrivals (2-5s)
+    stage2 = [a for a in arrivals if a >= 2.0]
+    assert len(stage2) == 36
+    for i in range(1, len(stage2)):
+        assert abs((stage2[i] - stage2[i - 1]) - (1.0 / 12)) < 1e-9  # 1/12 = 0.0833s
+
+
+# ---------------------------------------------------------------------------
+# Tests: workload file generation
+# ---------------------------------------------------------------------------
+
+
+def test_generate_workload_file(adapter, tmp_path):
+    """Test workload .jsonl generation from ground-truth"""
+    # Create mock ground-truth data
+    gt_dir = tmp_path / "test-exp"
+    results_dir = gt_dir / "results"
+    results_dir.mkdir(parents=True)
+
+    metrics = [
+        {"info": {"input_tokens": 100, "output_tokens": 50}},
+        {"info": {"input_tokens": 120, "output_tokens": 60}},
+        {"info": {"input_tokens": 110, "output_tokens": 55}},
+    ]
+    with open(results_dir / "per_request_lifecycle_metrics.json", "w") as f:
+        json.dump(metrics, f)
+
+    exp = _make_experiment(
+        folder=str(gt_dir),
+        profile_config={
+            "load": {
+                "stages": [{"rate": 1, "duration": 3}]  # 3 requests
+            }
+        },
+    )
+
+    output_path = tmp_path / "workload.jsonl"
+    adapter._generate_workload(exp, str(output_path))
+
+    # Read generated workload
+    with open(output_path) as f:
+        lines = [json.loads(line) for line in f]
+
+    assert len(lines) == 3
+
+    # Check first request
+    assert lines[0]["input_toks"] == 100
+    assert lines[0]["output_toks"] == 50
+    assert lines[0]["arrival_time_ns"] == 0
+    assert len(lines[0]["input_tok_ids"]) == 100
+
+    # Check arrivals are spaced at 1s intervals
+    assert lines[1]["arrival_time_ns"] == 1_000_000_000
+    assert lines[2]["arrival_time_ns"] == 2_000_000_000

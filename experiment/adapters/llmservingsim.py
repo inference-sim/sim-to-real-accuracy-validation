@@ -23,6 +23,31 @@ MODEL_MAP: dict[str, str] = {
 }
 
 
+def _generate_arrivals(stages: list[dict]) -> list[float]:
+    """Generate constant-rate arrival times from stage config.
+
+    Args:
+        stages: List of {"rate": req/s, "duration": seconds}
+
+    Returns:
+        List of arrival times in seconds
+    """
+    arrivals: list[float] = []
+    t = 0.0
+
+    for stage in stages:
+        rate = stage["rate"]
+        duration = stage["duration"]
+        num_requests = round(rate * duration)
+        inter_arrival = 1.0 / rate
+
+        for _ in range(num_requests):
+            arrivals.append(t)
+            t += inter_arrival
+
+    return arrivals
+
+
 class LLMServingSimAdapter(SimulatorAdapter):
     """Adapter for the LLMServingSim discrete-event simulator.
 
@@ -121,6 +146,59 @@ class LLMServingSimAdapter(SimulatorAdapter):
         # Write config
         with open(output_path, "w") as f:
             json.dump(config, f, indent=2)
+
+    def _generate_workload(self, experiment: "Experiment", output_path: str) -> None:
+        """Generate workload .jsonl file from ground-truth token counts.
+
+        Args:
+            experiment: Experiment configuration
+            output_path: Where to write the workload .jsonl
+        """
+        from experiment.ground_truth import resolve_perf_dir
+
+        # Read ground-truth metrics
+        perf_dir = resolve_perf_dir(experiment.folder)
+        metrics_path = os.path.join(perf_dir, "per_request_lifecycle_metrics.json")
+
+        if not os.path.exists(metrics_path):
+            raise FileNotFoundError(
+                f"Ground-truth metrics not found: {metrics_path}. "
+                "Cannot generate workload without token counts."
+            )
+
+        with open(metrics_path) as f:
+            requests = json.load(f)
+
+        # Extract token counts
+        token_pairs = [
+            (req["info"]["input_tokens"], req["info"]["output_tokens"])
+            for req in requests
+        ]
+
+        # Generate constant-rate arrivals
+        stages = experiment.profile_config["load"]["stages"]
+        arrivals = _generate_arrivals(stages)
+
+        # Check for mismatch
+        if len(token_pairs) < len(arrivals):
+            raise ValueError(
+                f"Not enough ground-truth requests ({len(token_pairs)}) "
+                f"for generated arrivals ({len(arrivals)})"
+            )
+
+        # Write workload .jsonl
+        with open(output_path, "w") as f:
+            for (input_toks, output_toks), arrival_sec in zip(token_pairs, arrivals):
+                # Generate dummy token IDs (LLMServingSim only needs counts)
+                input_tok_ids = list(range(1, input_toks + 1))
+
+                record = {
+                    "input_toks": input_toks,
+                    "output_toks": output_toks,
+                    "arrival_time_ns": int(arrival_sec * 1e9),
+                    "input_tok_ids": input_tok_ids,
+                }
+                f.write(json.dumps(record) + "\n")
 
     def run(self, experiment: Experiment) -> SimulatorResult:
         """Execute LLMServingSim and return predicted metrics.
