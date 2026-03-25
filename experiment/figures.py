@@ -33,6 +33,7 @@ SIMULATOR_ORDER = [
     "vidur",
     "llm-optimizer-estimate",
     "aiconfigurator-estimate",
+    "llmservingsim",
 ]
 
 SIMULATOR_DISPLAY_NAMES = {
@@ -41,6 +42,7 @@ SIMULATOR_DISPLAY_NAMES = {
     "vidur": "Vidur",
     "llm-optimizer-estimate": "LLM-Optimizer",
     "aiconfigurator-estimate": "AIConfigurator",
+    "llmservingsim": "LLMServingSim",
 }
 
 COLOR_PALETTE = {
@@ -49,6 +51,7 @@ COLOR_PALETTE = {
     "vidur": "#DD8452",
     "llm-optimizer-estimate": "#55A868",
     "aiconfigurator-estimate": "#8172B3",
+    "llmservingsim": "#C44E52",
 }
 
 HATCH_PATTERNS = {
@@ -57,6 +60,7 @@ HATCH_PATTERNS = {
     "vidur": "\\\\",
     "llm-optimizer-estimate": "xx",
     "aiconfigurator-estimate": "..",
+    "llmservingsim": "++",
 }
 
 MARKER_STYLES = {
@@ -708,6 +712,157 @@ def plot_aggregate_comparison_trace(
     return fig
 
 
+def plot_aggregate_comparison_llmservingsim(
+    df: pd.DataFrame,
+    output_path: str | None = None,
+) -> plt.Figure | None:
+    """Figure 0c: BLIS-Roofline vs LLMServingSim (n=1) for MoE.
+
+    Compares blis-roofline and llmservingsim on the single Mixtral-8x7B tp4
+    experiment where both simulators have data. Shows MAPE for E2E, TTFT,
+    and ITL (both simulators report all three metrics).
+
+    Note: LLMServingSim only has complete pre-profiled models for a limited
+    set of configurations. This figure demonstrates the comparison for the
+    single available MoE experiment.
+    """
+    _apply_rc_params()
+
+    # Find experiments with data from both simulators
+    target_sims = {"blis-roofline", "llmservingsim"}
+    exp_sims = df.groupby("experiment_folder")["simulator"].apply(set)
+    common_exps = exp_sims[exp_sims.apply(lambda s: target_sims.issubset(s))].index
+
+    if len(common_exps) == 0:
+        warnings.warn("Figure 0c: no experiments with data from both BLIS and LLMServingSim")
+        return None
+
+    df_filtered = df[df["experiment_folder"].isin(common_exps)]
+
+    # Filter to Mixtral-8x7B and general workload
+    df_filtered = df_filtered[
+        (df_filtered["model"] == "mistralai/Mixtral-8x7B-v0.1") &
+        (df_filtered["workload"] == "general")
+    ]
+
+    if df_filtered.empty:
+        warnings.warn("Figure 0c: no Mixtral-8x7B general experiments")
+        return None
+
+    common_exps = df_filtered["experiment_folder"].unique()
+
+    # Prepare data for each metric (both simulators report all three)
+    metrics_data = []
+
+    # E2E: both simulators
+    e2e_df = df_filtered[
+        (df_filtered["metric_name"] == "e2e_mean") &
+        (df_filtered["simulator"].isin(list(target_sims)))
+    ]
+    if not e2e_df.empty:
+        e2e_agg = e2e_df.groupby("simulator")["mape"].median()
+        metrics_data.append(("E2E Mean", e2e_agg, list(target_sims)))
+
+    # TTFT: both simulators
+    ttft_df = df_filtered[
+        (df_filtered["metric_name"] == "ttft_mean") &
+        (df_filtered["simulator"].isin(list(target_sims)))
+    ]
+    if not ttft_df.empty:
+        ttft_agg = ttft_df.groupby("simulator")["mape"].median()
+        metrics_data.append(("TTFT Mean", ttft_agg, list(target_sims)))
+
+    # ITL: both simulators
+    itl_df = df_filtered[
+        (df_filtered["metric_name"] == "itl_mean") &
+        (df_filtered["simulator"].isin(list(target_sims)))
+    ]
+    if not itl_df.empty:
+        itl_agg = itl_df.groupby("simulator")["mape"].median()
+        metrics_data.append(("ITL Mean", itl_agg, list(target_sims)))
+
+    if not metrics_data:
+        warnings.warn("Figure 0c: no metrics data after aggregation")
+        return None
+
+    # Create figure
+    n_metrics = len(metrics_data)
+    fig, axes = plt.subplots(1, n_metrics, figsize=(10, 4))
+    if n_metrics == 1:
+        axes = [axes]
+
+    bar_width = 0.6
+    labeled_sims = set()  # Track which simulators have been labeled
+
+    for col_idx, (metric_label, agg_data, sims_for_metric) in enumerate(metrics_data):
+        ax = axes[col_idx]
+
+        # Sort simulators by SIMULATOR_ORDER
+        sims_ordered = [s for s in SIMULATOR_ORDER if s in sims_for_metric and s in agg_data.index]
+
+        x = np.arange(len(sims_ordered))
+        heights = [agg_data[sim] for sim in sims_ordered]
+        colors = [COLOR_PALETTE[sim] for sim in sims_ordered]
+        hatches = [HATCH_PATTERNS.get(sim, "") for sim in sims_ordered]
+
+        for i, (pos, height, color, hatch) in enumerate(zip(x, heights, colors, hatches)):
+            sim = sims_ordered[i]
+            # Add label only the first time this simulator is plotted
+            label = SIMULATOR_DISPLAY_NAMES[sim] if sim not in labeled_sims else ""
+            if sim not in labeled_sims:
+                labeled_sims.add(sim)
+
+            ax.bar(
+                pos, height, bar_width,
+                color=color, hatch=hatch,
+                edgecolor="black", linewidth=0.5,
+                label=label,
+            )
+
+        ax.set_xticks([])
+        ax.set_xlim(-0.5, len(sims_ordered) - 0.5)
+
+        y_top = max(heights) * 1.20 if heights else 1.0
+        ax.set_ylim(bottom=0, top=y_top)
+
+        pct = r"\%" if matplotlib.rcParams.get("text.usetex") else "%"
+        ax.set_ylabel(f"MAPE ({pct})")
+        ax.set_title(metric_label, fontsize=10, fontweight="bold")
+
+    # Title with subtitle
+    fig.suptitle(
+        f"BLIS-Roofline vs LLMServingSim (n={len(common_exps)}) ↓ for MoE",
+        fontsize=11, fontweight="bold"
+    )
+    fig.text(
+        0.5, 0.94, "Mixtral-8x7B, H100, general",
+        ha="center", fontsize=9, style="italic"
+    )
+
+    # Collect legend from all axes
+    all_handles, all_labels = [], []
+    for ax in axes:
+        h, l = ax.get_legend_handles_labels()
+        for handle, label in zip(h, l):
+            if label and label not in all_labels:  # Deduplicate by label
+                all_handles.append(handle)
+                all_labels.append(label)
+
+    if all_handles:
+        fig.legend(
+            all_handles, all_labels, loc="upper center",
+            bbox_to_anchor=(0.5, -0.01), ncol=len(all_handles),
+            frameon=False, handlelength=1.5, columnspacing=1.0,
+        )
+
+    fig.tight_layout()
+    fig.subplots_adjust(top=0.86)
+
+    if output_path:
+        _save_figure(fig, output_path)
+    return fig
+
+
 def plot_model_sensitivity(
     df: pd.DataFrame,
     output_path: str | None = None,
@@ -1296,6 +1451,14 @@ def main(argv: list[str] | None = None) -> None:
     error_df_0b = enrich_with_metadata(error_df_0b, args.metadata)
     error_df_0b = _add_config_tags(error_df_0b)
 
+    # Fig 0c (BLIS vs LLMServingSim) needs llmservingsim data, which may be excluded
+    # Load raw CSV and filter to just blis-roofline and llmservingsim
+    error_df_0c = pd.read_csv(error_csv)
+    error_df_0c = error_df_0c[error_df_0c["stage_index"] == -1]  # summary rows only
+    error_df_0c = error_df_0c[error_df_0c["simulator"].isin(["blis-roofline", "llmservingsim"])]
+    error_df_0c = enrich_with_metadata(error_df_0c, args.metadata)
+    error_df_0c = _add_config_tags(error_df_0c)
+
     out = args.output_dir
     os.makedirs(out, exist_ok=True)
 
@@ -1304,6 +1467,8 @@ def main(argv: list[str] | None = None) -> None:
          lambda: plot_aggregate_comparison_analytical(error_df, os.path.join(out, "fig0a_aggregate_analytical.pdf"))),
         ("fig0b_aggregate_trace.pdf",
          lambda: plot_aggregate_comparison_trace(error_df_0b, os.path.join(out, "fig0b_aggregate_trace.pdf"))),
+        ("fig0c_aggregate_llmservingsim.pdf",
+         lambda: plot_aggregate_comparison_llmservingsim(error_df_0c, os.path.join(out, "fig0c_aggregate_llmservingsim.pdf"))),
         ("fig1_model_sensitivity.pdf",
          lambda: plot_model_sensitivity(error_df, os.path.join(out, "fig1_model_sensitivity.pdf"))),
         ("fig2_hardware_portability.pdf",
