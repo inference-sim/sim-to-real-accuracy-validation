@@ -22,6 +22,7 @@ from experiment.adapters.blis_crossmodel import BLISCrossModelAdapter
 from experiment.adapters.blis_roofline import BLISRooflineAdapter
 from experiment.adapters.blis_trained_roofline import BLISTrainedRooflineAdapter
 from experiment.adapters.llm_optimizer_est import LLMOptimizerEstimateAdapter
+from experiment.adapters.llmservingsim import LLMServingSimAdapter
 from experiment.adapters.vidur import VidurAdapter
 from experiment.ground_truth import discover_experiments, parse_experiment
 from experiment.metrics import ErrorRecord, RuntimeRecord, compute_errors
@@ -35,12 +36,14 @@ ALL_ADAPTER_NAMES = [
     "vidur",
     "llm-optimizer-estimate",
     "aiconfigurator-estimate",
+    "llmservingsim",
 ]
 
 
 def build_adapter_registry(
     blis_binary: str,
     vidur_dir: str,
+    llmservingsim_dir: str,
     adapter_names: list[str] | None = None,
 ) -> dict[str, SimulatorAdapter]:
     """Build a name → adapter instance mapping.
@@ -55,6 +58,7 @@ def build_adapter_registry(
         "vidur": lambda: VidurAdapter(vidur_dir),
         "llm-optimizer-estimate": lambda: LLMOptimizerEstimateAdapter(),
         "aiconfigurator-estimate": lambda: AIConfiguratorEstimateAdapter(),
+        "llmservingsim": lambda: LLMServingSimAdapter(llmservingsim_dir),
     }
     if adapter_names is None:
         adapter_names = list(factories.keys())
@@ -65,6 +69,7 @@ def run_pipeline(
     data_dir: str,
     blis_binary: str,
     vidur_dir: str,
+    llmservingsim_dir: str,
     output_dir: str,
     adapter_names: list[str] | None = None,
     no_dp_scaling: bool = False,
@@ -106,7 +111,7 @@ def run_pipeline(
               f"(excluded {filtered_count} with DP > 1)")
 
     # 3. Build adapter registry (only requested adapters)
-    adapters = build_adapter_registry(blis_binary, vidur_dir, adapter_names)
+    adapters = build_adapter_registry(blis_binary, vidur_dir, llmservingsim_dir, adapter_names)
 
     # 4. Run all (experiment, adapter) pairs
     all_records: list[ErrorRecord] = []
@@ -178,6 +183,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Path to the cloned Vidur repository.",
     )
     parser.add_argument(
+        "--llmservingsim-dir",
+        default="LLMServingSim",
+        help="Path to LLMServingSim directory containing main.py",
+    )
+    parser.add_argument(
         "--output-dir",
         default="results",
         help="Directory where reports and CSV will be saved.",
@@ -216,6 +226,7 @@ def main(argv: list[str] | None = None) -> None:
         data_dir=args.data_dir,
         blis_binary=args.blis_binary,
         vidur_dir=args.vidur_dir,
+        llmservingsim_dir=args.llmservingsim_dir,
         output_dir=args.output_dir,
         adapter_names=args.adapters,
         no_dp_scaling=args.no_dp_scaling,
