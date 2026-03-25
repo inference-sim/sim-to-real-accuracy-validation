@@ -45,6 +45,7 @@ def build_adapter_registry(
     vidur_dir: str,
     llmservingsim_dir: str,
     adapter_names: list[str] | None = None,
+    no_docker: bool = False,
 ) -> dict[str, SimulatorAdapter]:
     """Build a name → adapter instance mapping.
 
@@ -58,7 +59,7 @@ def build_adapter_registry(
         "vidur": lambda: VidurAdapter(vidur_dir),
         "llm-optimizer-estimate": lambda: LLMOptimizerEstimateAdapter(),
         "aiconfigurator-estimate": lambda: AIConfiguratorEstimateAdapter(),
-        "llmservingsim": lambda: LLMServingSimAdapter(llmservingsim_dir),
+        "llmservingsim": lambda: LLMServingSimAdapter(llmservingsim_dir, use_docker=not no_docker),
     }
     if adapter_names is None:
         adapter_names = list(factories.keys())
@@ -73,6 +74,7 @@ def run_pipeline(
     output_dir: str,
     adapter_names: list[str] | None = None,
     no_dp_scaling: bool = False,
+    no_docker: bool = False,
 ) -> tuple[list[ErrorRecord], list[RuntimeRecord]]:
     """Core pipeline: discover → run → compute errors → report.
 
@@ -111,7 +113,7 @@ def run_pipeline(
               f"(excluded {filtered_count} with DP > 1)")
 
     # 3. Build adapter registry (only requested adapters)
-    adapters = build_adapter_registry(blis_binary, vidur_dir, llmservingsim_dir, adapter_names)
+    adapters = build_adapter_registry(blis_binary, vidur_dir, llmservingsim_dir, adapter_names, no_docker)
 
     # 4. Run all (experiment, adapter) pairs
     all_records: list[ErrorRecord] = []
@@ -188,6 +190,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Path to LLMServingSim directory containing main.py",
     )
     parser.add_argument(
+        "--no-docker",
+        action="store_true",
+        help="Disable Docker for LLMServingSim (use native execution)",
+    )
+    parser.add_argument(
         "--output-dir",
         default="results",
         help="Directory where reports and CSV will be saved.",
@@ -230,6 +237,7 @@ def main(argv: list[str] | None = None) -> None:
         output_dir=args.output_dir,
         adapter_names=args.adapters,
         no_dp_scaling=args.no_dp_scaling,
+        no_docker=args.no_docker,
     )
 
 

@@ -100,12 +100,14 @@ class LLMServingSimAdapter(SimulatorAdapter):
     into standardised metrics for comparison with vLLM ground truth.
     """
 
-    def __init__(self, llmservingsim_dir: str):
+    def __init__(self, llmservingsim_dir: str, use_docker: bool = True):
         """Initialize adapter.
 
         Args:
             llmservingsim_dir: Path to LLMServingSim directory containing
                 main.py.
+            use_docker: Whether to use Docker for execution (default True).
+                If False or Docker is unavailable, falls back to native execution.
 
         Raises:
             ValueError: If the directory does not contain main.py.
@@ -116,6 +118,14 @@ class LLMServingSimAdapter(SimulatorAdapter):
                 f"Invalid LLMServingSim directory: {llmservingsim_dir}. "
                 "Must contain main.py"
             )
+
+        # Check Docker availability
+        self.use_docker = use_docker and self._is_docker_available()
+        self.container_name = "llmservingsim-container"
+
+        # Ensure LLMServingSim is built if using Docker
+        if self.use_docker:
+            self._ensure_llmservingsim_built()
 
     @property
     def name(self) -> str:
@@ -153,6 +163,109 @@ class LLMServingSimAdapter(SimulatorAdapter):
             return False
 
         return True
+
+    def _is_docker_available(self) -> bool:
+        """Check if Docker is available and container is running.
+
+        Returns:
+            True if Docker is available and container exists, False otherwise.
+        """
+        try:
+            # Check if docker command exists
+            result = subprocess.run(
+                ["docker", "--version"],
+                capture_output=True,
+                timeout=5,
+            )
+            if result.returncode != 0:
+                return False
+
+            # Check if container exists (running or stopped)
+            result = subprocess.run(
+                ["docker", "ps", "-a", "--filter", f"name={self.container_name}", "--format", "{{.Names}}"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            return self.container_name in result.stdout
+
+        except (subprocess.TimeoutExpired, FileNotFoundError, subprocess.CalledProcessError):
+            return False
+
+    def _ensure_container_running(self) -> None:
+        """Ensure Docker container is running, start it if stopped."""
+        try:
+            # Check if container is running
+            result = subprocess.run(
+                ["docker", "ps", "--filter", f"name={self.container_name}", "--format", "{{.Names}}"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+
+            if self.container_name not in result.stdout:
+                # Container exists but not running, start it
+                subprocess.run(
+                    ["docker", "start", self.container_name],
+                    capture_output=True,
+                    check=True,
+                    timeout=30,
+                )
+        except subprocess.CalledProcessError as exc:
+            raise RuntimeError(
+                f"Failed to start Docker container '{self.container_name}': {exc.stderr.decode('utf-8', errors='replace')}"
+            )
+
+    def _ensure_llmservingsim_built(self) -> None:
+        """Ensure LLMServingSim is built inside Docker container.
+
+        Checks if the AnalyticalAstra binary exists, and builds if necessary.
+        """
+        self._ensure_container_running()
+
+        # Check if already built
+        check_cmd = [
+            "docker", "exec", self.container_name,
+            "test", "-f", "/app/LLMServingSim/astra-sim/build/astra_analytical/build/AnalyticalAstra/bin/AnalyticalAstra"
+        ]
+
+        result = subprocess.run(check_cmd, capture_output=True)
+        if result.returncode == 0:
+            # Already built
+            return
+
+        # Need to build - install dependencies and compile
+        print(f"Building LLMServingSim in Docker container '{self.container_name}'...")
+
+        # Install Python dependencies
+        deps_cmd = [
+            "docker", "exec", self.container_name,
+            "pip3", "install", "-q",
+            "pyyaml", "pyinstrument", "transformers", "datasets",
+            "msgspec", "scikit-learn", "xgboost==3.1.2",
+            "matplotlib==3.5.3", "pandas==1.5.3", "numpy==1.23.5"
+        ]
+
+        try:
+            subprocess.run(deps_cmd, capture_output=True, check=True, timeout=600)
+        except subprocess.CalledProcessError as exc:
+            raise RuntimeError(
+                f"Failed to install Python dependencies in Docker: {exc.stderr.decode('utf-8', errors='replace')}"
+            )
+
+        # Run compile.sh
+        compile_cmd = [
+            "docker", "exec", self.container_name,
+            "bash", "-c", "cd /app/LLMServingSim && ./compile.sh"
+        ]
+
+        try:
+            result = subprocess.run(compile_cmd, capture_output=True, check=True, timeout=1800)
+            print("LLMServingSim built successfully in Docker.")
+        except subprocess.CalledProcessError as exc:
+            raise RuntimeError(
+                f"Failed to compile LLMServingSim in Docker: {exc.stderr.decode('utf-8', errors='replace')}"
+            )
 
     def _generate_cluster_config(self, experiment: "Experiment", output_path: str) -> None:
         """Generate cluster config JSON for the experiment.
@@ -448,23 +561,44 @@ class LLMServingSimAdapter(SimulatorAdapter):
                 output_rel,
             )
 
-            # Execute LLMServingSim
+            # Execute LLMServingSim (Docker or native)
             try:
-                subprocess.run(
-                    args,
-                    capture_output=True,
-                    check=True,
-                    cwd=self.llmservingsim_dir,
-                    timeout=3600,  # 1 hour timeout
-                )
+                if self.use_docker:
+                    # Ensure container is running
+                    self._ensure_container_running()
+
+                    # Build docker exec command
+                    # Run from /app/LLMServingSim working directory inside container
+                    docker_args = [
+                        "docker", "exec", self.container_name,
+                        "bash", "-c",
+                        f"cd /app/LLMServingSim && {' '.join(args)}"
+                    ]
+
+                    subprocess.run(
+                        docker_args,
+                        capture_output=True,
+                        check=True,
+                        timeout=3600,  # 1 hour timeout
+                    )
+                else:
+                    # Native execution (original behavior)
+                    subprocess.run(
+                        args,
+                        capture_output=True,
+                        check=True,
+                        cwd=self.llmservingsim_dir,
+                        timeout=3600,  # 1 hour timeout
+                    )
             except subprocess.TimeoutExpired:
                 raise RuntimeError(
                     f"LLMServingSim timed out after 1 hour for {experiment.folder}"
                 )
             except subprocess.CalledProcessError as exc:
                 stderr = exc.stderr.decode("utf-8", errors="replace")
+                mode = "Docker" if self.use_docker else "native"
                 raise RuntimeError(
-                    f"LLMServingSim failed (rc={exc.returncode}) for "
+                    f"LLMServingSim ({mode}) failed (rc={exc.returncode}) for "
                     f"{experiment.folder}: {stderr}"
                 )
 
