@@ -190,3 +190,63 @@ class TestCanRun:
         """Test can_run returns False when TP config doesn't exist."""
         exp = _make_experiment(tp=8)  # tp8 doesn't exist in mock
         assert adapter.can_run(exp) is False
+
+
+# ---------------------------------------------------------------------------
+# Tests: cluster config generation
+# ---------------------------------------------------------------------------
+
+
+class TestGenerateClusterConfig:
+    def test_generate_cluster_config_single_instance(self, adapter, tmp_path):
+        """Test cluster config generation for single-instance (dp=1)"""
+        exp = _make_experiment(
+            model="meta-llama/Llama-3.1-8B-Instruct",
+            tp=2,
+            dp=1,
+        )
+
+        output_path = tmp_path / "cluster.json"
+        adapter._generate_cluster_config(exp, str(output_path))
+
+        with open(output_path) as f:
+            config = json.load(f)
+
+        # Check model name
+        assert config["nodes"][0]["instances"][0]["model_name"] == "meta-llama/Llama-3.1-8B"
+
+        # Check TP config
+        assert config["nodes"][0]["instances"][0]["npu_num"] == 2
+        assert config["nodes"][0]["instances"][0]["npu_group"] == 1
+
+        # Check GPU memory
+        assert config["nodes"][0]["instances"][0]["npu_mem"]["mem_size"] == 80.0
+
+        # Check single instance
+        assert config["nodes"][0]["num_instances"] == 1
+        assert len(config["nodes"][0]["instances"]) == 1
+
+    def test_generate_cluster_config_multi_instance(self, adapter, tmp_path):
+        """Test cluster config generation for multi-instance (dp>1)"""
+        exp = _make_experiment(
+            model="mistralai/Mixtral-8x7B-v0.1",
+            tp=4,
+            dp=2,
+        )
+
+        output_path = tmp_path / "cluster.json"
+        adapter._generate_cluster_config(exp, str(output_path))
+
+        with open(output_path) as f:
+            config = json.load(f)
+
+        # Check multi-instance setup
+        assert config["nodes"][0]["num_instances"] == 2
+        assert len(config["nodes"][0]["instances"]) == 2
+
+        # Check both instances have correct config
+        for instance in config["nodes"][0]["instances"]:
+            assert instance["model_name"] == "mistralai/Mixtral-8x7B-v0.1"
+            assert instance["npu_num"] == 4
+            assert instance["npu_group"] == 1
+            assert instance["npu_mem"]["mem_size"] == 80.0

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import copy
+import json
 import os
 from typing import TYPE_CHECKING
 
@@ -83,6 +85,42 @@ class LLMServingSimAdapter(SimulatorAdapter):
             return False
 
         return True
+
+    def _generate_cluster_config(self, experiment: "Experiment", output_path: str) -> None:
+        """Generate cluster config JSON for the experiment.
+
+        Args:
+            experiment: Experiment configuration
+            output_path: Where to write the cluster config JSON
+        """
+        # Load H100 template
+        template_path = os.path.join(
+            self.llmservingsim_dir,
+            "cluster_config/single_node_single_instance_H100.json",
+        )
+        with open(template_path) as f:
+            config = json.load(f)
+
+        # Get LLMServingSim model name
+        model_sim = MODEL_MAP[experiment.model]
+
+        # Modify instance config
+        instance = config["nodes"][0]["instances"][0]
+        instance["model_name"] = model_sim
+        instance["npu_num"] = experiment.tp
+        instance["npu_group"] = 1  # npus_per_group = npu_num / npu_group = TP
+        instance["npu_mem"]["mem_size"] = 80.0  # H100 HBM3
+
+        # Handle multi-instance (dp > 1) - use deep copy to avoid shared dicts
+        if experiment.dp and experiment.dp > 1:
+            config["nodes"][0]["num_instances"] = experiment.dp
+            config["nodes"][0]["instances"] = [
+                copy.deepcopy(instance) for _ in range(experiment.dp)
+            ]
+
+        # Write config
+        with open(output_path, "w") as f:
+            json.dump(config, f, indent=2)
 
     def run(self, experiment: Experiment) -> SimulatorResult:
         """Execute LLMServingSim and return predicted metrics.
