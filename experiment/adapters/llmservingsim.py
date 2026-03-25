@@ -6,6 +6,8 @@ import copy
 import csv
 import json
 import os
+import subprocess
+import tempfile
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -409,10 +411,55 @@ class LLMServingSimAdapter(SimulatorAdapter):
         )
 
     def run(self, experiment: Experiment) -> SimulatorResult:
-        """Execute LLMServingSim and return predicted metrics.
+        """Run LLMServingSim simulation for the experiment.
+
+        Args:
+            experiment: Experiment configuration
+
+        Returns:
+            SimulatorResult with metrics
 
         Raises:
-            NotImplementedError: Until the full execution flow is wired up.
+            RuntimeError: If LLMServingSim times out or exits with a
+                non-zero return code.
         """
-        # TODO: implement main execution flow (Task 7)
-        raise NotImplementedError("run() not yet implemented")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Generate cluster config
+            cluster_config_path = os.path.join(tmpdir, "cluster.json")
+            self._generate_cluster_config(experiment, cluster_config_path)
+
+            # Generate workload
+            workload_path = os.path.join(tmpdir, "workload.jsonl")
+            self._generate_workload(experiment, workload_path)
+
+            # Build CLI args
+            output_path = os.path.join(tmpdir, "output.csv")
+            args = self._build_cli_args(
+                experiment,
+                cluster_config_path,
+                workload_path,
+                output_path,
+            )
+
+            # Execute LLMServingSim
+            try:
+                subprocess.run(
+                    args,
+                    capture_output=True,
+                    check=True,
+                    cwd=self.llmservingsim_dir,
+                    timeout=3600,  # 1 hour timeout
+                )
+            except subprocess.TimeoutExpired:
+                raise RuntimeError(
+                    f"LLMServingSim timed out after 1 hour for {experiment.folder}"
+                )
+            except subprocess.CalledProcessError as exc:
+                stderr = exc.stderr.decode("utf-8", errors="replace")
+                raise RuntimeError(
+                    f"LLMServingSim failed (rc={exc.returncode}) for "
+                    f"{experiment.folder}: {stderr}"
+                )
+
+            # Parse results
+            return self._parse_results(output_path, experiment)

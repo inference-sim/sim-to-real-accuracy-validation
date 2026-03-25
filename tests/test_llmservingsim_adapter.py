@@ -464,6 +464,9 @@ def test_split_by_stage_multi():
 
 
 import csv
+import subprocess
+from unittest.mock import patch, MagicMock
+
 import numpy as np
 
 
@@ -527,3 +530,132 @@ def test_parse_results_single_stage(adapter, tmp_path):
     assert len(result.stages) == 1
     assert result.stages[0].e2e.mean == pytest.approx(2250.0)
     assert result.stages[0].num_requests == 2
+
+
+# ---------------------------------------------------------------------------
+# Tests: run() orchestration
+# ---------------------------------------------------------------------------
+
+
+def test_run_orchestration(adapter, tmp_path):
+    """Test full run() orchestration with mocked subprocess"""
+    # Setup mock experiment
+    gt_dir = tmp_path / "test-exp"
+    results_dir = gt_dir / "results"
+    results_dir.mkdir(parents=True)
+
+    # Mock ground-truth metrics
+    metrics = [
+        {"info": {"input_tokens": 100, "output_tokens": 50}},
+        {"info": {"input_tokens": 120, "output_tokens": 60}},
+    ]
+    with open(results_dir / "per_request_lifecycle_metrics.json", "w") as f:
+        json.dump(metrics, f)
+
+    exp = _make_experiment(
+        folder=str(gt_dir),
+        profile_config={
+            "load": {"stages": [{"rate": 1, "duration": 2}]}
+        },
+    )
+
+    # Mock subprocess.run to avoid actual execution
+    mock_csv = tmp_path / "mock_output.csv"
+    with open(mock_csv, "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=[
+            "instance id", "request id", "model", "input", "output",
+            "arrival", "end_time", "latency", "queuing_delay",
+            "TTFT", "TPOT", "ITL"
+        ])
+        writer.writeheader()
+        writer.writerow({
+            "instance id": "0",
+            "request id": "0",
+            "model": "meta-llama/Llama-3.1-8B",
+            "input": "100",
+            "output": "50",
+            "arrival": "0",
+            "end_time": "2000000000",
+            "latency": "2000000000",
+            "queuing_delay": "0",
+            "TTFT": "100000000",
+            "TPOT": "30000000",
+            "ITL": "[30000000]",
+        })
+
+    with patch("subprocess.run") as mock_run:
+        mock_run.return_value = MagicMock(returncode=0)
+
+        # Patch _parse_results to use mock CSV
+        original_parse = adapter._parse_results
+
+        def mock_parse(csv_path, exp):
+            return original_parse(str(mock_csv), exp)
+
+        with patch.object(adapter, "_parse_results", side_effect=mock_parse):
+            result = adapter.run(exp)
+
+        # Verify subprocess was called
+        mock_run.assert_called_once()
+        args = mock_run.call_args[0][0]
+        assert args[0:2] == ["python", "main.py"]
+        assert "--cluster-config" in args
+        assert "--dataset" in args
+        assert "--output" in args
+
+        # Verify result structure
+        assert result.adapter_name == "llmservingsim"
+        assert result.experiment_folder == str(gt_dir)
+        assert result.summary.e2e.mean > 0
+        assert result.summary.ttft.mean > 0
+        assert len(result.stages) == 1
+
+
+def test_run_handles_timeout(adapter, tmp_path):
+    """Test that run() raises RuntimeError on subprocess timeout"""
+    gt_dir = tmp_path / "test-exp"
+    results_dir = gt_dir / "results"
+    results_dir.mkdir(parents=True)
+
+    metrics = [{"info": {"input_tokens": 100, "output_tokens": 50}}]
+    with open(results_dir / "per_request_lifecycle_metrics.json", "w") as f:
+        json.dump(metrics, f)
+
+    exp = _make_experiment(
+        folder=str(gt_dir),
+        profile_config={
+            "load": {"stages": [{"rate": 1, "duration": 1}]}
+        },
+    )
+
+    with patch("subprocess.run") as mock_run:
+        mock_run.side_effect = subprocess.TimeoutExpired(cmd="python main.py", timeout=3600)
+        with pytest.raises(RuntimeError, match="timed out"):
+            adapter.run(exp)
+
+
+def test_run_handles_subprocess_error(adapter, tmp_path):
+    """Test that run() raises RuntimeError on subprocess failure"""
+    gt_dir = tmp_path / "test-exp"
+    results_dir = gt_dir / "results"
+    results_dir.mkdir(parents=True)
+
+    metrics = [{"info": {"input_tokens": 100, "output_tokens": 50}}]
+    with open(results_dir / "per_request_lifecycle_metrics.json", "w") as f:
+        json.dump(metrics, f)
+
+    exp = _make_experiment(
+        folder=str(gt_dir),
+        profile_config={
+            "load": {"stages": [{"rate": 1, "duration": 1}]}
+        },
+    )
+
+    with patch("subprocess.run") as mock_run:
+        mock_run.side_effect = subprocess.CalledProcessError(
+            returncode=1,
+            cmd="python main.py",
+            stderr=b"Segfault or other error",
+        )
+        with pytest.raises(RuntimeError, match="LLMServingSim failed"):
+            adapter.run(exp)
