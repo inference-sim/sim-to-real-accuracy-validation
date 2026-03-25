@@ -835,7 +835,7 @@ def plot_aggregate_comparison_llmservingsim(
         fontsize=11, fontweight="bold"
     )
     fig.text(
-        0.5, 0.94, "Mixtral-8x7B, H100, general",
+        0.5, 0.90, "Mixtral-8x7B, H100, general",
         ha="center", fontsize=9, style="italic"
     )
 
