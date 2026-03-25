@@ -34,6 +34,62 @@ MODEL_MAP: dict[str, str] = {
 }
 
 
+def _sample_stages_proportionally(
+    stages: list[dict], max_requests: int
+) -> list[dict]:
+    """Sample stages proportionally to ensure coverage of all stages.
+
+    Args:
+        stages: Original stage config with rate/duration
+        max_requests: Maximum total requests to sample
+
+    Returns:
+        New stage config with adjusted durations to yield max_requests total
+
+    Example:
+        Original: [{"rate": 8, "duration": 600}, {"rate": 20, "duration": 600}]
+                  → 4,800 + 12,000 = 16,800 requests
+        With max_requests=100:
+        - Stage 1: 4,800/16,800 * 100 = 29 requests → 29/8 = 3.625s duration
+        - Stage 2: 12,000/16,800 * 100 = 71 requests → 71/20 = 3.55s duration
+        Returns: [{"rate": 8, "duration": 3.625}, {"rate": 20, "duration": 3.55}]
+    """
+    # Calculate original total requests
+    total_original = sum(
+        round(stage["rate"] * stage["duration"]) for stage in stages
+    )
+
+    # If already under limit, return as-is
+    if total_original <= max_requests:
+        return stages
+
+    # Calculate proportional request counts per stage
+    sampled_stages = []
+    remaining_requests = max_requests
+
+    for i, stage in enumerate(stages):
+        stage_original_requests = round(stage["rate"] * stage["duration"])
+
+        # Last stage gets all remaining requests (handles rounding)
+        if i == len(stages) - 1:
+            stage_sampled_requests = remaining_requests
+        else:
+            # Proportional allocation
+            proportion = stage_original_requests / total_original
+            stage_sampled_requests = round(proportion * max_requests)
+            remaining_requests -= stage_sampled_requests
+
+        # Calculate new duration to yield sampled request count at same rate
+        new_duration = stage_sampled_requests / stage["rate"]
+
+        sampled_stages.append({
+            "rate": stage["rate"],
+            "duration": new_duration,
+        })
+
+    return sampled_stages
+
+
 def _generate_arrivals(stages: list[dict]) -> list[float]:
     """Generate constant-rate arrival times from stage config.
 
@@ -388,14 +444,12 @@ class LLMServingSimAdapter(SimulatorAdapter):
             List of CLI arguments
         """
         # Calculate total requests
+        # Note: If max_requests_per_experiment is set, the experiment's stages
+        # have already been proportionally sampled by run() method
         total_requests = sum(
             round(stage["rate"] * stage["duration"])
             for stage in experiment.profile_config["load"]["stages"]
         )
-
-        # Apply request limit if set
-        if self.max_requests_per_experiment is not None:
-            total_requests = min(total_requests, self.max_requests_per_experiment)
 
         args = [
             "python",
@@ -553,71 +607,86 @@ class LLMServingSimAdapter(SimulatorAdapter):
             RuntimeError: If LLMServingSim times out or exits with a
                 non-zero return code.
         """
-        with tempfile.TemporaryDirectory() as tmpdir:
-            # Generate cluster config
-            cluster_config_path = os.path.join(tmpdir, "cluster.json")
-            self._generate_cluster_config(experiment, cluster_config_path)
-
-            # Generate workload
-            workload_path = os.path.join(tmpdir, "workload.jsonl")
-            self._generate_workload(experiment, workload_path)
-
-            # Build CLI args
-            output_path = os.path.join(tmpdir, "output.csv")
-
-            # Convert absolute paths to relative paths from llmservingsim_dir
-            # LLMServingSim expects paths relative to its working directory
-            cluster_config_rel = os.path.relpath(cluster_config_path, self.llmservingsim_dir)
-            workload_rel = os.path.relpath(workload_path, self.llmservingsim_dir)
-            output_rel = os.path.relpath(output_path, self.llmservingsim_dir)
-
-            args = self._build_cli_args(
-                experiment,
-                cluster_config_rel,
-                workload_rel,
-                output_rel,
+        # Apply proportional sampling if max_requests is set
+        original_stages = experiment.profile_config["load"]["stages"]
+        if self.max_requests_per_experiment is not None:
+            sampled_stages = _sample_stages_proportionally(
+                original_stages, self.max_requests_per_experiment
             )
+            # Temporarily modify experiment config with sampled stages
+            experiment.profile_config["load"]["stages"] = sampled_stages
+        else:
+            sampled_stages = original_stages
 
-            # Execute LLMServingSim (Docker or native)
-            try:
-                if self.use_docker:
-                    # Ensure container is running
-                    self._ensure_container_running()
+        try:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                # Generate cluster config
+                cluster_config_path = os.path.join(tmpdir, "cluster.json")
+                self._generate_cluster_config(experiment, cluster_config_path)
 
-                    # Build docker exec command
-                    # Run from /app/LLMServingSim working directory inside container
-                    docker_args = [
-                        "docker", "exec", self.container_name,
-                        "bash", "-c",
-                        f"cd /app/LLMServingSim && {' '.join(args)}"
-                    ]
+                # Generate workload
+                workload_path = os.path.join(tmpdir, "workload.jsonl")
+                self._generate_workload(experiment, workload_path)
 
-                    subprocess.run(
-                        docker_args,
-                        capture_output=True,
-                        check=True,
-                        timeout=3600,  # 1 hour timeout
-                    )
-                else:
-                    # Native execution (original behavior)
-                    subprocess.run(
-                        args,
-                        capture_output=True,
-                        check=True,
-                        cwd=self.llmservingsim_dir,
-                        timeout=3600,  # 1 hour timeout
-                    )
-            except subprocess.TimeoutExpired:
-                raise RuntimeError(
-                    f"LLMServingSim timed out after 1 hour for {experiment.folder}"
-                )
-            except subprocess.CalledProcessError as exc:
-                stderr = exc.stderr.decode("utf-8", errors="replace")
-                mode = "Docker" if self.use_docker else "native"
-                raise RuntimeError(
-                    f"LLMServingSim ({mode}) failed (rc={exc.returncode}) for "
-                    f"{experiment.folder}: {stderr}"
+                # Build CLI args
+                output_path = os.path.join(tmpdir, "output.csv")
+
+                # Convert absolute paths to relative paths from llmservingsim_dir
+                # LLMServingSim expects paths relative to its working directory
+                cluster_config_rel = os.path.relpath(cluster_config_path, self.llmservingsim_dir)
+                workload_rel = os.path.relpath(workload_path, self.llmservingsim_dir)
+                output_rel = os.path.relpath(output_path, self.llmservingsim_dir)
+
+                args = self._build_cli_args(
+                    experiment,
+                    cluster_config_rel,
+                    workload_rel,
+                    output_rel,
                 )
 
-            # Parse results
-            return self._parse_results(output_path, experiment)
+                # Execute LLMServingSim (Docker or native)
+                try:
+                    if self.use_docker:
+                        # Ensure container is running
+                        self._ensure_container_running()
+
+                        # Build docker exec command
+                        # Run from /app/LLMServingSim working directory inside container
+                        docker_args = [
+                            "docker", "exec", self.container_name,
+                            "bash", "-c",
+                            f"cd /app/LLMServingSim && {' '.join(args)}"
+                        ]
+
+                        subprocess.run(
+                            docker_args,
+                            capture_output=True,
+                            check=True,
+                            timeout=3600,  # 1 hour timeout
+                        )
+                    else:
+                        # Native execution (original behavior)
+                        subprocess.run(
+                            args,
+                            capture_output=True,
+                            check=True,
+                            cwd=self.llmservingsim_dir,
+                            timeout=3600,  # 1 hour timeout
+                        )
+                except subprocess.TimeoutExpired:
+                    raise RuntimeError(
+                        f"LLMServingSim timed out after 1 hour for {experiment.folder}"
+                    )
+                except subprocess.CalledProcessError as exc:
+                    stderr = exc.stderr.decode("utf-8", errors="replace")
+                    mode = "Docker" if self.use_docker else "native"
+                    raise RuntimeError(
+                        f"LLMServingSim ({mode}) failed (rc={exc.returncode}) for "
+                        f"{experiment.folder}: {stderr}"
+                    )
+
+                # Parse results
+                return self._parse_results(output_path, experiment)
+        finally:
+            # Restore original stages
+            experiment.profile_config["load"]["stages"] = original_stages
