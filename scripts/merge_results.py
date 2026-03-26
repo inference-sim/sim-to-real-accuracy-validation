@@ -74,6 +74,14 @@ def merge_results():
     print(f"Local results: {len(local_err_df)} error records, {len(local_rt_df)} runtime records")
     print(f"Cluster results: {len(cluster_err_df)} error records, {len(cluster_rt_df)} runtime records")
 
+    # Validate required columns exist
+    required_err_cols = {'simulator', 'experiment_folder', 'stage_index', 'metric_name'}
+    for label, df in [("local error", local_err_df), ("cluster error", cluster_err_df)]:
+        missing_cols = required_err_cols - set(df.columns)
+        if missing_cols:
+            print(f"ERROR: {label} CSV missing columns: {missing_cols}")
+            sys.exit(1)
+
     # Check for simulator overlap (shouldn't happen)
     local_sims = set(local_err_df['simulator'].unique())
     cluster_sims = set(cluster_err_df['simulator'].unique())
@@ -113,12 +121,22 @@ def merge_results():
     if before_dedup != after_dedup:
         print(f"Removed {before_dedup - after_dedup} duplicate runtime records")
 
-    # Backup originals
+    # Backup originals (only if backup doesn't already exist)
     print("\nBacking up original local results...")
-    local_errors.rename(local_errors.parent / "error_records_local.csv")
-    local_runtime.rename(local_runtime.parent / "runtime_local.csv")
-    print("  - results/error_records_local.csv")
-    print("  - results/runtime_local.csv")
+    backup_errors = local_errors.parent / "error_records_local.csv"
+    backup_runtime = local_runtime.parent / "runtime_local.csv"
+
+    if backup_errors.exists():
+        print("  Backup already exists, skipping: error_records_local.csv")
+    else:
+        local_errors.rename(backup_errors)
+        print("  - results/error_records_local.csv")
+
+    if backup_runtime.exists():
+        print("  Backup already exists, skipping: runtime_local.csv")
+    else:
+        local_runtime.rename(backup_runtime)
+        print("  - results/runtime_local.csv")
 
     # Save merged results
     print("\nSaving merged results...")
