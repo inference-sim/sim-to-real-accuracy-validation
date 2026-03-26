@@ -1,0 +1,94 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: llmservingsim-eval
+  namespace: diya
+  labels:
+    app: llmservingsim-eval
+    component: evaluation
+spec:
+  # Job completion settings
+  completions: 1
+  parallelism: 1
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 604800  # Keep for 7 days
+
+  # 7-day timeout (604800 seconds)
+  activeDeadlineSeconds: 604800
+
+  template:
+    metadata:
+      labels:
+        app: llmservingsim-eval
+        component: evaluation
+    spec:
+      restartPolicy: Never
+
+      containers:
+      - name: llmservingsim
+        image: ubuntu:22.04
+
+        # Command to run evaluation
+        command: ["/bin/bash", "-c"]
+        args:
+          - |
+            set -e
+
+            # Install dependencies
+            echo "Installing dependencies..."
+            apt-get update -qq
+            apt-get install -y -qq build-essential cmake git python3 python3-pip wget curl
+            pip3 install -q numpy pyyaml pandas matplotlib
+
+            # Verify data exists
+            echo "Verifying data on PVC..."
+            ls -lh /data/
+            test -d /data/vllm_data/ground_truth || { echo "ERROR: Ground truth data not found"; exit 1; }
+            test -d /data/LLMServingSim || { echo "ERROR: LLMServingSim not found"; exit 1; }
+            test -d /data/experiment || { echo "ERROR: Experiment scripts not found"; exit 1; }
+            test -f /data/LLMServingSim/astra-sim/build/astra_analytical/build/AnalyticalAstra/bin/AnalyticalAstra || { echo "ERROR: astra-sim not compiled"; exit 1; }
+
+            # Run evaluation
+            echo "Starting LLMServingSim evaluation..."
+            cd /data
+            python3 -m experiment.run \
+              --adapters llmservingsim \
+              --data-dir /data/vllm_data/ground_truth \
+              --llmservingsim-dir /data/LLMServingSim \
+              --output-dir /data/results \
+              --no-docker \
+              --verbose \
+              --max-requests-per-experiment 100
+
+            echo "Evaluation complete!"
+            echo "Results written to /data/results/"
+            ls -lh /data/results/
+
+        # Environment variables
+        env:
+        - name: PYTHONPATH
+          value: "/data"
+        - name: OMP_NUM_THREADS
+          value: "16"
+        - name: PYTHONUNBUFFERED
+          value: "1"
+
+        # Resource requests and limits
+        resources:
+          requests:
+            cpu: "16"
+            memory: "32Gi"
+          limits:
+            cpu: "16"
+            memory: "32Gi"
+
+        # Mount PVC
+        volumeMounts:
+        - name: data
+          mountPath: /data
+
+      # PVC volume
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: llmservingsim-eval-pvc
