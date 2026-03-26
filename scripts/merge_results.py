@@ -82,6 +82,13 @@ def merge_results():
             print(f"ERROR: {label} CSV missing columns: {missing_cols}")
             sys.exit(1)
 
+    required_rt_cols = {'simulator', 'experiment_folder'}
+    for label, df in [("local runtime", local_rt_df), ("cluster runtime", cluster_rt_df)]:
+        missing_cols = required_rt_cols - set(df.columns)
+        if missing_cols:
+            print(f"ERROR: {label} CSV missing columns: {missing_cols}")
+            sys.exit(1)
+
     # Check for simulator overlap (shouldn't happen)
     local_sims = set(local_err_df['simulator'].unique())
     cluster_sims = set(cluster_err_df['simulator'].unique())
