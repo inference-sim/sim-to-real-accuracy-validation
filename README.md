@@ -176,6 +176,21 @@ This produces 5 PDF figures and 1 LaTeX table under `results/figures/`.
 
 Valid adapter names: `blis-blackbox`, `blis-roofline`, `blis-crossmodel`, `blis-trained-roofline`, `vidur`, `llm-optimizer-estimate`, `aiconfigurator-estimate`.
 
+## Cluster Deployment
+
+For running LLMServingSim (extremely slow adapter) on a Kubernetes cluster:
+
+See **[Cluster Deployment Guide](docs/cluster-deployment/README.md)** for complete instructions.
+
+Quick summary:
+1. Create 75GB PVC on cluster
+2. Upload data and code to PVC
+3. Compile astra-sim once on PVC
+4. Launch evaluation job (10-30 hours runtime)
+5. Download results and merge with local simulator outputs
+
+This allows fast simulators to run locally while slow LLMServingSim runs on cluster resources.
+
 ## Pipeline
 
 The orchestrator (`experiment.run`) executes this sequence:
