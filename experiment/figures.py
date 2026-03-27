@@ -916,6 +916,77 @@ def _plot_aggregate_panel(
     return max(heights) if heights else 0.0
 
 
+def _plot_model_breakdown_panel(
+    ax: plt.Axes,
+    df: pd.DataFrame,
+    sim1: str,
+    sim2: str,
+    metric_key: str,
+    metric_label: str,
+) -> float:
+    """Plot model-wise grouped bars for a single metric on the given axis.
+
+    Returns the maximum bar height for y-axis scaling.
+    """
+    # Filter to just the two simulators and this metric
+    df_filtered = df[
+        (df["simulator"].isin([sim1, sim2])) &
+        (df["metric_name"] == metric_key)
+    ]
+
+    if df_filtered.empty:
+        return 0.0
+
+    # Only show models that have data for at least one simulator
+    present_models = [m for m in MODEL_ORDER if m in df_filtered["model"].values]
+    if not present_models:
+        return 0.0
+
+    n_models = len(present_models)
+    n_sims = 2
+    bar_width = 0.8 / n_sims
+    x = np.arange(n_models)
+    global_max = 0.0
+
+    for sim_idx, sim in enumerate([sim1, sim2]):
+        offset = (sim_idx - n_sims / 2 + 0.5) * bar_width
+        positions = []
+        heights = []
+
+        for m_idx, model in enumerate(present_models):
+            vals = df_filtered[
+                (df_filtered["model"] == model) &
+                (df_filtered["simulator"] == sim)
+            ]["mape"]
+            if vals.empty:
+                continue
+            mape = vals.median()
+            positions.append(x[m_idx] + offset)
+            heights.append(mape)
+
+        if not positions:
+            continue
+
+        global_max = max(global_max, max(heights))
+
+        ax.bar(
+            positions, heights, bar_width,
+            color=COLOR_PALETTE[sim],
+            hatch=HATCH_PATTERNS.get(sim, ""),
+            edgecolor="black", linewidth=0.5,
+            label=SIMULATOR_DISPLAY_NAMES[sim],
+        )
+
+    ax.set_xticks(x)
+    ax.set_xticklabels(
+        [MODEL_SHORT_LABELS.get(m, m) for m in present_models],
+        rotation=35, ha="right",
+    )
+    ax.set_title(metric_label, fontsize=10, fontweight="bold")
+
+    return global_max
+
+
 def plot_model_sensitivity(
     df: pd.DataFrame,
     output_path: str | None = None,
