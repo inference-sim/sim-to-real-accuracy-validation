@@ -863,6 +863,59 @@ def plot_aggregate_comparison_llmservingsim(
     return fig
 
 
+def _plot_aggregate_panel(
+    ax: plt.Axes,
+    df: pd.DataFrame,
+    sim1: str,
+    sim2: str,
+    metric_key: str,
+    metric_label: str,
+) -> float:
+    """Plot aggregate comparison bars for a single metric on the given axis.
+
+    Returns the maximum bar height for y-axis scaling.
+    """
+    # Filter to just the two simulators and this metric
+    df_filtered = df[
+        (df["simulator"].isin([sim1, sim2])) &
+        (df["metric_name"] == metric_key)
+    ]
+
+    if df_filtered.empty:
+        return 0.0
+
+    # Compute median MAPE per simulator
+    agg_data = df_filtered.groupby("simulator")["mape"].median()
+
+    # Order simulators according to SIMULATOR_ORDER
+    sims_ordered = [s for s in [sim1, sim2] if s in agg_data.index]
+    if not sims_ordered:
+        return 0.0
+
+    x = np.arange(len(sims_ordered))
+    heights = [agg_data[sim] for sim in sims_ordered]
+    colors = [COLOR_PALETTE[sim] for sim in sims_ordered]
+    hatches = [HATCH_PATTERNS.get(sim, "") for sim in sims_ordered]
+
+    bar_width = 0.6
+
+    for i, (pos, height, color, hatch, sim) in enumerate(
+        zip(x, heights, colors, hatches, sims_ordered)
+    ):
+        ax.bar(
+            pos, height, bar_width,
+            color=color, hatch=hatch,
+            edgecolor="black", linewidth=0.5,
+            label=SIMULATOR_DISPLAY_NAMES[sim],
+        )
+
+    ax.set_xticks([])
+    ax.set_xlim(-0.5, len(sims_ordered) - 0.5)
+    ax.set_title(metric_label, fontsize=10, fontweight="bold")
+
+    return max(heights) if heights else 0.0
+
+
 def plot_model_sensitivity(
     df: pd.DataFrame,
     output_path: str | None = None,
