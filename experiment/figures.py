@@ -1088,7 +1088,10 @@ def plot_model_sensitivity(
     df: pd.DataFrame,
     output_path: str | None = None,
 ) -> plt.Figure | None:
-    """Figure 1: MAPE across 7 model architectures on H100, default config."""
+    """Figure 1: BLIS-Roofline MAPE across 7 model architectures on H100, default config."""
+    # Filter to only BLIS-Roofline
+    df = df[df["simulator"] == "blis-roofline"]
+
     if _has_metadata(df):
         df = df[(df["hardware"] == "H100") & (df["config_tag"] == "default")]
     df = df[df["workload"].isin(("general", "general-lite"))]
@@ -1100,7 +1103,7 @@ def plot_model_sensitivity(
 
     fig = _grouped_bar(
         df, group_col="model", group_order=MODEL_ORDER,
-        title="Prediction Error Across Model Architectures ↓",
+        title="BLIS-Roofline: Prediction Error Across Model Architectures ↓",
         output_path=output_path,
         group_labels=MODEL_SHORT_LABELS,
         metrics=[
@@ -1664,32 +1667,10 @@ def main(argv: list[str] | None = None) -> None:
     runtime_df_all = enrich_with_metadata(runtime_df_full, args.metadata)
     error_df_all = _add_config_tags(error_df_all)
 
-    # Fig 0b (BLIS vs Vidur) needs Vidur data, which is excluded from error_df_full
-    # Load raw CSV and filter to just blis-roofline and vidur
-    error_df_0b = pd.read_csv(error_csv)
-    error_df_0b = error_df_0b[error_df_0b["stage_index"] == -1]  # summary rows only
-    error_df_0b = error_df_0b[error_df_0b["simulator"].isin(["blis-roofline", "vidur"])]
-    error_df_0b = enrich_with_metadata(error_df_0b, args.metadata)
-    error_df_0b = _add_config_tags(error_df_0b)
-
-    # Fig 0c (BLIS vs LLM-Optimizer vs LLMServingSim) needs llmservingsim data, which may be excluded
-    # Load raw CSV and filter to just blis-roofline, llm-optimizer-estimate, and llmservingsim
-    error_df_0c = pd.read_csv(error_csv)
-    error_df_0c = error_df_0c[error_df_0c["stage_index"] == -1]  # summary rows only
-    error_df_0c = error_df_0c[error_df_0c["simulator"].isin(["blis-roofline", "llm-optimizer-estimate", "llmservingsim"])]
-    error_df_0c = enrich_with_metadata(error_df_0c, args.metadata)
-    error_df_0c = _add_config_tags(error_df_0c)
-
     out = args.output_dir
     os.makedirs(out, exist_ok=True)
 
     figures = [
-        ("fig0a_aggregate_analytical.pdf",
-         lambda: plot_aggregate_comparison_analytical(error_df, os.path.join(out, "fig0a_aggregate_analytical.pdf"))),
-        ("fig0b_aggregate_trace.pdf",
-         lambda: plot_aggregate_comparison_trace(error_df_0b, os.path.join(out, "fig0b_aggregate_trace.pdf"))),
-        ("fig0c_aggregate_llmservingsim.pdf",
-         lambda: plot_aggregate_comparison_llmservingsim(error_df_0c, os.path.join(out, "fig0c_aggregate_llmservingsim.pdf"))),
         ("fig1_model_sensitivity.pdf",
          lambda: plot_model_sensitivity(error_df, os.path.join(out, "fig1_model_sensitivity.pdf"))),
         ("fig2_hardware_portability.pdf",

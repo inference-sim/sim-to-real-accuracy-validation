@@ -16,19 +16,11 @@
 
 ---
 
-### Figure 0: Aggregate Comparison — Default Config
-
-![Figure 0](figures/fig0_aggregate_comparison.png)
-
-Median MAPE aggregated across 5 H100 experiments where BLIS-Roofline, LLM-Optimizer, and AIConfigurator all have data, using default vLLM serving configuration (each model's standard TP, no CPU KV cache offloading, 0.90 GPU memory utilization, max\_num\_batched\_tokens=2048, DP≤1) and general/general-lite workloads only. Aggregation treats each experiment as an independent data point — Qwen3-14B contributes two experiments (one general, one general-lite workload), while other models contribute one each. Shows three metrics: E2E Mean (BLIS and LLM-Optimizer only, since AIConfigurator does not report E2E), TTFT Mean (all three simulators), and ITL Mean (all three simulators). Experiments span four dense models at their standard TP values: Llama-3.1-8B (TP=1), Qwen3-14B (TP=1), CodeLlama-34B (TP=2), Llama-2-70B (TP=4). Default configs ensure that analytical simulators' baseline assumptions (GPU-only inference, standard memory utilization, standard batching) match the ground truth configuration. Filter criteria match Figure 2 (Hardware Portability) for consistency.
-
----
-
-### Figure 1: Prediction Error Across Model Architectures
+### Figure 1: BLIS-Roofline Prediction Error Across Model Architectures
 
 ![Figure 1](figures/fig1_model_sensitivity.png)
 
-MAPE for individual experiments across 7 models on H100 with default serving configuration and general/general-lite workloads: Llama-3.1-8B, Qwen3-14B, CodeLlama-34B, Llama-2-70B (dense), Mixtral-8x7B, Mixtral-8x22B, and Llama-4-Scout-17B-16E (MoE/FP8). No aggregation across experiments — shows one experiment per model to reveal per-architecture variation. Simulators absent from a model either lack a pre-built profile for that architecture (Vidur) or exclude MoE models entirely (Vidur, AIConfigurator). LLM-Optimizer runs MoE models using its dense approximation (see methodology).
+BLIS-Roofline MAPE for individual experiments across 7 models on H100 with default serving configuration and general/general-lite workloads: Llama-3.1-8B, Qwen3-14B, CodeLlama-34B, Llama-2-70B (dense), Mixtral-8x7B, Mixtral-8x22B, and Llama-4-Scout-17B-16E (MoE/FP8). No aggregation across experiments — shows one experiment per model to reveal per-architecture variation. Shows E2E Mean, TTFT Mean, and ITL Mean MAPE for each model.
 
 ---
 
