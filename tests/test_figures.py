@@ -132,7 +132,7 @@ def _sample_metadata_csv(tmp_path: Path) -> str:
 class TestConstants:
     def test_simulator_order_length(self):
         from experiment.figures import SIMULATOR_ORDER
-        assert len(SIMULATOR_ORDER) == 5
+        assert len(SIMULATOR_ORDER) == 6
 
     def test_excluded_not_in_order(self):
         from experiment.figures import SIMULATOR_ORDER, EXCLUDED_SIMULATORS

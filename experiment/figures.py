@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 # Constants
 # ---------------------------------------------------------------------------
 
-EXCLUDED_SIMULATORS = frozenset({"blis-blackbox", "blis-crossmodel", "vidur"})
+EXCLUDED_SIMULATORS = frozenset({"blis-blackbox", "blis-crossmodel"})
 
 SIMULATOR_ORDER = [
     "blis-trained-roofline",
@@ -69,6 +69,7 @@ MARKER_STYLES = {
     "vidur": "D",
     "llm-optimizer-estimate": "^",
     "aiconfigurator-estimate": "v",
+    "llmservingsim": "P",
 }
 
 MODEL_ORDER = [
@@ -716,11 +717,11 @@ def plot_aggregate_comparison_llmservingsim(
     df: pd.DataFrame,
     output_path: str | None = None,
 ) -> plt.Figure | None:
-    """Figure 0c: BLIS-Roofline vs LLMServingSim (n=1) for MoE.
+    """Figure 0c: BLIS-Roofline vs LLM-Optimizer vs LLMServingSim for MoE.
 
-    Compares blis-roofline and llmservingsim on the single Mixtral-8x7B tp4
-    experiment where both simulators have data. Shows MAPE for E2E, TTFT,
-    and ITL (both simulators report all three metrics).
+    Compares blis-roofline, llm-optimizer-estimate, and llmservingsim on the
+    single Mixtral-8x7B tp4 experiment where all three simulators have data.
+    Shows MAPE for E2E, TTFT, and ITL.
 
     Note: LLMServingSim only has complete pre-profiled models for a limited
     set of configurations. This figure demonstrates the comparison for the
@@ -728,33 +729,37 @@ def plot_aggregate_comparison_llmservingsim(
     """
     _apply_rc_params()
 
-    # Find experiments with data from both simulators
-    target_sims = {"blis-roofline", "llmservingsim"}
+    # Find experiments with data from all three simulators
+    target_sims = {"blis-roofline", "llm-optimizer-estimate", "llmservingsim"}
     exp_sims = df.groupby("experiment_folder")["simulator"].apply(set)
     common_exps = exp_sims[exp_sims.apply(lambda s: target_sims.issubset(s))].index
 
     if len(common_exps) == 0:
-        warnings.warn("Figure 0c: no experiments with data from both BLIS and LLMServingSim")
+        warnings.warn("Figure 0c: no experiments with data from all three simulators")
         return None
 
     df_filtered = df[df["experiment_folder"].isin(common_exps)]
 
-    # Filter to Mixtral-8x7B and general workload
+    # Filter to Mixtral-8x7B, general workload, and tp=4
     df_filtered = df_filtered[
         (df_filtered["model"] == "mistralai/Mixtral-8x7B-v0.1") &
-        (df_filtered["workload"] == "general")
+        (df_filtered["workload"] == "general") &
+        (df_filtered["tp"] == 4)
     ]
 
     if df_filtered.empty:
-        warnings.warn("Figure 0c: no Mixtral-8x7B general experiments")
+        warnings.warn("Figure 0c: no Mixtral-8x7B general tp=4 experiments")
         return None
 
     common_exps = df_filtered["experiment_folder"].unique()
 
-    # Prepare data for each metric (both simulators report all three)
+    # Extract TP for subtitle
+    tp_val = 4  # We know it's tp=4 from the filter above
+
+    # Prepare data for each metric (all three simulators report all three)
     metrics_data = []
 
-    # E2E: both simulators
+    # E2E: all three simulators
     e2e_df = df_filtered[
         (df_filtered["metric_name"] == "e2e_mean") &
         (df_filtered["simulator"].isin(list(target_sims)))
@@ -763,7 +768,7 @@ def plot_aggregate_comparison_llmservingsim(
         e2e_agg = e2e_df.groupby("simulator")["mape"].median()
         metrics_data.append(("E2E Mean", e2e_agg, list(target_sims)))
 
-    # TTFT: both simulators
+    # TTFT: all three simulators
     ttft_df = df_filtered[
         (df_filtered["metric_name"] == "ttft_mean") &
         (df_filtered["simulator"].isin(list(target_sims)))
@@ -772,7 +777,7 @@ def plot_aggregate_comparison_llmservingsim(
         ttft_agg = ttft_df.groupby("simulator")["mape"].median()
         metrics_data.append(("TTFT Mean", ttft_agg, list(target_sims)))
 
-    # ITL: both simulators
+    # ITL: all three simulators
     itl_df = df_filtered[
         (df_filtered["metric_name"] == "itl_mean") &
         (df_filtered["simulator"].isin(list(target_sims)))
@@ -831,11 +836,11 @@ def plot_aggregate_comparison_llmservingsim(
 
     # Title with subtitle
     fig.suptitle(
-        f"BLIS-Roofline vs LLMServingSim (n={len(common_exps)}) ↓ for MoE",
+        f"BLIS-Roofline vs LLM-Optimizer vs LLMServingSim (n={len(common_exps)}) ↓ for MoE",
         fontsize=11, fontweight="bold"
     )
     fig.text(
-        0.5, 0.90, "Mixtral-8x7B, H100, general",
+        0.5, 0.91, f"Mixtral-8x7B, H100, general, TP={tp_val}",
         ha="center", fontsize=9, style="italic"
     )
 
@@ -1667,11 +1672,11 @@ def main(argv: list[str] | None = None) -> None:
     error_df_0b = enrich_with_metadata(error_df_0b, args.metadata)
     error_df_0b = _add_config_tags(error_df_0b)
 
-    # Fig 0c (BLIS vs LLMServingSim) needs llmservingsim data, which may be excluded
-    # Load raw CSV and filter to just blis-roofline and llmservingsim
+    # Fig 0c (BLIS vs LLM-Optimizer vs LLMServingSim) needs llmservingsim data, which may be excluded
+    # Load raw CSV and filter to just blis-roofline, llm-optimizer-estimate, and llmservingsim
     error_df_0c = pd.read_csv(error_csv)
     error_df_0c = error_df_0c[error_df_0c["stage_index"] == -1]  # summary rows only
-    error_df_0c = error_df_0c[error_df_0c["simulator"].isin(["blis-roofline", "llmservingsim"])]
+    error_df_0c = error_df_0c[error_df_0c["simulator"].isin(["blis-roofline", "llm-optimizer-estimate", "llmservingsim"])]
     error_df_0c = enrich_with_metadata(error_df_0c, args.metadata)
     error_df_0c = _add_config_tags(error_df_0c)
 
