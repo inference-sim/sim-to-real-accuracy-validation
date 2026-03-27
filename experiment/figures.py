@@ -1721,6 +1721,33 @@ def main(argv: list[str] | None = None) -> None:
         print(f"  FAIL: table1_runtime.tex ({e})")
         logger.exception("Failed to generate table1_runtime.tex")
 
+    # Simulator comparison figures
+    sim_comparison_dir = os.path.join(out, "sim_comparisons")
+    os.makedirs(sim_comparison_dir, exist_ok=True)
+
+    comparison_pairs = [
+        ("blis-roofline", "vidur", "blis_vs_vidur.pdf"),
+        ("blis-roofline", "llm-optimizer-estimate", "blis_vs_llm_optimizer.pdf"),
+        ("blis-roofline", "aiconfigurator-estimate", "blis_vs_aiconfigurator.pdf"),
+        ("blis-roofline", "llmservingsim", "blis_vs_llmservingsim.pdf"),
+    ]
+
+    for sim1, sim2, filename in comparison_pairs:
+        try:
+            # Use error_df_full (unfiltered) so we always include all simulators
+            fig = plot_simulator_comparison(
+                error_df_full, sim1, sim2,
+                os.path.join(sim_comparison_dir, filename)
+            )
+            if fig is not None:
+                plt.close(fig)
+                print(f"  OK: sim_comparisons/{filename}")
+            else:
+                print(f"  SKIP: sim_comparisons/{filename} (no shared experiments)")
+        except Exception as e:
+            print(f"  FAIL: sim_comparisons/{filename} ({e})")
+            logger.exception("Failed to generate %s", filename)
+
     print(f"\nFigures saved to {out}")
 
 
