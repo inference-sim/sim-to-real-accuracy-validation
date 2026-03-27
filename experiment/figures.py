@@ -987,6 +987,98 @@ def _plot_model_breakdown_panel(
     return global_max
 
 
+def plot_simulator_comparison(
+    df: pd.DataFrame,
+    sim1: str,
+    sim2: str,
+    output_path: str | None = None,
+) -> plt.Figure | None:
+    """Compare two simulators with 2×3 grid (aggregate + model breakdown).
+
+    Top row: aggregate MAPE for E2E, TTFT, ITL
+    Bottom row: per-model MAPE for E2E, TTFT, ITL
+
+    Only includes experiments where both simulators have data.
+    Aggregates across all configs and workloads.
+    """
+    _apply_rc_params()
+
+    # Find experiments with data from both simulators
+    exp_sims = df.groupby("experiment_folder")["simulator"].apply(set)
+    common_exps = exp_sims[exp_sims.apply(lambda s: {sim1, sim2}.issubset(s))].index
+
+    if len(common_exps) == 0:
+        warnings.warn(f"No experiments with data from both {sim1} and {sim2}")
+        return None
+
+    df_filtered = df[df["experiment_folder"].isin(common_exps)]
+
+    # Create 2×3 subplot grid
+    fig, axes = plt.subplots(2, 3, figsize=(10, 6.5))
+
+    metrics = [("e2e_mean", "E2E Mean"), ("ttft_mean", "TTFT Mean"), ("itl_mean", "ITL Mean")]
+
+    # Top row: aggregate panels
+    col_maxes_top = []
+    for col_idx, (metric_key, metric_label) in enumerate(metrics):
+        max_height = _plot_aggregate_panel(
+            axes[0, col_idx], df_filtered, sim1, sim2, metric_key, metric_label
+        )
+        col_maxes_top.append(max_height)
+
+    # Bottom row: model breakdown panels
+    col_maxes_bottom = []
+    for col_idx, (metric_key, metric_label) in enumerate(metrics):
+        max_height = _plot_model_breakdown_panel(
+            axes[1, col_idx], df_filtered, sim1, sim2, metric_key, metric_label
+        )
+        col_maxes_bottom.append(max_height)
+
+    # Set y-axes with 20% headroom per row
+    pct = r"\%" if matplotlib.rcParams.get("text.usetex") else "%"
+    for col_idx in range(3):
+        # Top row
+        y_top = col_maxes_top[col_idx] * 1.20 if col_maxes_top[col_idx] > 0 else 1.0
+        axes[0, col_idx].set_ylim(bottom=0, top=y_top)
+        axes[0, col_idx].set_ylabel(f"MAPE ({pct})")
+
+        # Bottom row
+        y_top = col_maxes_bottom[col_idx] * 1.20 if col_maxes_bottom[col_idx] > 0 else 1.0
+        axes[1, col_idx].set_ylim(bottom=0, top=y_top)
+        axes[1, col_idx].set_ylabel(f"MAPE ({pct})")
+
+    # Title
+    sim2_display = SIMULATOR_DISPLAY_NAMES.get(sim2, sim2)
+    fig.suptitle(
+        f"BLIS-Roofline vs {sim2_display} Simulator Comparison (n={len(common_exps)}) ↓",
+        fontsize=11, fontweight="bold"
+    )
+
+    # Collect legend handles/labels from all axes (deduplicate)
+    all_handles, all_labels = [], []
+    for ax_row in axes:
+        for ax in ax_row:
+            h, l = ax.get_legend_handles_labels()
+            for handle, label in zip(h, l):
+                if label and label not in all_labels:
+                    all_handles.append(handle)
+                    all_labels.append(label)
+
+    if all_handles:
+        fig.legend(
+            all_handles, all_labels, loc="upper center",
+            bbox_to_anchor=(0.5, -0.01), ncol=2,
+            frameon=False, handlelength=1.5, columnspacing=1.0,
+        )
+
+    fig.tight_layout()
+    fig.subplots_adjust(top=0.93, bottom=0.08)
+
+    if output_path:
+        _save_figure(fig, output_path)
+    return fig
+
+
 def plot_model_sensitivity(
     df: pd.DataFrame,
     output_path: str | None = None,
