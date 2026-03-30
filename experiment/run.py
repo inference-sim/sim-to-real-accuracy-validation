@@ -40,6 +40,62 @@ ALL_ADAPTER_NAMES = [
 ]
 
 
+def _sample_stages_proportionally(
+    stages: list[dict], max_requests: int
+) -> list[dict]:
+    """Sample stages proportionally to ensure coverage of all stages.
+
+    Args:
+        stages: Original stage config with rate/duration
+        max_requests: Maximum total requests to sample
+
+    Returns:
+        New stage config with adjusted durations to yield max_requests total
+
+    Example:
+        Original: [{"rate": 8, "duration": 600}, {"rate": 20, "duration": 600}]
+                  → 4,800 + 12,000 = 16,800 requests
+        With max_requests=100:
+        - Stage 1: 4,800/16,800 * 100 = 29 requests → 29/8 = 3.625s duration
+        - Stage 2: 12,000/16,800 * 100 = 71 requests → 71/20 = 3.55s duration
+        Returns: [{"rate": 8, "duration": 3.625}, {"rate": 20, "duration": 3.55}]
+    """
+    # Calculate original total requests
+    total_original = sum(
+        round(stage["rate"] * stage["duration"]) for stage in stages
+    )
+
+    # If already under limit, return as-is
+    if total_original <= max_requests:
+        return stages
+
+    # Calculate proportional request counts per stage
+    sampled_stages = []
+    remaining_requests = max_requests
+
+    for i, stage in enumerate(stages):
+        stage_original_requests = round(stage["rate"] * stage["duration"])
+
+        # Last stage gets all remaining requests (handles rounding)
+        if i == len(stages) - 1:
+            stage_sampled_requests = remaining_requests
+        else:
+            # Proportional allocation
+            proportion = stage_original_requests / total_original
+            stage_sampled_requests = round(proportion * max_requests)
+            remaining_requests -= stage_sampled_requests
+
+        # Calculate new duration to yield sampled request count at same rate
+        new_duration = stage_sampled_requests / stage["rate"]
+
+        sampled_stages.append({
+            "rate": stage["rate"],
+            "duration": new_duration,
+        })
+
+    return sampled_stages
+
+
 def build_adapter_registry(
     blis_binary: str,
     vidur_dir: str,
@@ -129,38 +185,53 @@ def run_pipeline(
     fail_count = 0
     skip_count = 0
     for exp in experiments:
-        for adapter_name, adapter in adapters.items():
-            if not adapter.can_run(exp):
-                skip_count += 1
-                continue
-            try:
-                t0 = time.perf_counter()
-                result = adapter.run(exp)
-                elapsed = time.perf_counter() - t0
-                result.wall_clock_seconds = elapsed
-                records = compute_errors(exp, result)
-                all_records.extend(records)
-                runtime_records.append(RuntimeRecord(
-                    simulator=adapter_name,
-                    experiment_folder=exp.folder,
-                    model=exp.model,
-                    workload=exp.workload,
-                    wall_clock_seconds=elapsed,
-                    exp_id=exp.exp_id,
-                    hardware=exp.hardware,
-                    dp=exp.dp,
-                    cpu_offload=exp.cpu_offload,
-                    gpu_mem_util=exp.gpu_mem_util,
-                    precision=exp.precision,
-                    tp=exp.tp,
-                    max_num_batched_tokens=exp.max_num_batched_tokens,
-                ))
-                print(f"  OK: {adapter_name} × {exp.model} ({exp.workload}) [{elapsed:.2f}s]")
-            except Exception as exc:
-                fail_count += 1
-                logger.error(
-                    "FAIL: %s × %s (%s): %s", adapter_name, exp.model, exp.workload, exc,
-                )
+        # Apply proportional sampling to experiment stages if max_requests is set
+        # This ensures all adapters see the same sampled workload for fair comparison
+        original_stages = exp.profile_config["load"]["stages"]
+        if max_requests_per_experiment and max_requests_per_experiment > 0:
+            sampled_stages = _sample_stages_proportionally(
+                original_stages, max_requests_per_experiment
+            )
+            exp.profile_config["load"]["stages"] = sampled_stages
+        else:
+            sampled_stages = original_stages
+
+        try:
+            for adapter_name, adapter in adapters.items():
+                if not adapter.can_run(exp):
+                    skip_count += 1
+                    continue
+                try:
+                    t0 = time.perf_counter()
+                    result = adapter.run(exp)
+                    elapsed = time.perf_counter() - t0
+                    result.wall_clock_seconds = elapsed
+                    records = compute_errors(exp, result)
+                    all_records.extend(records)
+                    runtime_records.append(RuntimeRecord(
+                        simulator=adapter_name,
+                        experiment_folder=exp.folder,
+                        model=exp.model,
+                        workload=exp.workload,
+                        wall_clock_seconds=elapsed,
+                        exp_id=exp.exp_id,
+                        hardware=exp.hardware,
+                        dp=exp.dp,
+                        cpu_offload=exp.cpu_offload,
+                        gpu_mem_util=exp.gpu_mem_util,
+                        precision=exp.precision,
+                        tp=exp.tp,
+                        max_num_batched_tokens=exp.max_num_batched_tokens,
+                    ))
+                    print(f"  OK: {adapter_name} × {exp.model} ({exp.workload}) [{elapsed:.2f}s]")
+                except Exception as exc:
+                    fail_count += 1
+                    logger.error(
+                        "FAIL: %s × %s (%s): %s", adapter_name, exp.model, exp.workload, exc,
+                    )
+        finally:
+            # Restore original stages after all adapters have run on this experiment
+            exp.profile_config["load"]["stages"] = original_stages
 
     if skip_count:
         logger.info("Skipped %d (experiment, adapter) pairs via can_run()", skip_count)
@@ -227,8 +298,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--max-requests-per-experiment",
         type=int,
-        default=100,
-        help="Limit number of requests per experiment (default: 100 for LLMServingSim). Set to 0 for unlimited.",
+        default=0,
+        help="Limit number of requests per experiment (default: 0 = unlimited). Set to a positive number to sample workload.",
     )
     return parser.parse_args(argv)
 

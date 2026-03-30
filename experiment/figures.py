@@ -1720,11 +1720,26 @@ def main(argv: list[str] | None = None) -> None:
 
     for sim1, sim2, filename in comparison_pairs:
         try:
-            # Use error_df_full (unfiltered) so we always include all simulators
-            fig = plot_simulator_comparison(
-                error_df_full, sim1, sim2,
-                os.path.join(sim_comparison_dir, filename)
-            )
+            # Special handling for blis_vs_llmservingsim: use cluster results
+            if filename == "blis_vs_llmservingsim.pdf":
+                cluster_error_csv = "results/cluster_2000req/error_records.csv"
+                if os.path.exists(cluster_error_csv):
+                    cluster_error_df = load_error_data(cluster_error_csv)
+                    cluster_error_df = enrich_with_metadata(cluster_error_df, args.metadata)
+                    cluster_error_df = _add_config_tags(cluster_error_df)
+                    fig = plot_simulator_comparison(
+                        cluster_error_df, sim1, sim2,
+                        os.path.join(sim_comparison_dir, filename)
+                    )
+                else:
+                    print(f"  SKIP: sim_comparisons/{filename} (cluster results not found)")
+                    continue
+            else:
+                # Use error_df_full (unfiltered) so we always include all simulators
+                fig = plot_simulator_comparison(
+                    error_df_full, sim1, sim2,
+                    os.path.join(sim_comparison_dir, filename)
+                )
             if fig is not None:
                 plt.close(fig)
                 print(f"  OK: sim_comparisons/{filename}")

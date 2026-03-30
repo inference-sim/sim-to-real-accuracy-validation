@@ -113,6 +113,12 @@ export HUGGING_FACE_HUB_TOKEN=hf_...
 
 ## Usage
 
+### Quickstart
+
+```bash
+python -m experiment.run --adapters blis-roofline vidur llm-optimizer-estimate aiconfigurator-estimate --data-dir vllm_data/ground_truth --blis-binary inference-sim/blis --vidur-dir vidur --output-dir results --no-dp-scaling
+```
+
 ### Run all simulators
 
 ```bash

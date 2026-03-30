@@ -36,21 +36,22 @@ kubectl exec -n diya upload-helper -- mkdir -p /data/vllm_data /data/LLMServingS
 # Upload ground truth (~20GB - takes time)
 kubectl cp vllm_data/ground_truth upload-helper:/data/vllm_data/ground_truth -n diya
 
-# Upload LLMServingSim
+# Upload LLMServingSim (note: creates /data/LLMServingSim/LLMServingSim due to trailing slash)
 kubectl cp LLMServingSim/ upload-helper:/data/LLMServingSim/ -n diya
 
 # Upload experiment scripts
 kubectl cp experiment/ upload-helper:/data/experiment/ -n diya
 
 # Verify
-kubectl exec -n diya upload-helper -- du -sh /data/*
+kubectl exec -n diya upload-helper -- bash -c "du -sh /data/*"
 ```
 
 Expected output:
 ```
-20G     /data/vllm_data
-2.8G    /data/LLMServingSim
-50M     /data/experiment
+6.7G    /data/LLMServingSim
+491K    /data/experiment
+512     /data/results
+26G     /data/vllm_data
 ```
 
 ### 4. Compile astra-sim
@@ -63,11 +64,11 @@ kubectl exec -n diya upload-helper -- bash -c "
 "
 
 # Compile (takes 15-30 minutes)
-kubectl exec -n diya upload-helper -- bash -c "cd /data/LLMServingSim && ./compile.sh"
+kubectl exec -n diya upload-helper -- bash -c "cd /data/LLMServingSim/LLMServingSim && ./compile.sh"
 
 # Verify
 kubectl exec -n diya upload-helper -- test -f \
-  /data/LLMServingSim/astra-sim/build/astra_analytical/build/AnalyticalAstra/bin/AnalyticalAstra \
+  /data/LLMServingSim/LLMServingSim/astra-sim/build/astra_analytical/build/bin/AstraSim_Analytical_Congestion_Aware \
   && echo "Build successful" || echo "Build failed"
 ```
 
