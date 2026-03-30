@@ -88,7 +88,7 @@ class BaseBLISAdapter(SimulatorAdapter):
             "--kv-transfer-bandwidth", "0.2",
             "--seed", "42",
             "--workload-spec", trace_spec,
-            "--results-path", results_path,
+            "--metrics-path", results_path,
         ]
 
     @staticmethod
