@@ -76,8 +76,9 @@ The coefficients are optimised via differential evolution (inner loop) during BL
 ### Supported Configurations
 
 - **Hardware**: H100, A100-80GB, L40S (any hardware supported by BLIS)
-- **Models**: Any model (cross-model coefficients; no per-model profiling needed)
-- **Precision**: FP16
+- **Architectures**: MoE (e.g., Mixtral, Scout), GQA (e.g., Llama, Qwen), dense
+- **Models**: Any model -- cross-model coefficients require no per-model profiling. Validated model families include Scout, Llama, Qwen, Yi, and Mistral.
+- **Precision**: FP16, FP8
 - **Features**: KV offloading, multi-stage workloads, shared-prefix workloads
 
 ### Usage
@@ -111,9 +112,9 @@ python -m experiment.run \
 Based on iter16 training results across 15 H100/FP16 experiments:
 
 - **Overall MAPE**: 60.19%
-- **Best case**: Low-contention single-stage workloads
-- **Worst case**: High-rate multi-stage workloads with KV pressure
-- **Typical**: E2E latency predictions within 40-80% MAPE depending on load
+- **Best case**: 8.2% MAPE (Qwen2.5-7B reasoning-lite)
+- **Worst case**: 129.9% MAPE (Scout reasoning-lite -- high variance workload)
+- **Median**: ~40% MAPE (typical cross-model generalization)
 
 > **Note**: The evolved backend is under active development. Accuracy is expected to improve in future training iterations as the coefficient search space expands.
 
@@ -122,5 +123,5 @@ Based on iter16 training results across 15 H100/FP16 experiments:
 | Error | Cause | Fix |
 |-------|-------|-----|
 | `BLIS evolved failed (rc=1)` | Binary does not support `--latency-model evolved` | Rebuild BLIS with evolved backend enabled |
-| `RuntimeError: BLIS evolved failed ... model not found` | BLIS binary cannot locate hardware config for the specified model/hardware combination | Verify `hardware_config.json` exists for the target hardware |
+| `Error: invalid alpha-coeffs format` / `expected 3 alpha coefficients, got N` | Wrong number of alpha or beta coefficients, or malformed comma-separated values | Verify alpha has exactly 3 and beta has exactly 7 comma-separated float values |
 | `--alpha-coeffs: unrecognized argument` | BLIS binary version too old | Update to a BLIS version that supports the evolved latency model CLI flags |
