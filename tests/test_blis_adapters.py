@@ -223,6 +223,16 @@ class TestTrainedRooflineCanRun:
         assert adapter.can_run(exp) is True
 
 
+class TestEvolvedCanRun:
+    def test_always_true(self):
+        """Evolved adapter works for any model (iter16 coefficients are cross-model)."""
+        from experiment.adapters.blis_evolved import BLISEvolvedAdapter
+
+        adapter = BLISEvolvedAdapter("/tmp/blis")
+        exp = _make_experiment()
+        assert adapter.can_run(exp) is True
+
+
 # ---------------------------------------------------------------------------
 # Tests: hardware normalization
 # ---------------------------------------------------------------------------
