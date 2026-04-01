@@ -114,6 +114,11 @@ class TestAdapterNames:
         adapter = BLISTrainedRooflineAdapter("/tmp/blis")
         assert adapter.name == "blis-trained-roofline"
 
+    def test_evolved_name(self):
+        from experiment.adapters.blis_evolved import BLISEvolvedAdapter
+        adapter = BLISEvolvedAdapter("/tmp/blis")
+        assert adapter.name == "blis-evolved"
+
 
 # ---------------------------------------------------------------------------
 # Tests: can_run()
@@ -450,6 +455,18 @@ class TestBLISSubprocessErrors:
         adapter = BLISTrainedRooflineAdapter("/tmp/blis")
         exp = _make_experiment()
         with pytest.raises(RuntimeError, match="BLIS trained-roofline failed.*coefficients missing"):
+            adapter.run(exp)
+
+    @patch("experiment.adapters.blis_evolved.subprocess.run")
+    def test_evolved_wraps_subprocess_error(self, mock_run):
+        from experiment.adapters.blis_evolved import BLISEvolvedAdapter
+
+        mock_run.side_effect = subprocess.CalledProcessError(
+            returncode=1, cmd=["blis"], stderr=b"evolved backend not compiled"
+        )
+        adapter = BLISEvolvedAdapter("/tmp/blis")
+        exp = _make_experiment()
+        with pytest.raises(RuntimeError, match="BLIS evolved failed.*evolved backend not compiled"):
             adapter.run(exp)
 
     @patch("experiment.adapters.blis_blackbox.subprocess.run")
