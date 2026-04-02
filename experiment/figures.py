@@ -1022,28 +1022,46 @@ def plot_simulator_comparison(
     ----------
     sim1 : str or list[str]
         Single simulator or list of simulators to compare (e.g., ["blis-roofline", "blis-evolved"])
+        If a list, will include whichever simulators have data (doesn't require all)
     sim2 : str
         Simulator to compare against
 
-    Only includes experiments where all specified simulators have data.
+    Only includes experiments where at least one sim1 simulator and sim2 have data.
     Aggregates across all configs and workloads.
     """
     _apply_rc_params()
 
     # Handle sim1 as list or string
     sim1_list = sim1 if isinstance(sim1, list) else [sim1]
-    all_sims = set(sim1_list + [sim2])
 
-    # Find experiments with data from all simulators
+    # Check which sim1 simulators actually have data
+    available_simulators = set(df["simulator"].unique())
+    available_sim1 = [s for s in sim1_list if s in available_simulators]
+
+    if not available_sim1:
+        sim_names = " & ".join(sim1_list)
+        warnings.warn(f"No data found for {sim_names}")
+        return None
+
+    if sim2 not in available_simulators:
+        warnings.warn(f"No data found for {sim2}")
+        return None
+
+    # Find experiments with data from sim2 and at least one of sim1
     exp_sims = df.groupby("experiment_folder")["simulator"].apply(set)
-    common_exps = exp_sims[exp_sims.apply(lambda s: all_sims.issubset(s))].index
+    common_exps = exp_sims[exp_sims.apply(
+        lambda s: sim2 in s and any(sim in s for sim in available_sim1)
+    )].index
 
     if len(common_exps) == 0:
-        sim_names = " & ".join(sim1_list) if isinstance(sim1, list) else sim1
+        sim_names = " & ".join(available_sim1)
         warnings.warn(f"No experiments with data from both {sim_names} and {sim2}")
         return None
 
     df_filtered = df[df["experiment_folder"].isin(common_exps)]
+
+    # Update sim1 to only include available simulators
+    sim1 = available_sim1 if isinstance(sim1, list) else available_sim1[0]
 
     # Create 2×3 subplot grid
     fig, axes = plt.subplots(2, 3, figsize=(10, 6.5))
@@ -1081,11 +1099,15 @@ def plot_simulator_comparison(
 
     # Title
     sim2_display = SIMULATOR_DISPLAY_NAMES.get(sim2, sim2)
-    if isinstance(sim1, list) and len(sim1) == 2:
-        sim1_display = " & ".join([SIMULATOR_DISPLAY_NAMES.get(s, s) for s in sim1])
-        title = f"{sim1_display} vs {sim2_display} (n={len(common_exps)}) ↓"
+    if isinstance(sim1, list):
+        if len(sim1) == 1:
+            sim1_display = SIMULATOR_DISPLAY_NAMES.get(sim1[0], sim1[0])
+            title = f"{sim1_display} vs {sim2_display} Simulator Comparison (n={len(common_exps)}) ↓"
+        else:
+            sim1_display = " & ".join([SIMULATOR_DISPLAY_NAMES.get(s, s) for s in sim1])
+            title = f"{sim1_display} vs {sim2_display} (n={len(common_exps)}) ↓"
     else:
-        sim1_display = SIMULATOR_DISPLAY_NAMES.get(sim1, sim1) if isinstance(sim1, str) else sim1
+        sim1_display = SIMULATOR_DISPLAY_NAMES.get(sim1, sim1)
         title = f"{sim1_display} vs {sim2_display} Simulator Comparison (n={len(common_exps)}) ↓"
     fig.suptitle(title, fontsize=11, fontweight="bold")
 
