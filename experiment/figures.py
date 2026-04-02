@@ -1104,7 +1104,9 @@ def plot_simulator_comparison(
             sim1_display = SIMULATOR_DISPLAY_NAMES.get(sim1[0], sim1[0])
             title = f"{sim1_display} vs {sim2_display} Simulator Comparison (n={len(common_exps)}) ↓"
         else:
-            sim1_display = " & ".join([SIMULATOR_DISPLAY_NAMES.get(s, s) for s in sim1])
+            # Use \& for LaTeX, & for non-LaTeX
+            sep = r" \& " if matplotlib.rcParams.get("text.usetex") else " & "
+            sim1_display = sep.join([SIMULATOR_DISPLAY_NAMES.get(s, s) for s in sim1])
             title = f"{sim1_display} vs {sim2_display} (n={len(common_exps)}) ↓"
     else:
         sim1_display = SIMULATOR_DISPLAY_NAMES.get(sim1, sim1)
