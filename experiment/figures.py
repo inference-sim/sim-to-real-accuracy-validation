@@ -1820,7 +1820,7 @@ def main(argv: list[str] | None = None) -> None:
 
             # Special handling for llmservingsim comparisons: use cluster results if available and complete
             if filename == "blis_vs_llmservingsim.pdf":
-                cluster_error_csv = "results/cluster_2000req/error_records.csv"
+                cluster_error_csv = os.path.join(args.results_dir, "cluster_2000req/error_records.csv")
                 use_cluster = False
 
                 if os.path.exists(cluster_error_csv):

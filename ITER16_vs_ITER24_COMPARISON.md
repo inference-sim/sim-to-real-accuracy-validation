@@ -151,13 +151,18 @@ Scatter plot showing accuracy vs execution speed trade-offs.
 </tr>
 </table>
 
----
+### BLIS vs LLMServingSim
 
-## BLIS vs LLMServingSim (Iter24 Only)
-
-This comparison is only available for iter24 as the cluster run included LLMServingSim data.
-
-<img src="results_iter24/figures/sim_comparisons/blis_vs_llmservingsim.png" alt="Iter24 BLIS vs LLMServingSim" width="800">
+<table>
+<tr>
+<th width="50%">Iter16 (7 betas)</th>
+<th width="50%">Iter24 (10 betas)</th>
+</tr>
+<tr>
+<td><img src="results_iter16/figures/sim_comparisons/blis_vs_llmservingsim.png" alt="Iter16 BLIS vs LLMServingSim"></td>
+<td><img src="results_iter24/figures/sim_comparisons/blis_vs_llmservingsim.png" alt="Iter24 BLIS vs LLMServingSim"></td>
+</tr>
+</table>
 
 ---
 
