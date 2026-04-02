@@ -16,6 +16,7 @@ from pathlib import Path
 
 import matplotlib
 import matplotlib.pyplot as plt
+import matplotlib.ticker as ticker
 import numpy as np
 import pandas as pd
 
@@ -399,8 +400,15 @@ def _grouped_bar(
         ax.set_ylim(bottom=0, top=y_top)
         ax.set_ylabel(f"MAPE ({pct})")
 
-        # Apply symlog scale to TTFT plots
-        if metric_key == "ttft_mean":
+        # Disable scientific notation and offset on y-axis
+        formatter = ticker.ScalarFormatter(useOffset=False, useMathText=False)
+        formatter.set_scientific(False)
+        formatter.set_useOffset(False)
+        ax.yaxis.set_major_formatter(formatter)
+        ax.yaxis.offsetText.set_visible(False)
+
+        # Apply symlog scale to TTFT plots only if bars are too tall
+        if metric_key == "ttft_mean" and y_top > 200:
             ax.set_yscale('symlog', linthresh=100)
         # Apply y-axis scale if specified globally
         elif yscale == 'symlog':
@@ -1112,19 +1120,34 @@ def plot_simulator_comparison(
         metric_key, _ = metrics[col_idx]
 
         # Top row
-        y_top = col_maxes_top[col_idx] * 1.20 if col_maxes_top[col_idx] > 0 else 1.0
-        axes[0, col_idx].set_ylim(bottom=0, top=y_top)
+        y_top_top = col_maxes_top[col_idx] * 1.20 if col_maxes_top[col_idx] > 0 else 1.0
+        axes[0, col_idx].set_ylim(bottom=0, top=y_top_top)
         axes[0, col_idx].set_ylabel(f"MAPE ({pct})")
 
         # Bottom row
-        y_top = col_maxes_bottom[col_idx] * 1.20 if col_maxes_bottom[col_idx] > 0 else 1.0
-        axes[1, col_idx].set_ylim(bottom=0, top=y_top)
+        y_top_bottom = col_maxes_bottom[col_idx] * 1.20 if col_maxes_bottom[col_idx] > 0 else 1.0
+        axes[1, col_idx].set_ylim(bottom=0, top=y_top_bottom)
         axes[1, col_idx].set_ylabel(f"MAPE ({pct})")
 
-        # Apply symlog scale to TTFT columns
+        # Disable scientific notation and offset on y-axis
+        formatter_top = ticker.ScalarFormatter(useOffset=False, useMathText=False)
+        formatter_top.set_scientific(False)
+        formatter_top.set_useOffset(False)
+        axes[0, col_idx].yaxis.set_major_formatter(formatter_top)
+        axes[0, col_idx].yaxis.offsetText.set_visible(False)
+
+        formatter_bottom = ticker.ScalarFormatter(useOffset=False, useMathText=False)
+        formatter_bottom.set_scientific(False)
+        formatter_bottom.set_useOffset(False)
+        axes[1, col_idx].yaxis.set_major_formatter(formatter_bottom)
+        axes[1, col_idx].yaxis.offsetText.set_visible(False)
+
+        # Apply symlog scale to TTFT columns only if bars are too tall
         if metric_key == "ttft_mean":
-            axes[0, col_idx].set_yscale('symlog', linthresh=100)
-            axes[1, col_idx].set_yscale('symlog', linthresh=100)
+            if y_top_top > 200:
+                axes[0, col_idx].set_yscale('symlog', linthresh=100)
+            if y_top_bottom > 200:
+                axes[1, col_idx].set_yscale('symlog', linthresh=100)
         # Apply y-axis scale if specified globally
         elif yscale == 'symlog':
             axes[0, col_idx].set_yscale('symlog', linthresh=yscale_linthresh)
