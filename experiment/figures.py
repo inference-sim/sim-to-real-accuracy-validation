@@ -876,7 +876,7 @@ def plot_aggregate_comparison_llmservingsim(
 def _plot_aggregate_panel(
     ax: plt.Axes,
     df: pd.DataFrame,
-    sim1: str,
+    sim1: str | list[str],
     sim2: str,
     metric_key: str,
     metric_label: str,
@@ -885,9 +885,13 @@ def _plot_aggregate_panel(
 
     Returns the maximum bar height for y-axis scaling.
     """
-    # Filter to just the two simulators and this metric
+    # Handle sim1 as list or string
+    sim1_list = sim1 if isinstance(sim1, list) else [sim1]
+    all_sims = sim1_list + [sim2]
+
+    # Filter to the simulators and this metric
     df_filtered = df[
-        (df["simulator"].isin([sim1, sim2])) &
+        (df["simulator"].isin(all_sims)) &
         (df["metric_name"] == metric_key)
     ]
 
@@ -898,7 +902,7 @@ def _plot_aggregate_panel(
     agg_data = df_filtered.groupby("simulator")["mape"].median()
 
     # Order simulators according to SIMULATOR_ORDER
-    sims_ordered = [s for s in [sim1, sim2] if s in agg_data.index]
+    sims_ordered = [s for s in SIMULATOR_ORDER if s in all_sims and s in agg_data.index]
     if not sims_ordered:
         return 0.0
 
@@ -929,7 +933,7 @@ def _plot_aggregate_panel(
 def _plot_model_breakdown_panel(
     ax: plt.Axes,
     df: pd.DataFrame,
-    sim1: str,
+    sim1: str | list[str],
     sim2: str,
     metric_key: str,
     metric_label: str,
@@ -938,9 +942,13 @@ def _plot_model_breakdown_panel(
 
     Returns the maximum bar height for y-axis scaling.
     """
-    # Filter to just the two simulators and this metric
+    # Handle sim1 as list or string
+    sim1_list = sim1 if isinstance(sim1, list) else [sim1]
+    all_sims = sim1_list + [sim2]
+
+    # Filter to the simulators and this metric
     df_filtered = df[
-        (df["simulator"].isin([sim1, sim2])) &
+        (df["simulator"].isin(all_sims)) &
         (df["metric_name"] == metric_key)
     ]
 
@@ -953,12 +961,14 @@ def _plot_model_breakdown_panel(
         return 0.0
 
     n_models = len(present_models)
-    n_sims = 2
+    # Order simulators according to SIMULATOR_ORDER
+    sims_ordered = [s for s in SIMULATOR_ORDER if s in all_sims]
+    n_sims = len(sims_ordered)
     bar_width = 0.8 / n_sims
     x = np.arange(n_models)
     global_max = 0.0
 
-    for sim_idx, sim in enumerate([sim1, sim2]):
+    for sim_idx, sim in enumerate(sims_ordered):
         offset = (sim_idx - n_sims / 2 + 0.5) * bar_width
         positions = []
         heights = []
@@ -999,26 +1009,38 @@ def _plot_model_breakdown_panel(
 
 def plot_simulator_comparison(
     df: pd.DataFrame,
-    sim1: str,
+    sim1: str | list[str],
     sim2: str,
     output_path: str | None = None,
 ) -> plt.Figure | None:
-    """Compare two simulators with 2×3 grid (aggregate + model breakdown).
+    """Compare simulators with 2×3 grid (aggregate + model breakdown).
 
     Top row: aggregate MAPE for E2E, TTFT, ITL
     Bottom row: per-model MAPE for E2E, TTFT, ITL
 
-    Only includes experiments where both simulators have data.
+    Parameters
+    ----------
+    sim1 : str or list[str]
+        Single simulator or list of simulators to compare (e.g., ["blis-roofline", "blis-evolved"])
+    sim2 : str
+        Simulator to compare against
+
+    Only includes experiments where all specified simulators have data.
     Aggregates across all configs and workloads.
     """
     _apply_rc_params()
 
-    # Find experiments with data from both simulators
+    # Handle sim1 as list or string
+    sim1_list = sim1 if isinstance(sim1, list) else [sim1]
+    all_sims = set(sim1_list + [sim2])
+
+    # Find experiments with data from all simulators
     exp_sims = df.groupby("experiment_folder")["simulator"].apply(set)
-    common_exps = exp_sims[exp_sims.apply(lambda s: {sim1, sim2}.issubset(s))].index
+    common_exps = exp_sims[exp_sims.apply(lambda s: all_sims.issubset(s))].index
 
     if len(common_exps) == 0:
-        warnings.warn(f"No experiments with data from both {sim1} and {sim2}")
+        sim_names = " & ".join(sim1_list) if isinstance(sim1, list) else sim1
+        warnings.warn(f"No experiments with data from both {sim_names} and {sim2}")
         return None
 
     df_filtered = df[df["experiment_folder"].isin(common_exps)]
@@ -1059,10 +1081,13 @@ def plot_simulator_comparison(
 
     # Title
     sim2_display = SIMULATOR_DISPLAY_NAMES.get(sim2, sim2)
-    fig.suptitle(
-        f"BLIS-Roofline vs {sim2_display} Simulator Comparison (n={len(common_exps)}) ↓",
-        fontsize=11, fontweight="bold"
-    )
+    if isinstance(sim1, list) and len(sim1) == 2:
+        sim1_display = " & ".join([SIMULATOR_DISPLAY_NAMES.get(s, s) for s in sim1])
+        title = f"{sim1_display} vs {sim2_display} (n={len(common_exps)}) ↓"
+    else:
+        sim1_display = SIMULATOR_DISPLAY_NAMES.get(sim1, sim1) if isinstance(sim1, str) else sim1
+        title = f"{sim1_display} vs {sim2_display} Simulator Comparison (n={len(common_exps)}) ↓"
+    fig.suptitle(title, fontsize=11, fontweight="bold")
 
     # Collect legend handles/labels from all axes (deduplicate)
     all_handles, all_labels = [], []
@@ -1075,9 +1100,10 @@ def plot_simulator_comparison(
                     all_labels.append(label)
 
     if all_handles:
+        ncol = len(all_handles)
         fig.legend(
             all_handles, all_labels, loc="upper center",
-            bbox_to_anchor=(0.5, -0.01), ncol=2,
+            bbox_to_anchor=(0.5, -0.01), ncol=ncol,
             frameon=False, handlelength=1.5, columnspacing=1.0,
         )
 
@@ -1717,20 +1743,16 @@ def main(argv: list[str] | None = None) -> None:
     os.makedirs(sim_comparison_dir, exist_ok=True)
 
     comparison_pairs = [
-        ("blis-roofline", "vidur", "blis_vs_vidur.pdf"),
-        ("blis-roofline", "llm-optimizer-estimate", "blis_vs_llm_optimizer.pdf"),
-        ("blis-roofline", "aiconfigurator-estimate", "blis_vs_aiconfigurator.pdf"),
-        ("blis-roofline", "llmservingsim", "blis_vs_llmservingsim.pdf"),
-        ("blis-evolved", "vidur", "blis_evolved_vs_vidur.pdf"),
-        ("blis-evolved", "llm-optimizer-estimate", "blis_evolved_vs_llm_optimizer.pdf"),
-        ("blis-evolved", "aiconfigurator-estimate", "blis_evolved_vs_aiconfigurator.pdf"),
-        ("blis-evolved", "llmservingsim", "blis_evolved_vs_llmservingsim.pdf"),
+        (["blis-roofline", "blis-evolved"], "vidur", "blis_vs_vidur.pdf"),
+        (["blis-roofline", "blis-evolved"], "llm-optimizer-estimate", "blis_vs_llm_optimizer.pdf"),
+        (["blis-roofline", "blis-evolved"], "aiconfigurator-estimate", "blis_vs_aiconfigurator.pdf"),
+        (["blis-roofline", "blis-evolved"], "llmservingsim", "blis_vs_llmservingsim.pdf"),
     ]
 
     for sim1, sim2, filename in comparison_pairs:
         try:
             # Special handling for llmservingsim comparisons: use cluster results
-            if filename in ("blis_vs_llmservingsim.pdf", "blis_evolved_vs_llmservingsim.pdf"):
+            if filename == "blis_vs_llmservingsim.pdf":
                 cluster_error_csv = "results/cluster_2000req/error_records.csv"
                 if os.path.exists(cluster_error_csv):
                     cluster_error_df = load_error_data(cluster_error_csv)
