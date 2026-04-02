@@ -1093,9 +1093,9 @@ def plot_model_sensitivity(
     df: pd.DataFrame,
     output_path: str | None = None,
 ) -> plt.Figure | None:
-    """Figure 1: BLIS-Roofline MAPE across 7 model architectures on H100, default config."""
-    # Filter to only BLIS-Roofline
-    df = df[df["simulator"] == "blis-roofline"]
+    """Figure 1: BLIS-Roofline vs BLIS-Evolved MAPE across 7 model architectures on H100, default config."""
+    # Filter to BLIS-Roofline and BLIS-Evolved
+    df = df[df["simulator"].isin(["blis-roofline", "blis-evolved"])]
 
     if _has_metadata(df):
         df = df[(df["hardware"] == "H100") & (df["config_tag"] == "default")]
@@ -1108,7 +1108,7 @@ def plot_model_sensitivity(
 
     fig = _grouped_bar(
         df, group_col="model", group_order=MODEL_ORDER,
-        title="BLIS-Roofline: Prediction Error Across Model Architectures ↓",
+        title="BLIS-Roofline vs BLIS-Evolved: Prediction Error Across Model Architectures ↓",
         output_path=output_path,
         group_labels=MODEL_SHORT_LABELS,
         metrics=[
