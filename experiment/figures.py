@@ -1775,20 +1775,36 @@ def main(argv: list[str] | None = None) -> None:
 
     for sim1, sim2, filename in comparison_pairs:
         try:
-            # Special handling for llmservingsim comparisons: use cluster results
+            # Special handling for llmservingsim comparisons: use cluster results if available and complete
             if filename == "blis_vs_llmservingsim.pdf":
                 cluster_error_csv = "results/cluster_2000req/error_records.csv"
+                use_cluster = False
+
                 if os.path.exists(cluster_error_csv):
                     cluster_error_df = load_error_data(cluster_error_csv)
                     cluster_error_df = enrich_with_metadata(cluster_error_df, args.metadata)
                     cluster_error_df = _add_config_tags(cluster_error_df)
+
+                    # Check if cluster results have the BLIS variants we need
+                    cluster_sims = set(cluster_error_df["simulator"].unique())
+                    sim1_list = sim1 if isinstance(sim1, list) else [sim1]
+                    has_required_sims = sim2 in cluster_sims and any(s in cluster_sims for s in sim1_list)
+
+                    if has_required_sims:
+                        use_cluster = True
+                        print(f"  Using cluster results for {filename}")
+                        fig = plot_simulator_comparison(
+                            cluster_error_df, sim1, sim2,
+                            os.path.join(sim_comparison_dir, filename)
+                        )
+
+                if not use_cluster:
+                    # Fall back to regular results if cluster missing or incomplete
+                    print(f"  Using regular results for {filename} (cluster incomplete or missing)")
                     fig = plot_simulator_comparison(
-                        cluster_error_df, sim1, sim2,
+                        error_df_full, sim1, sim2,
                         os.path.join(sim_comparison_dir, filename)
                     )
-                else:
-                    print(f"  SKIP: sim_comparisons/{filename} (cluster results not found)")
-                    continue
             else:
                 # Use error_df_full (unfiltered) so we always include all simulators
                 fig = plot_simulator_comparison(
