@@ -118,7 +118,7 @@ class BLISEvolvedAdapter(BaseBLISAdapter):
 
     @property
     def name(self) -> str:
-        return f"blis-evolved-iter{self.iteration}"
+        return "blis-evolved"
 
     def run(self, experiment: Experiment) -> SimulatorResult:
         # Select coefficients based on iteration
