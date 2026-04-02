@@ -1024,6 +1024,8 @@ def plot_simulator_comparison(
     sim1: str | list[str],
     sim2: str,
     output_path: str | None = None,
+    yscale: str | None = None,
+    yscale_linthresh: float = 100,
 ) -> plt.Figure | None:
     """Compare simulators with 2×3 grid (aggregate + model breakdown).
 
@@ -1037,6 +1039,10 @@ def plot_simulator_comparison(
         If a list, will include whichever simulators have data (doesn't require all)
     sim2 : str
         Simulator to compare against
+    yscale : str, optional
+        Scale for y-axis ('linear', 'log', 'symlog'). If None, uses linear.
+    yscale_linthresh : float, default=100
+        Linear threshold for symlog scale (values below this use linear scale).
 
     Only includes experiments where at least one sim1 simulator and sim2 have data.
     Aggregates across all configs and workloads.
@@ -1108,6 +1114,14 @@ def plot_simulator_comparison(
         y_top = col_maxes_bottom[col_idx] * 1.20 if col_maxes_bottom[col_idx] > 0 else 1.0
         axes[1, col_idx].set_ylim(bottom=0, top=y_top)
         axes[1, col_idx].set_ylabel(f"MAPE ({pct})")
+
+        # Apply y-axis scale if specified
+        if yscale == 'symlog':
+            axes[0, col_idx].set_yscale('symlog', linthresh=yscale_linthresh)
+            axes[1, col_idx].set_yscale('symlog', linthresh=yscale_linthresh)
+        elif yscale is not None:
+            axes[0, col_idx].set_yscale(yscale)
+            axes[1, col_idx].set_yscale(yscale)
 
     # Title
     sim2_display = SIMULATOR_DISPLAY_NAMES.get(sim2, sim2)
@@ -1789,6 +1803,11 @@ def main(argv: list[str] | None = None) -> None:
 
     for sim1, sim2, filename in comparison_pairs:
         try:
+            # Determine yscale settings (use symlog for vidur comparison)
+            yscale_kwargs = {}
+            if filename == "blis_vs_vidur.pdf":
+                yscale_kwargs = {"yscale": "symlog", "yscale_linthresh": 100}
+
             # Special handling for llmservingsim comparisons: use cluster results if available and complete
             if filename == "blis_vs_llmservingsim.pdf":
                 cluster_error_csv = "results/cluster_2000req/error_records.csv"
@@ -1809,7 +1828,8 @@ def main(argv: list[str] | None = None) -> None:
                         print(f"  Using cluster results for {filename}")
                         fig = plot_simulator_comparison(
                             cluster_error_df, sim1, sim2,
-                            os.path.join(sim_comparison_dir, filename)
+                            os.path.join(sim_comparison_dir, filename),
+                            **yscale_kwargs
                         )
 
                 if not use_cluster:
@@ -1817,13 +1837,15 @@ def main(argv: list[str] | None = None) -> None:
                     print(f"  Using regular results for {filename} (cluster incomplete or missing)")
                     fig = plot_simulator_comparison(
                         error_df_full, sim1, sim2,
-                        os.path.join(sim_comparison_dir, filename)
+                        os.path.join(sim_comparison_dir, filename),
+                        **yscale_kwargs
                     )
             else:
                 # Use error_df_full (unfiltered) so we always include all simulators
                 fig = plot_simulator_comparison(
                     error_df_full, sim1, sim2,
-                    os.path.join(sim_comparison_dir, filename)
+                    os.path.join(sim_comparison_dir, filename),
+                    **yscale_kwargs
                 )
             if fig is not None:
                 plt.close(fig)
