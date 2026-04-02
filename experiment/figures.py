@@ -306,6 +306,8 @@ def _grouped_bar(
     aggregate: bool = False,
     xlabel_rotation: float = 35,
     metrics: list[tuple[str, str]] | None = None,
+    yscale: str | None = None,
+    yscale_linthresh: float = 100,
 ) -> plt.Figure | None:
     """Grouped bar chart: x = groups, bars = simulators, y = MAPE.
 
@@ -315,6 +317,10 @@ def _grouped_bar(
         If True, take the median MAPE per (group, simulator, metric).
     metrics : list of (key, label) pairs
         Which metrics to plot as subplots. Defaults to E2E Mean only.
+    yscale : str, optional
+        Scale for y-axis ('linear', 'log', 'symlog'). If None, uses linear.
+    yscale_linthresh : float, default=100
+        Linear threshold for symlog scale (values below this use linear scale).
     """
     _apply_rc_params()
     if metrics is None:
@@ -391,6 +397,12 @@ def _grouped_bar(
         y_top = col_maxes[col_idx] * 1.20 if col_maxes[col_idx] > 0 else 1.0
         ax.set_ylim(bottom=0, top=y_top)
         ax.set_ylabel(f"MAPE ({pct})")
+
+        # Apply y-axis scale if specified
+        if yscale == 'symlog':
+            ax.set_yscale('symlog', linthresh=yscale_linthresh)
+        elif yscale is not None:
+            ax.set_yscale(yscale)
 
     fig.suptitle(title, fontsize=11, fontweight="bold")
 
@@ -1201,6 +1213,8 @@ def plot_hardware_portability(
             ("ttft_mean", "TTFT Mean"),
             ("itl_mean", "ITL Mean"),
         ],
+        yscale='symlog',
+        yscale_linthresh=100,
     )
     if fig is None:
         warnings.warn("Figure 2: no hardware groups with data")
