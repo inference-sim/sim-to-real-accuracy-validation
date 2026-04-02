@@ -1,10 +1,8 @@
-"""BLIS evolved adapter -- physics-informed latency with iter24 coefficients.
+"""BLIS evolved adapter -- physics-informed latency with learned coefficients.
 
 Uses the ``evolved`` latency backend which combines roofline basis functions
-with learned correction terms.  The coefficients were optimised during iter24
-training (39.18% MAPE across 15 experiments on H100/FP16).
-
-Requires BLIS with decode-split support (10-beta mode).
+with learned correction terms. Supports both iter16 (7-beta) and iter24 (10-beta)
+coefficient sets.
 """
 
 from __future__ import annotations
@@ -20,19 +18,25 @@ from experiment.data_model import Experiment, SimulatorResult
 class BLISEvolvedAdapter(BaseBLISAdapter):
     """BLIS simulator with ``--latency-model evolved``.
 
-    Passes static iter24 alpha/beta coefficients on the command line via
-    ``--alpha-coeffs`` and ``--beta-coeffs``.  Works for any model (no
-    per-model profiling required).
+    Passes alpha/beta coefficients on the command line via ``--alpha-coeffs``
+    and ``--beta-coeffs``. Supports iter16 (7 betas) and iter24 (10 betas).
+
+    Iter16 training summary
+    -----------------------
+    * Dataset  : 15 experiments (H100 / FP16)
+    * Best MAPE: 60.19 % (trained-roofline architecture)
+    * Betas    : 7 (no prefill/decode split, no MoE term)
 
     Iter24 training summary
     -----------------------
     * Dataset  : 15 experiments (H100 / FP16)
     * Best MAPE: 39.18 % (overall loss: TTFT=24.13%, E2E=15.05%)
     * Method   : 2D grid search (144 pts) + golden section polish
+    * Betas    : 10 (prefill/decode split + MoE term)
     * Key finding: Decode is memory-dominated (β₂ₐ=0), prefill is compute-only (β₁ᵦ=0)
 
-    Coefficient semantics
-    ---------------------
+    Coefficient semantics (iter24)
+    -------------------------------
     Alpha (3 values):
         α₀ : QueueingTime — fixed API overhead (~15.6ms)
         α₁ : PostDecodeFixedOverhead — per-request completion (~0.8ms)
@@ -51,7 +55,24 @@ class BLISEvolvedAdapter(BaseBLISAdapter):
         β₂ᵦ : Decode memory correction (1.263 — 26% overhead above roofline)
     """
 
-    # Iter24 optimised coefficients from inner_loop_results.json
+    # Iter16 optimised coefficients (7 betas)
+    ITER16_ALPHA: list[float] = [
+        15569.495449697066,   # α₀: QueueingTime
+        815.0556502348827,    # α₁: PostDecodeFixedOverhead
+        45.705744318725586,   # α₂: OutputTokenProcessingTime
+    ]
+
+    ITER16_BETA: list[float] = [
+        0.20081681581824434,  # β₀: Prefill roofline correction
+        1.6173961192042448,   # β₁: Weight loading
+        1.3603417361920076,   # β₂: TP communication
+        0.39579536655780084,  # β₃: Decode roofline correction
+        62.19421689224744,    # β₄: Per-layer overhead (µs/layer)
+        2.937563498958273,    # β₅: Per-request scheduling (µs/req)
+        169.37780505091155,   # β₆: Per-step constant (µs/step)
+    ]
+
+    # Iter24 optimised coefficients (10 betas)
     ITER24_ALPHA: list[float] = [
         15561.959717498621,  # α₀: QueueingTime (~15.6ms fixed API overhead)
         776.243476414174,    # α₁: PostDecodeFixedOverhead (~0.8ms per-request)
@@ -71,6 +92,21 @@ class BLISEvolvedAdapter(BaseBLISAdapter):
         1.2632,              # β₂ᵦ: Decode memory (26% overhead)
     ]
 
+    def __init__(self, blis_binary: str, iteration: int = 24):
+        """Initialize BLIS evolved adapter.
+
+        Parameters
+        ----------
+        blis_binary : str
+            Path to BLIS binary
+        iteration : int, default=24
+            Which iteration coefficients to use (16 or 24)
+        """
+        super().__init__(blis_binary)
+        if iteration not in (16, 24):
+            raise ValueError(f"iteration must be 16 or 24, got {iteration}")
+        self.iteration = iteration
+
     @staticmethod
     def _format_coeffs(coeffs: list[float]) -> str:
         """Format a list of floats as a comma-separated string with 6 decimal places.
@@ -82,9 +118,17 @@ class BLISEvolvedAdapter(BaseBLISAdapter):
 
     @property
     def name(self) -> str:
-        return "blis-evolved"
+        return f"blis-evolved-iter{self.iteration}"
 
     def run(self, experiment: Experiment) -> SimulatorResult:
+        # Select coefficients based on iteration
+        if self.iteration == 16:
+            alpha = self.ITER16_ALPHA
+            beta = self.ITER16_BETA
+        else:  # iteration == 24
+            alpha = self.ITER24_ALPHA
+            beta = self.ITER24_BETA
+
         with tempfile.TemporaryDirectory() as tmpdir:
             spec_path = os.path.join(tmpdir, "workload_spec.yaml")
             self._write_workload_spec(experiment, spec_path)
@@ -92,15 +136,15 @@ class BLISEvolvedAdapter(BaseBLISAdapter):
             results_path = os.path.join(tmpdir, "results.json")
             args = self._build_common_args(experiment, spec_path, results_path)
             args.extend(["--latency-model", "evolved"])
-            args.extend(["--alpha-coeffs", self._format_coeffs(self.ITER24_ALPHA)])
-            args.extend(["--beta-coeffs", self._format_coeffs(self.ITER24_BETA)])
+            args.extend(["--alpha-coeffs", self._format_coeffs(alpha)])
+            args.extend(["--beta-coeffs", self._format_coeffs(beta)])
 
             try:
                 subprocess.run(args, capture_output=True, check=True, cwd=self._blis_dir)
             except subprocess.CalledProcessError as exc:
                 stderr = (exc.stderr or b"").decode("utf-8", errors="replace")
                 raise RuntimeError(
-                    f"BLIS evolved failed (rc={exc.returncode}) for "
+                    f"BLIS evolved iter{self.iteration} failed (rc={exc.returncode}) for "
                     f"{experiment.model}: {stderr}"
                 ) from exc
 

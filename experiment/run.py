@@ -105,6 +105,7 @@ def build_adapter_registry(
     adapter_names: list[str] | None = None,
     no_docker: bool = False,
     max_requests_per_experiment: int | None = None,
+    blis_evolved_iteration: int = 24,
 ) -> dict[str, SimulatorAdapter]:
     """Build a name → adapter instance mapping.
 
@@ -114,7 +115,7 @@ def build_adapter_registry(
         "blis-blackbox": lambda: BLISBlackboxAdapter(blis_binary),
         "blis-roofline": lambda: BLISRooflineAdapter(blis_binary),
         "blis-crossmodel": lambda: BLISCrossModelAdapter(blis_binary),
-        "blis-evolved": lambda: BLISEvolvedAdapter(blis_binary),
+        "blis-evolved": lambda: BLISEvolvedAdapter(blis_binary, iteration=blis_evolved_iteration),
         "blis-trained-roofline": lambda: BLISTrainedRooflineAdapter(blis_binary),
         "vidur": lambda: VidurAdapter(vidur_dir),
         "llm-optimizer-estimate": lambda: LLMOptimizerEstimateAdapter(),
@@ -140,6 +141,7 @@ def run_pipeline(
     no_dp_scaling: bool = False,
     no_docker: bool = False,
     max_requests_per_experiment: int | None = None,
+    blis_evolved_iteration: int = 24,
 ) -> tuple[list[ErrorRecord], list[RuntimeRecord]]:
     """Core pipeline: discover → run → compute errors → report.
 
@@ -179,7 +181,8 @@ def run_pipeline(
 
     # 3. Build adapter registry (only requested adapters)
     adapters = build_adapter_registry(
-        blis_binary, vidur_dir, llmservingsim_dir, adapter_names, no_docker, max_requests_per_experiment
+        blis_binary, vidur_dir, llmservingsim_dir, adapter_names, no_docker,
+        max_requests_per_experiment, blis_evolved_iteration
     )
 
     # 4. Run all (experiment, adapter) pairs
@@ -304,6 +307,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=0,
         help="Limit number of requests per experiment (default: 0 = unlimited). Set to a positive number to sample workload.",
     )
+    parser.add_argument(
+        "--blis-evolved-iteration",
+        type=int,
+        default=24,
+        choices=[16, 24],
+        help="Which iteration coefficients to use for blis-evolved adapter (default: 24)",
+    )
     return parser.parse_args(argv)
 
 
@@ -327,6 +337,7 @@ def main(argv: list[str] | None = None) -> None:
         no_dp_scaling=args.no_dp_scaling,
         no_docker=args.no_docker,
         max_requests_per_experiment=args.max_requests_per_experiment,
+        blis_evolved_iteration=args.blis_evolved_iteration,
     )
 
 

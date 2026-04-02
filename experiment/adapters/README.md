@@ -89,22 +89,35 @@ The coefficients are optimised via 2D grid search + golden section polish during
 ### Usage
 
 ```bash
+# Using iter24 coefficients (default, requires 10-beta BLIS)
 python -m experiment.run \
   --data-dir vllm_data/ground_truth \
   --output-dir results \
   --adapters blis-evolved \
   --blis-binary /path/to/blis
+
+# Using iter16 coefficients (7-beta BLIS)
+python -m experiment.run \
+  --data-dir vllm_data/ground_truth \
+  --output-dir results \
+  --adapters blis-evolved \
+  --blis-binary /path/to/blis-iter16 \
+  --blis-evolved-iteration 16
 ```
 
 ### Requirements
 
-- BLIS binary compiled with the `evolved` latency backend supporting **10-beta mode (decode split)**
+- BLIS binary compiled with the `evolved` latency backend
 - The binary must support the following CLI flags:
   - `--latency-model evolved`
   - `--alpha-coeffs <comma-separated>` (3 values)
-  - `--beta-coeffs <comma-separated>` (10 values)
+  - `--beta-coeffs <comma-separated>` (7 or 10 values)
 
-> **Note**: Iter24 requires BLIS with decode-split support. Earlier BLIS versions support only 7-9 betas and cannot use iter24 coefficients.
+**Iteration requirements:**
+- **Iter16** (7 betas): Requires BLIS that supports 7-beta mode (60.19% MAPE)
+- **Iter24** (10 betas): Requires BLIS with decode-split support (10-beta mode, 39.18% MAPE)
+
+> **Note**: Use `--blis-evolved-iteration` to select which coefficient set to use (default: 24)
 
 ### How It Works
 
