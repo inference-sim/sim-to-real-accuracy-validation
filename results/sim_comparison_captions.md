@@ -2,7 +2,7 @@
 
 ## Overview
 
-These figures provide pairwise head-to-head comparisons between BLIS-Roofline and each other simulator (Vidur, LLM-Optimizer, AIConfigurator). Each figure uses a **2×3 grid layout** combining aggregate and model-wise breakdowns across three latency metrics (E2E Mean, TTFT Mean, ITL Mean).
+These figures provide pairwise head-to-head comparisons between **both BLIS variants** (BLIS-Roofline and BLIS-Evolved) and each other simulator (Vidur, LLM-Optimizer, AIConfigurator, LLMServingSim). Each figure uses a **2×3 grid layout** combining aggregate and model-wise breakdowns across three latency metrics (E2E Mean, TTFT Mean, ITL Mean). All comparisons show both BLIS variants side-by-side against the comparison simulator.
 
 **Figure Layout:**
 - **Top row (Aggregate):** 3 panels showing median MAPE aggregated across all experiments, models, configs, and workloads for E2E, TTFT, and ITL
@@ -16,16 +16,16 @@ These figures provide pairwise head-to-head comparisons between BLIS-Roofline an
 
 ## Comparison Figures
 
-### BLIS-Roofline vs. Vidur
+### BLIS-Roofline & BLIS-Evolved vs. Vidur
 
 ![BLIS vs Vidur](figures/sim_comparisons/blis_vs_vidur.png)
 
-**Shared experiments:** 4 experiments
+**Shared experiments:** 4 experiments with both BLIS variants
 **Models:** CodeLlama-34b-Instruct-hf, Llama-2-70b-hf
 **Workload:** general-lite only (Vidur only ran on this workload)
 **Hardware:** H100 (Vidur lacks A100/L40S profiles in this dataset)
 
-Vidur requires pre-built model profiles and currently only supports 3 models in the dataset. This comparison reflects Vidur's coverage limitations — it represents head-to-head accuracy on the small subset of experiments where both simulators have data. The limited model diversity (2 large dense models, both 70B/34B class) and single workload type mean this comparison does not generalize to the full workload/model space.
+Vidur requires pre-built model profiles and currently only supports 3 models in the dataset. This comparison reflects Vidur's coverage limitations — it represents head-to-head accuracy on the small subset of experiments where all three simulators have data. The limited model diversity (2 large dense models, both 70B/34B class) and single workload type mean this comparison does not generalize to the full workload/model space.
 
 **Key observations:**
 - Vidur's discrete-event simulation approach with vLLM scheduler emulation
@@ -35,16 +35,16 @@ Vidur requires pre-built model profiles and currently only supports 3 models in 
 
 ---
 
-### BLIS-Roofline vs. LLM-Optimizer
+### BLIS-Roofline & BLIS-Evolved vs. LLM-Optimizer
 
 ![BLIS vs LLM-Optimizer](figures/sim_comparisons/blis_vs_llm_optimizer.png)
 
-**Shared experiments:** 38 experiments
+**Shared experiments:** 38 experiments with both BLIS variants
 **Models:** Qwen3-14B, CodeLlama-34b-Instruct-hf, Llama-2-70b-hf, Llama-3.1-8B-Instruct, Mixtral-8x22B-Instruct-v0.1, Mixtral-8x7B-v0.1
 **Workload:** general, general-lite, codegen, roleplay (shared\_prefix workloads)
 **Hardware:** H100, A100-80GB
 
-LLM-Optimizer is an analytical roofline estimator that queries model configs from HuggingFace Hub and estimates latency using hardware compute/memory roofline models. It supports the broadest model coverage among non-BLIS simulators and includes MoE models (approximated as dense with 4×hidden\_size FFN dimension). This comparison represents head-to-head accuracy across a diverse set of dense and MoE models at various scales.
+LLM-Optimizer is an analytical roofline estimator that queries model configs from HuggingFace Hub and estimates latency using hardware compute/memory roofline models. It supports the broadest model coverage among non-BLIS simulators and includes MoE models (approximated as dense with 4×hidden\_size FFN dimension). This comparison represents head-to-head accuracy across a diverse set of dense and MoE models at various scales, showing both the baseline BLIS-Roofline and the improved BLIS-Evolved with learned corrections.
 
 **Key observations:**
 - Analytical estimator (no trace replay, no scheduling simulation)
@@ -55,16 +55,16 @@ LLM-Optimizer is an analytical roofline estimator that queries model configs fro
 
 ---
 
-### BLIS-Roofline vs. AIConfigurator
+### BLIS-Roofline & BLIS-Evolved vs. AIConfigurator
 
 ![BLIS vs AIConfigurator](figures/sim_comparisons/blis_vs_aiconfigurator.png)
 
-**Shared experiments:** 19 experiments
+**Shared experiments:** 19 experiments with both BLIS variants
 **Models:** Qwen3-14B, CodeLlama-34b-Instruct-hf, Llama-2-70b-hf, Llama-3.1-8B-Instruct
 **Workload:** general, general-lite, codegen, roleplay (shared\_prefix workloads)
 **Hardware:** H100 only
 
-AIConfigurator is an analytical estimator from the AIConfigurator SDK that focuses on H100 hardware and dense models. It excludes MoE architectures entirely and is limited to H100 (no A100/L40S support). This comparison represents head-to-head accuracy on dense models at various scales on H100 hardware.
+AIConfigurator is an analytical estimator from the AIConfigurator SDK that focuses on H100 hardware and dense models. It excludes MoE architectures entirely and is limited to H100 (no A100/L40S support). This comparison represents head-to-head accuracy on dense models at various scales on H100 hardware, showing both the baseline BLIS-Roofline and the improved BLIS-Evolved with learned corrections.
 
 **Key observations:**
 - Analytical estimator (no trace replay, no scheduling simulation)
@@ -75,9 +75,24 @@ AIConfigurator is an analytical estimator from the AIConfigurator SDK that focus
 
 ---
 
-## LLMServingSim
+### BLIS-Roofline & BLIS-Evolved vs. LLMServingSim
 
-**Note:** BLIS-Roofline vs. LLMServingSim comparison figure was not generated because there are insufficient shared experiments (fewer than 2 experiments with both simulators). LLMServingSim has extremely sparse coverage in the dataset (~1-2 experiments) due to its prohibitive runtime (hours per experiment). See the cluster deployment workflow in docs/cluster-deployment/ for details on running LLMServingSim separately.
+![BLIS vs LLMServingSim](figures/sim_comparisons/blis_vs_llmservingsim.png)
+
+**Shared experiments:** 1 experiment with all three simulators
+**Models:** Mixtral-8x7B-v0.1
+**Workload:** general workload with 2000 requests (cluster dataset)
+**Hardware:** H100
+**Configuration:** TP=4, no CPU offload, 90% GPU memory utilization
+
+**Important:** This comparison uses the cluster_2000req dataset where all three simulators were tested on the **exact same 2000-request sample** from a real cluster workload. This controlled comparison eliminates workload variance as a confounding factor. LLMServingSim has extremely sparse coverage in the main dataset (~1 experiment) due to its prohibitive runtime (hours per experiment, 700× slower than BLIS). The cluster dataset captures this single high-quality apples-to-apples comparison on a high-TP MoE configuration.
+
+**Key results on shared experiment (Mixtral-8x7B TP4, E2E Mean MAPE):**
+- BLIS-Evolved: **15.84%** (6.2× more accurate than roofline, 5.8× better than LLMServingSim)
+- BLIS-Roofline: 97.57% (severe underestimation)
+- LLMServingSim: 91.42% (overestimation)
+
+BLIS-Evolved's learned correction terms capture queueing delays, communication overhead, and weight loading that both the pure roofline model and LLMServingSim's trace-driven simulation miss on this high-parallelism MoE workload.
 
 ---
 

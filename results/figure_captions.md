@@ -16,11 +16,11 @@
 
 ---
 
-### Figure 1: BLIS-Roofline Prediction Error Across Model Architectures
+### Figure 1: BLIS-Roofline vs BLIS-Evolved Prediction Error Across Model Architectures
 
 ![Figure 1](figures/fig1_model_sensitivity.png)
 
-BLIS-Roofline MAPE for individual experiments across 7 models on H100 with default serving configuration and general/general-lite workloads: Llama-3.1-8B, Qwen3-14B, CodeLlama-34B, Llama-2-70B (dense), Mixtral-8x7B, Mixtral-8x22B, and Llama-4-Scout-17B-16E (MoE/FP8). No aggregation across experiments — shows one experiment per model to reveal per-architecture variation. Shows E2E Mean, TTFT Mean, and ITL Mean MAPE for each model.
+Side-by-side comparison of BLIS-Roofline and BLIS-Evolved MAPE for individual experiments across 7 models on H100 with default serving configuration and general/general-lite workloads: Llama-3.1-8B, Qwen3-14B, CodeLlama-34B, Llama-2-70B (dense), Mixtral-8x7B, Mixtral-8x22B, and Llama-4-Scout-17B-16E (MoE/FP8). No aggregation across experiments — shows one experiment per model to reveal per-architecture variation. BLIS-Evolved uses learned correction coefficients (3 alpha, 7 beta) from iter16 optimization (1705 Bayesian trials) that model queueing delays, communication overhead, and weight loading. Shows E2E Mean, TTFT Mean, and ITL Mean MAPE for each model.
 
 ---
 
@@ -69,8 +69,9 @@ Median MAPE vs. median wall-clock runtime per simulator, aggregated across all e
 | Simulator | Median Runtime (s) | Speedup vs. Real |
 |---|---|---|
 | BLIS-Roofline | 1.6 | 770x |
+| BLIS-Evolved | 1.8 | 667x |
 | Vidur | 9.9 | 121x |
 | LLM-Optimizer | 0.1 | 23,094x |
 | AIConfigurator | 3.3 | 363x |
 
-Median wall-clock runtime per simulator and speedup relative to real experiment execution. BLIS-Roofline provides a middle ground between analytical speed (LLM-Optimizer, AIConfigurator) and simulation fidelity (Vidur).
+Median wall-clock runtime per simulator and speedup relative to real experiment execution. BLIS variants (Roofline and Evolved) provide a middle ground between analytical speed (LLM-Optimizer, AIConfigurator) and simulation fidelity (Vidur). BLIS-Evolved has minimal runtime overhead compared to BLIS-Roofline (~13% slower) while providing significantly better accuracy through learned correction terms.
