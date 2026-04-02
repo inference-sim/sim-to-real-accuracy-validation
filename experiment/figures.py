@@ -49,7 +49,7 @@ SIMULATOR_DISPLAY_NAMES = {
 
 COLOR_PALETTE = {
     "blis-trained-roofline": "#4C72B0",
-    "blis-evolved": "#16A085",
+    "blis-evolved": "#D946EF",
     "blis-roofline": "#64B5F6",
     "vidur": "#DD8452",
     "llm-optimizer-estimate": "#55A868",
