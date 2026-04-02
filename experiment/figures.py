@@ -49,7 +49,7 @@ SIMULATOR_DISPLAY_NAMES = {
 
 COLOR_PALETTE = {
     "blis-trained-roofline": "#4C72B0",
-    "blis-evolved": "#5DADE2",
+    "blis-evolved": "#16A085",
     "blis-roofline": "#64B5F6",
     "vidur": "#DD8452",
     "llm-optimizer-estimate": "#55A868",
@@ -1721,12 +1721,16 @@ def main(argv: list[str] | None = None) -> None:
         ("blis-roofline", "llm-optimizer-estimate", "blis_vs_llm_optimizer.pdf"),
         ("blis-roofline", "aiconfigurator-estimate", "blis_vs_aiconfigurator.pdf"),
         ("blis-roofline", "llmservingsim", "blis_vs_llmservingsim.pdf"),
+        ("blis-evolved", "vidur", "blis_evolved_vs_vidur.pdf"),
+        ("blis-evolved", "llm-optimizer-estimate", "blis_evolved_vs_llm_optimizer.pdf"),
+        ("blis-evolved", "aiconfigurator-estimate", "blis_evolved_vs_aiconfigurator.pdf"),
+        ("blis-evolved", "llmservingsim", "blis_evolved_vs_llmservingsim.pdf"),
     ]
 
     for sim1, sim2, filename in comparison_pairs:
         try:
-            # Special handling for blis_vs_llmservingsim: use cluster results
-            if filename == "blis_vs_llmservingsim.pdf":
+            # Special handling for llmservingsim comparisons: use cluster results
+            if filename in ("blis_vs_llmservingsim.pdf", "blis_evolved_vs_llmservingsim.pdf"):
                 cluster_error_csv = "results/cluster_2000req/error_records.csv"
                 if os.path.exists(cluster_error_csv):
                     cluster_error_df = load_error_data(cluster_error_csv)
