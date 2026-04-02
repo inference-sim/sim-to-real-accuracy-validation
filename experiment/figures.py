@@ -394,12 +394,16 @@ def _grouped_bar(
     # Independent y-axis per subplot with 20% headroom
     pct = r"\%" if matplotlib.rcParams.get("text.usetex") else "%"
     for col_idx, ax in enumerate(axes):
+        metric_key, _ = metrics[col_idx]
         y_top = col_maxes[col_idx] * 1.20 if col_maxes[col_idx] > 0 else 1.0
         ax.set_ylim(bottom=0, top=y_top)
         ax.set_ylabel(f"MAPE ({pct})")
 
-        # Apply y-axis scale if specified
-        if yscale == 'symlog':
+        # Apply symlog scale to TTFT plots
+        if metric_key == "ttft_mean":
+            ax.set_yscale('symlog', linthresh=100)
+        # Apply y-axis scale if specified globally
+        elif yscale == 'symlog':
             ax.set_yscale('symlog', linthresh=yscale_linthresh)
         elif yscale is not None:
             ax.set_yscale(yscale)
@@ -1105,6 +1109,8 @@ def plot_simulator_comparison(
     # Set y-axes with 20% headroom per row
     pct = r"\%" if matplotlib.rcParams.get("text.usetex") else "%"
     for col_idx in range(3):
+        metric_key, _ = metrics[col_idx]
+
         # Top row
         y_top = col_maxes_top[col_idx] * 1.20 if col_maxes_top[col_idx] > 0 else 1.0
         axes[0, col_idx].set_ylim(bottom=0, top=y_top)
@@ -1115,8 +1121,12 @@ def plot_simulator_comparison(
         axes[1, col_idx].set_ylim(bottom=0, top=y_top)
         axes[1, col_idx].set_ylabel(f"MAPE ({pct})")
 
-        # Apply y-axis scale if specified
-        if yscale == 'symlog':
+        # Apply symlog scale to TTFT columns
+        if metric_key == "ttft_mean":
+            axes[0, col_idx].set_yscale('symlog', linthresh=100)
+            axes[1, col_idx].set_yscale('symlog', linthresh=100)
+        # Apply y-axis scale if specified globally
+        elif yscale == 'symlog':
             axes[0, col_idx].set_yscale('symlog', linthresh=yscale_linthresh)
             axes[1, col_idx].set_yscale('symlog', linthresh=yscale_linthresh)
         elif yscale is not None:
