@@ -45,33 +45,38 @@ python -m experiment.run \
 
 ### Overview
 
-The BLIS Evolved adapter (`blis-evolved`) uses the `evolved` latency backend, which combines roofline basis functions with learned correction terms. Coefficients were optimised during iter16 training, achieving **60.19% MAPE** across 15 experiments on H100/FP16.
+The BLIS Evolved adapter (`blis-evolved`) uses the `evolved` latency backend, which combines roofline basis functions with learned correction terms. Coefficients were optimised during iter24 training, achieving **39.18% overall MAPE** (TTFT: 24.13%, E2E: 15.05%) across 15 experiments on H100/FP16.
 
 Unlike the blackbox adapter, the evolved adapter does not require per-model profiled coefficients in `defaults.yaml`. Instead, it passes static cross-model alpha and beta coefficients on the command line, making it applicable to any model.
 
 ### Architecture
 
-The evolved backend uses a **7-term physics-informed formula** with two sets of coefficients:
+The evolved backend uses a **10-coefficient physics-informed formula** with prefill/decode compute/memory split:
 
 **Alpha coefficients (3 values):**
 | Index | Name | Semantics |
 |-------|------|-----------|
-| `alpha_0` | QueueingTime scale | Scales the queueing delay component |
-| `alpha_1` | Prefill attention scale | Scales prefill attention latency |
-| `alpha_2` | Decode attention scale | Scales decode attention latency |
+| `α₀` | QueueingTime | Fixed API overhead (~15.6ms per request) |
+| `α₁` | PostDecodeFixedOverhead | Per-request completion overhead (~0.8ms) |
+| `α₂` | OutputTokenProcessingTime | Per-output-token streaming cost (µs/token) |
 
-**Beta coefficients (7 values):**
-| Index | Name | Semantics |
-|-------|------|-----------|
-| `beta_0` | Prefill roofline correction | Multiplicative correction to prefill roofline estimate |
-| `beta_1` | Prefill correction term 1 | Additive correction for prefill compute |
-| `beta_2` | Prefill correction term 2 | Additive correction for prefill memory |
-| `beta_3` | Decode roofline correction | Multiplicative correction to decode roofline estimate |
-| `beta_4` | Decode correction term 1 | Additive correction for decode compute |
-| `beta_5` | Decode correction term 2 | Additive correction for decode memory |
-| `beta_6` | Scheduling overhead | Fixed per-iteration scheduling cost |
+**Beta coefficients (10 values):**
+| Index | Name | Value (iter24) | Semantics |
+|-------|------|----------------|-----------|
+| `β₁ₐ` | Prefill compute correction | 0.139 | FlashAttention reduces effective FLOPs by 7.2× |
+| `β₂ₐ` | Decode compute correction | **0.0** | **Dropped — decode is memory-bound** |
+| `β₃` | Weight loading correction | 1.363 | 36% overhead above roofline weight bandwidth |
+| `β₄` | TP communication correction | 0.396 | TP cost partially absorbed into β₅·L |
+| `β₅` | Per-layer overhead | 62.3 µs/layer | Kernel launch + layer norm per layer |
+| `β₆` | Per-request scheduling | 2.8 µs/req | Per-request scheduling in batch |
+| `β₇` | Per-step constant | 169.4 µs/step | Fixed per-step dispatch overhead |
+| `β₈` | Per-MoE-layer overhead | 427.3 µs/MoE-layer | Router + permutation + EP communication |
+| `β₁ᵦ` | Prefill memory correction | **0.0** | **Dropped — prefill is compute-bound** |
+| `β₂ᵦ` | Decode memory correction | 1.263 | 26% overhead above roofline memory bandwidth |
 
-The coefficients are optimised via differential evolution (inner loop) during BLIS training iterations.
+**Key insight (iter24)**: Clean physical split discovered — prefill uses only compute (β₁ₐ), decode uses only memory (β₂ᵦ). The non-binding constraints (prefill memory, decode compute) are physically meaningful zeros.
+
+The coefficients are optimised via 2D grid search + golden section polish during BLIS training iterations.
 
 ### Supported Configurations
 
@@ -93,35 +98,44 @@ python -m experiment.run \
 
 ### Requirements
 
-- BLIS binary compiled with the `evolved` latency backend
+- BLIS binary compiled with the `evolved` latency backend supporting **10-beta mode (decode split)**
 - The binary must support the following CLI flags:
   - `--latency-model evolved`
-  - `--alpha-coeffs <comma-separated>`
-  - `--beta-coeffs <comma-separated>`
+  - `--alpha-coeffs <comma-separated>` (3 values)
+  - `--beta-coeffs <comma-separated>` (10 values)
+
+> **Note**: Iter24 requires BLIS with decode-split support. Earlier BLIS versions support only 7-9 betas and cannot use iter24 coefficients.
 
 ### How It Works
 
 1. **Eligibility**: `can_run()` returns `True` for all experiments (cross-model coefficients)
 2. **Workload Generation**: Converts experiment profile config into a BLIS `WorkloadSpec` YAML (inference_perf format with stages, token distributions, and shared-prefix settings)
-3. **Coefficient Injection**: Formats the 3 alpha and 7 beta iter16 coefficients as comma-separated strings with 6 decimal places and passes them via `--alpha-coeffs` and `--beta-coeffs`
+3. **Coefficient Injection**: Formats the 3 alpha and 10 beta iter24 coefficients as comma-separated strings with 6 decimal places and passes them via `--alpha-coeffs` and `--beta-coeffs`
 4. **Execution**: Runs the BLIS binary via subprocess with `--latency-model evolved` and all common flags (model, tp, hardware, KV offloading parameters, seed)
 5. **Parsing**: Reads the JSON results file and constructs a `SimulatorResult` with per-stage `StageMetrics` (E2E, TTFT, ITL latency distributions and throughput)
 
 ### Expected Accuracy
 
-Based on iter16 training results across 15 H100/FP16 experiments:
+Based on iter24 training results across 15 H100/FP16 experiments:
 
-- **Overall MAPE**: 60.19%
-- **Best case**: 8.2% MAPE (Qwen2.5-7B reasoning-lite)
-- **Worst case**: 129.9% MAPE (Scout reasoning-lite -- high variance workload)
-- **Median**: ~40% MAPE (typical cross-model generalization)
+- **Overall MAPE**: 39.18% (TTFT: 24.13%, E2E: 15.05%)
+- **Best case**: Yi general-lite (TTFT: 2.7%, E2E: 17.0%)
+- **Worst case**: Scout reasoning-lite (TTFT: 60.3%, E2E: 11.8% — long 934-token prefill)
+- **Typical**: 12 of 15 experiments below 30% TTFT MAPE
 
-> **Note**: The evolved backend is under active development. Accuracy is expected to improve in future training iterations as the coefficient search space expands.
+**Training journey** (iter16 → iter24):
+- Iter16: 60.19% MAPE (trained-roofline architecture)
+- Iter20: 40.58% MAPE (β₈·nMoELayers breakthrough — 19.5pt improvement)
+- Iter21: 39.86% MAPE (prefill compute-only split)
+- Iter24: 39.18% MAPE (decode memory-only split)
+
+Total improvement: **34.9% relative reduction** (60.19% → 39.18%)
 
 ### Troubleshooting
 
 | Error | Cause | Fix |
 |-------|-------|-----|
 | `BLIS evolved failed (rc=1)` | Binary does not support `--latency-model evolved` | Rebuild BLIS with evolved backend enabled |
-| `Error: invalid alpha-coeffs format` / `expected 3 alpha coefficients, got N` | Wrong number of alpha or beta coefficients, or malformed comma-separated values | Verify alpha has exactly 3 and beta has exactly 7 comma-separated float values |
+| `Error: invalid beta-coeffs format` / `expected 10 beta coefficients, got N` | Wrong number of beta coefficients (iter24 requires 10, not 7 or 9) | Update BLIS to version with decode-split support (10-beta mode) |
+| `Error: invalid alpha-coeffs format` / `expected 3 alpha coefficients, got N` | Wrong number of alpha coefficients or malformed comma-separated values | Verify alpha has exactly 3 comma-separated float values |
 | `--alpha-coeffs: unrecognized argument` | BLIS binary version too old | Update to a BLIS version that supports the evolved latency model CLI flags |
