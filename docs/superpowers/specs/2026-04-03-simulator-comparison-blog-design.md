@@ -50,7 +50,7 @@ All comparisons include only the following BLIS variants:
 - Opening line: Direct value prop about saving time/money with simulators
 - Embedded scenario: Data scientist deploying Mixtral-8x7B, needs to choose GPU count and batch size
 - Stakes: Five simulators with wildly different approaches, no obvious winner
-- Tease: We tested them head-to-head across 49 real experiments
+- Tease: We tested them head-to-head across 38 real experiments
 
 **Tone:** Conversational, sets up problem clearly
 
@@ -88,7 +88,7 @@ All comparisons include only the following BLIS variants:
 
 **Content:**
 - Test scope:
-  - 49 real-world experiments on production hardware using vLLM v0.15.1
+  - 38 real-world experiments on production hardware using vLLM v0.15.1
   - 7 models: Llama-3.1-8B, Qwen3-14B, CodeLlama-34B, Llama-2-70B (dense); Mixtral-8x7B, Mixtral-8x22B, Llama-4-Scout (MoE)
   - 4 workload types: general-purpose, code generation, roleplay, reasoning
   - 3 GPU types: H100, A100-80GB, L40S
@@ -199,15 +199,15 @@ All comparisons include only the following BLIS variants:
 **Content structure:**
 
 1. **Coverage by the Numbers**
-   - Vidur: 9 of 50 experiments (18%)
+   - Vidur: 4 of 38 experiments (11%)
      - Requires pre-profiled models, no MoE support, no L40S
-   - AIConfigurator: ~20 of 50 experiments (40%)
+   - AIConfigurator: ~19 of 38 experiments (50%)
      - H100 only, no MoE
-   - LLM-Optimizer: ~40 of 50 experiments (80%)
-     - No L40S, treats MoE as dense
-   - LLMServingSim: 1 experiment (2%)
+   - LLM-Optimizer: ~38 of 38 experiments (100%)
+     - Treats MoE as dense
+   - LLMServingSim: 1 experiment (3%)
      - Prohibitive runtime limits practical coverage
-   - BLIS variants: 49 experiments (100%)
+   - BLIS variants: 38 experiments (100%)
      - All models, all hardware, all configs
 
 2. **What Gets Excluded**
@@ -259,7 +259,7 @@ All comparisons include only the following BLIS variants:
 - IF your model is pre-profiled AND you're on H100/A100
 - High-fidelity vLLM scheduler emulation
 - Slower (121× speedup) but accurate for supported models
-- Coverage gap is the blocker (18% of experiments)
+- Coverage gap is the blocker (11% of experiments)
 
 **Avoid:**
 - LLMServingSim (hours per run)
@@ -304,7 +304,7 @@ All comparisons include only the following BLIS variants:
 - Limited to analytical roofline (no queueing dynamics)
 
 **Avoid:**
-- Simulators with hard coverage limits (Vidur: 18%, AIConfigurator: 40%)
+- Simulators with hard coverage limits (Vidur: 11%, AIConfigurator: 50%)
 - LLMServingSim (runtime prohibits exploration)
 
 ---
@@ -415,13 +415,13 @@ From `results_iter26/figure_captions.md` Table 1:
 
 ## Coverage Numbers Reference
 
-From `docs/simulator-limitations.md`:
+From `results_iter26/sim_comparison_captions.md`:
 
-- **Vidur:** ~9 of 49 experiments (18%)
-- **AIConfigurator:** ~20 of 49 experiments (40%)
-- **LLM-Optimizer:** ~40 of 49 experiments (82%)
-- **LLMServingSim:** 1 experiment (2%)
-- **BLIS variants:** 49 experiments (100%)
+- **Vidur:** 4 experiments (11%) - general-lite only, 2 models
+- **AIConfigurator:** 19 experiments (50%) - H100, dense models only
+- **LLM-Optimizer:** 38 experiments (100%) - broadest coverage, treats MoE as dense
+- **LLMServingSim:** 1 experiment (3%) - single cluster dataset experiment
+- **BLIS variants:** 38 experiments (100%)
 
 ---
 
