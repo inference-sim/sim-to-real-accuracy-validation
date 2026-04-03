@@ -129,7 +129,6 @@ class TestAdapterNames:
     def test_evolved_rejects_invalid_iteration(self):
         """Evolved adapter should reject invalid iteration values."""
         from experiment.adapters.blis_evolved import BLISEvolvedAdapter
-        import pytest
 
         with pytest.raises(ValueError, match="iteration must be 16, 24, 26, or 27"):
             BLISEvolvedAdapter("/tmp/blis", iteration=99)
