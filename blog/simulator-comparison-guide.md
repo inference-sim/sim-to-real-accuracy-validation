@@ -11,7 +11,7 @@
 2. [Meet the Contenders](#meet-the-contenders)
 3. [How We Tested](#how-we-tested)
 4. [Accuracy First: Who Gets It Right?](#accuracy-first-who-gets-it-right)
-5. [Speed vs. Accuracy: The Pareto Frontier](#speed-vs-accuracy)
+5. [Speed vs. Accuracy: The Pareto Frontier](#speed-vs-accuracy-the-pareto-frontier)
 6. [Coverage: Can It Even Run Your Workload?](#coverage-can-it-even-run-your-workload)
 7. [Which Simulator For Your Use Case](#which-simulator-for-your-use-case)
 8. [The Bottom Line](#the-bottom-line)
