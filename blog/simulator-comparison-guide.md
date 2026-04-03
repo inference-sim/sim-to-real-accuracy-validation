@@ -34,21 +34,19 @@ This guide breaks down which simulator to use for capacity planning, config sear
 <a name="meet-the-contenders"></a>
 ## Meet the Contenders
 
-Five simulators, three distinct approaches:
+Five tools. Five completely different bets on how to predict LLM inference performance.
 
-**Trace-driven simulators** replay actual request patterns through discrete-event simulation:
-- **Vidur** emulates vLLM's scheduler directly, requires pre-profiled models for each architecture
-- **LLMServingSim** uses fine-grained hardware simulation but takes hours per experiment
+**[Vidur](https://github.com/microsoft/vidur)** replays your exact workload through a discrete-event simulator, using profiled GPU kernel times to model every scheduling decision. High fidelity, but you need to profile each model first.
 
-**Analytical estimators** use roofline models and hardware specs for fast predictions:
-- **LLM-Optimizer** queries HuggingFace Hub on the fly, supports broad model coverage
-- **AIConfigurator** focuses on H100 hardware with dense model optimizations
+**[LLMServingSim](https://github.com/casys-kaist/LLMServingSim)** goes even deeper—simulating hardware down to the cycle level. The catch? Hours per experiment. Accuracy through exhaustive detail.
 
-**Hybrid approaches** combine analytical baselines with learned corrections:
-- **BLIS-Roofline** provides a pure analytical baseline
-- **BLIS-Evolved** adds physics-based TP All-Reduce modeling and learned correction terms on top of roofline
+**[LLM-Optimizer](https://github.com/bentoml/llm-optimizer)** takes the opposite approach: pure math. Query HuggingFace for your model config, run the roofline calculation, get your answer in 0.1 seconds. No scheduling simulation, just architectural fundamentals.
 
-The theory: trace-driven means high fidelity but slow execution. Analytical means lightning-fast but potentially less accurate. Hybrid tries to split the difference. But what does the data actually show?
+**[AIConfigurator](https://github.com/ai-dynamo/aiconfigurator)** is NVIDIA's analytical optimizer, tuned specifically for H100 hardware. Fast estimates for configuration search—if you're on their supported hardware.
+
+**[BLIS](https://github.com/inference-sim/inference-sim)** combines analytical roofline with discrete-event scheduling. It has multiple latency modes—for this article, we're focusing on two: Roofline (pure analytical baseline) and Evolved (adds physics-based modeling and learned corrections optimized on real data).
+
+Five different philosophies. One question: which approach actually delivers?
 
 <!-- Section 3: How We Tested -->
 <!-- Section 4: Accuracy First: Who Gets It Right? -->
