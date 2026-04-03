@@ -310,9 +310,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--blis-evolved-iteration",
         type=int,
-        default=24,
-        choices=[16, 24],
-        help="Which iteration coefficients to use for blis-evolved adapter (default: 24)",
+        default=26,
+        choices=[16, 24, 26],
+        help="Which iteration coefficients to use for blis-evolved adapter (default: 26)",
     )
     return parser.parse_args(argv)
 

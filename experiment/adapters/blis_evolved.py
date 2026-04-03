@@ -1,8 +1,8 @@
 """BLIS evolved adapter -- physics-informed latency with learned coefficients.
 
 Uses the ``evolved`` latency backend which combines roofline basis functions
-with learned correction terms. Supports both iter16 (7-beta) and iter24 (10-beta)
-coefficient sets.
+with learned correction terms. Supports iter16 (7-beta), iter24 (10-beta), and
+iter26 (10-beta with TP All-Reduce) coefficient sets.
 """
 
 from __future__ import annotations
@@ -35,8 +35,17 @@ class BLISEvolvedAdapter(BaseBLISAdapter):
     * Betas    : 10 (prefill/decode split + MoE term)
     * Key finding: Decode is memory-dominated (β₂ₐ=0), prefill is compute-only (β₁ᵦ=0)
 
-    Coefficient semantics (iter24)
-    -------------------------------
+    Iter26 training summary
+    -----------------------
+    * Dataset  : 15 experiments (H100 / FP16)
+    * Best MAPE: 37.42 % (overall loss: TTFT=24.34%, E2E=13.09%)
+    * Method   : Golden section search on β₄ (TP All-Reduce), then β₅
+    * Betas    : 10 (same as iter24, but β₄ activated for TP All-Reduce)
+    * Key change: β₄=0.410 (TP All-Reduce term), β₅=49.6 µs/layer (decreased from 62.3)
+    * Improvement: 39.18% → 37.42% (-1.76 points, -4.5% relative)
+
+    Coefficient semantics (iter24/iter26)
+    --------------------------------------
     Alpha (3 values):
         α₀ : QueueingTime — fixed API overhead (~15.6ms)
         α₁ : PostDecodeFixedOverhead — per-request completion (~0.8ms)
@@ -46,8 +55,8 @@ class BLISEvolvedAdapter(BaseBLISAdapter):
         β₁ₐ : Prefill compute correction (0.139 — FlashAttention reduces FLOPs 7.2×)
         β₂ₐ : Decode compute correction (0.0 — dropped, decode is memory-bound)
         β₃  : Weight loading correction (1.363 — 36% overhead above roofline)
-        β₄  : TP communication correction
-        β₅  : Per-layer overhead (62.3 µs/layer)
+        β₄  : TP communication correction (iter24: 0.396, iter26: 0.410 with All-Reduce)
+        β₅  : Per-layer overhead (iter24: 62.3 µs/layer, iter26: 49.6 µs/layer)
         β₆  : Per-request scheduling (2.8 µs/req)
         β₇  : Per-step constant (169.4 µs/step)
         β₈  : Per-MoE-layer overhead (427.3 µs/MoE-layer)
@@ -92,19 +101,39 @@ class BLISEvolvedAdapter(BaseBLISAdapter):
         1.2632,              # β₂ᵦ: Decode memory (26% overhead)
     ]
 
-    def __init__(self, blis_binary: str, iteration: int = 24):
+    # Iter26 optimised coefficients (10 betas with TP All-Reduce)
+    ITER26_ALPHA: list[float] = [
+        15561.959717498621,  # α₀: QueueingTime (~15.6ms fixed API overhead)
+        776.243476414174,    # α₁: PostDecodeFixedOverhead (~0.8ms per-request)
+        45.910232684500556,  # α₂: OutputTokenProcessingTime (µs/token streaming)
+    ]
+
+    ITER26_BETA: list[float] = [
+        0.138541,            # β₁ₐ: Prefill compute (7.2× FlashAttention discount)
+        0.0,                 # β₂ₐ: Decode compute (dropped — memory-bound)
+        1.363060401466404,   # β₃: Weight loading (36% overhead)
+        0.409533,            # β₄: TP All-Reduce (activated — above NVLink/HBM ratio 0.27)
+        49.626791,           # β₅: Per-layer overhead (µs/layer — decreased from 62.3)
+        2.7976795228174027,  # β₆: Per-request scheduling (µs/req)
+        169.36568163371626,  # β₇: Per-step constant (µs/step)
+        427.3,               # β₈: Per-MoE-layer overhead (µs/MoE-layer)
+        0.0,                 # β₁ᵦ: Prefill memory (dropped — compute-bound)
+        1.2632,              # β₂ᵦ: Decode memory (26% overhead)
+    ]
+
+    def __init__(self, blis_binary: str, iteration: int = 26):
         """Initialize BLIS evolved adapter.
 
         Parameters
         ----------
         blis_binary : str
             Path to BLIS binary
-        iteration : int, default=24
-            Which iteration coefficients to use (16 or 24)
+        iteration : int, default=26
+            Which iteration coefficients to use (16, 24, or 26)
         """
         super().__init__(blis_binary)
-        if iteration not in (16, 24):
-            raise ValueError(f"iteration must be 16 or 24, got {iteration}")
+        if iteration not in (16, 24, 26):
+            raise ValueError(f"iteration must be 16, 24, or 26, got {iteration}")
         self.iteration = iteration
 
     @staticmethod
@@ -125,9 +154,12 @@ class BLISEvolvedAdapter(BaseBLISAdapter):
         if self.iteration == 16:
             alpha = self.ITER16_ALPHA
             beta = self.ITER16_BETA
-        else:  # iteration == 24
+        elif self.iteration == 24:
             alpha = self.ITER24_ALPHA
             beta = self.ITER24_BETA
+        else:  # iteration == 26
+            alpha = self.ITER26_ALPHA
+            beta = self.ITER26_BETA
 
         with tempfile.TemporaryDirectory() as tmpdir:
             spec_path = os.path.join(tmpdir, "workload_spec.yaml")

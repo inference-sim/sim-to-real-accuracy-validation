@@ -45,7 +45,7 @@ python -m experiment.run \
 
 ### Overview
 
-The BLIS Evolved adapter (`blis-evolved`) uses the `evolved` latency backend, which combines roofline basis functions with learned correction terms. Coefficients were optimised during iter24 training, achieving **39.18% overall MAPE** (TTFT: 24.13%, E2E: 15.05%) across 15 experiments on H100/FP16.
+The BLIS Evolved adapter (`blis-evolved`) uses the `evolved` latency backend, which combines roofline basis functions with learned correction terms. The latest iteration (iter26) achieves **37.42% overall MAPE** (TTFT: 24.34%, E2E: 13.09%) across 15 experiments on H100/FP16, with physics-based TP All-Reduce modeling.
 
 Unlike the blackbox adapter, the evolved adapter does not require per-model profiled coefficients in `defaults.yaml`. Instead, it passes static cross-model alpha and beta coefficients on the command line, making it applicable to any model.
 
@@ -61,20 +61,22 @@ The evolved backend uses a **10-coefficient physics-informed formula** with pref
 | `α₂` | OutputTokenProcessingTime | Per-output-token streaming cost (µs/token) |
 
 **Beta coefficients (10 values):**
-| Index | Name | Value (iter24) | Semantics |
-|-------|------|----------------|-----------|
-| `β₁ₐ` | Prefill compute correction | 0.139 | FlashAttention reduces effective FLOPs by 7.2× |
-| `β₂ₐ` | Decode compute correction | **0.0** | **Dropped — decode is memory-bound** |
-| `β₃` | Weight loading correction | 1.363 | 36% overhead above roofline weight bandwidth |
-| `β₄` | TP communication correction | 0.396 | TP cost partially absorbed into β₅·L |
-| `β₅` | Per-layer overhead | 62.3 µs/layer | Kernel launch + layer norm per layer |
-| `β₆` | Per-request scheduling | 2.8 µs/req | Per-request scheduling in batch |
-| `β₇` | Per-step constant | 169.4 µs/step | Fixed per-step dispatch overhead |
-| `β₈` | Per-MoE-layer overhead | 427.3 µs/MoE-layer | Router + permutation + EP communication |
-| `β₁ᵦ` | Prefill memory correction | **0.0** | **Dropped — prefill is compute-bound** |
-| `β₂ᵦ` | Decode memory correction | 1.263 | 26% overhead above roofline memory bandwidth |
+| Index | Name | iter24 | iter26 | Semantics |
+|-------|------|--------|--------|-----------|
+| `β₁ₐ` | Prefill compute correction | 0.139 | 0.139 | FlashAttention reduces effective FLOPs by 7.2× |
+| `β₂ₐ` | Decode compute correction | **0.0** | **0.0** | **Dropped — decode is memory-bound** |
+| `β₃` | Weight loading correction | 1.363 | 1.363 | 36% overhead above roofline weight bandwidth |
+| `β₄` | TP communication correction | 0.396 | **0.410** | **TP All-Reduce activated (iter26)** |
+| `β₅` | Per-layer overhead | 62.3 µs | **49.6 µs** | **Decreased after TP term activation** |
+| `β₆` | Per-request scheduling | 2.8 µs/req | 2.8 µs/req | Per-request scheduling in batch |
+| `β₇` | Per-step constant | 169.4 µs/step | 169.4 µs/step | Fixed per-step dispatch overhead |
+| `β₈` | Per-MoE-layer overhead | 427.3 µs | 427.3 µs | Router + permutation + EP communication |
+| `β₁ᵦ` | Prefill memory correction | **0.0** | **0.0** | **Dropped — prefill is compute-bound** |
+| `β₂ᵦ` | Decode memory correction | 1.263 | 1.263 | 26% overhead above roofline memory bandwidth |
 
-**Key insight (iter24)**: Clean physical split discovered — prefill uses only compute (β₁ₐ), decode uses only memory (β₂ᵦ). The non-binding constraints (prefill memory, decode compute) are physically meaningful zeros.
+**Key insights:**
+- **Iter24**: Clean physical split — prefill uses only compute (β₁ₐ), decode uses only memory (β₂ᵦ)
+- **Iter26**: TP All-Reduce activated (β₄: 0.396 → 0.410), per-layer overhead decreased (β₅: 62.3 → 49.6 µs)
 
 The coefficients are optimised via 2D grid search + golden section polish during BLIS training iterations.
 
@@ -89,12 +91,20 @@ The coefficients are optimised via 2D grid search + golden section polish during
 ### Usage
 
 ```bash
-# Using iter24 coefficients (default, requires 10-beta BLIS)
+# Using iter26 coefficients (default, requires 10-beta BLIS with TP All-Reduce)
 python -m experiment.run \
   --data-dir vllm_data/ground_truth \
   --output-dir results \
   --adapters blis-evolved \
   --blis-binary /path/to/blis
+
+# Using iter24 coefficients (10-beta BLIS)
+python -m experiment.run \
+  --data-dir vllm_data/ground_truth \
+  --output-dir results \
+  --adapters blis-evolved \
+  --blis-binary /path/to/blis \
+  --blis-evolved-iteration 24
 
 # Using iter16 coefficients (7-beta BLIS)
 python -m experiment.run \
@@ -116,8 +126,9 @@ python -m experiment.run \
 **Iteration requirements:**
 - **Iter16** (7 betas): Requires BLIS that supports 7-beta mode (60.19% MAPE)
 - **Iter24** (10 betas): Requires BLIS with decode-split support (10-beta mode, 39.18% MAPE)
+- **Iter26** (10 betas): Requires BLIS with TP All-Reduce support (10-beta mode, 37.42% MAPE)
 
-> **Note**: Use `--blis-evolved-iteration` to select which coefficient set to use (default: 24)
+> **Note**: Use `--blis-evolved-iteration` to select which coefficient set to use (default: 26)
 
 ### How It Works
 
@@ -129,20 +140,22 @@ python -m experiment.run \
 
 ### Expected Accuracy
 
-Based on iter24 training results across 15 H100/FP16 experiments:
+Based on iter26 training results across 15 H100/FP16 experiments:
 
-- **Overall MAPE**: 39.18% (TTFT: 24.13%, E2E: 15.05%)
-- **Best case**: Yi general-lite (TTFT: 2.7%, E2E: 17.0%)
-- **Worst case**: Scout reasoning-lite (TTFT: 60.3%, E2E: 11.8% — long 934-token prefill)
+- **Overall MAPE**: 37.42% (TTFT: 24.34%, E2E: 13.09%)
+- **Improvement over iter24**: -1.76 points (-4.5% relative)
+- **Best case**: Yi general-lite (TTFT: 2.7%, E2E: ~14%)
+- **Worst case**: Scout reasoning-lite (TTFT: ~58%, E2E: ~11% — long 934-token prefill)
 - **Typical**: 12 of 15 experiments below 30% TTFT MAPE
 
-**Training journey** (iter16 → iter24):
+**Training journey** (iter16 → iter26):
 - Iter16: 60.19% MAPE (trained-roofline architecture)
 - Iter20: 40.58% MAPE (β₈·nMoELayers breakthrough — 19.5pt improvement)
 - Iter21: 39.86% MAPE (prefill compute-only split)
 - Iter24: 39.18% MAPE (decode memory-only split)
+- Iter26: 37.42% MAPE (TP All-Reduce activation)
 
-Total improvement: **34.9% relative reduction** (60.19% → 39.18%)
+Total improvement: **37.8% relative reduction** (60.19% → 37.42%)
 
 ### Troubleshooting
 
