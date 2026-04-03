@@ -490,7 +490,7 @@ class TestBLISSubprocessErrors:
         )
         adapter = BLISEvolvedAdapter("/tmp/blis")
         exp = _make_experiment()
-        with pytest.raises(RuntimeError, match="BLIS evolved failed.*evolved backend not compiled"):
+        with pytest.raises(RuntimeError, match="BLIS evolved iter26 failed.*evolved backend not compiled"):
             adapter.run(exp)
 
     @patch("experiment.adapters.blis_blackbox.subprocess.run")
@@ -567,7 +567,7 @@ class TestBLISEvolvedCLIArgs:
         from experiment.adapters.blis_evolved import BLISEvolvedAdapter
 
         mock_run.return_value = MagicMock()
-        adapter = BLISEvolvedAdapter("/usr/local/bin/blis")
+        adapter = BLISEvolvedAdapter("/usr/local/bin/blis", iteration=16)
         exp = _make_experiment()
 
         with patch.object(adapter, "_parse_blis_results") as mock_parse:
@@ -592,7 +592,7 @@ class TestBLISEvolvedCLIArgs:
         from experiment.adapters.blis_evolved import BLISEvolvedAdapter
 
         mock_run.return_value = MagicMock()
-        adapter = BLISEvolvedAdapter("/usr/local/bin/blis")
+        adapter = BLISEvolvedAdapter("/usr/local/bin/blis", iteration=16)
         exp = _make_experiment()
 
         with patch.object(adapter, "_parse_blis_results") as mock_parse:

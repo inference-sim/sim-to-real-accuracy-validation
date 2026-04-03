@@ -49,6 +49,7 @@ Five simulators, three distinct approaches:
 - **BLIS-Evolved** adds physics-based TP All-Reduce modeling and learned correction terms on top of roofline
 
 The theory: trace-driven means high fidelity but slow execution. Analytical means lightning-fast but potentially less accurate. Hybrid tries to split the difference. But what does the data actually show?
+
 <!-- Section 3: How We Tested -->
 <!-- Section 4: Accuracy First: Who Gets It Right? -->
 <!-- Section 5: Speed vs. Accuracy: The Pareto Frontier -->
