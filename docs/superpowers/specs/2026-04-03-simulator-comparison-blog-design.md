@@ -119,9 +119,10 @@ All comparisons include only the following BLIS variants:
 **Content structure:**
 
 1. **The Winners (BLIS-Evolved)**
-   - Overall: 37% MAPE (TTFT: 24%, E2E: 13%)
-   - Complex MoE + high parallelism: 15-16% error
-   - Example: Mixtral-8x7B with TP=4 achieved 15.84% E2E MAPE
+   - E2E Mean: 13.09% MAPE
+   - TTFT Mean: 24.34% MAPE
+   - Complex MoE + high parallelism: 15.84% E2E on Mixtral-8x7B TP4
+   - Example: Mixtral-8x7B with TP=4 achieved 15.84% E2E vs. 97.57% roofline vs. 91.42% LLMServingSim
 
 2. **The Middle Ground**
    - LLM-Optimizer, AIConfigurator: 40-60% MAPE depending on workload
@@ -169,8 +170,8 @@ All comparisons include only the following BLIS variants:
 
 2. **The Trade-off**
    - Ultra-fast analytical → sacrifice accuracy (40-60% MAPE)
-   - BLIS-Evolved → sweet spot: 667× speedup + 37% MAPE
-   - Trace-driven → slower but NOT always more accurate (LLMServingSim's 91% error proves fidelity ≠ accuracy)
+   - BLIS-Evolved → sweet spot: 667× speedup + 13% E2E MAPE
+   - Trace-driven → slower but NOT always more accurate (LLMServingSim's 91% E2E error proves fidelity ≠ accuracy)
 
 3. **The Pareto Insight**
    - Explain Pareto frontier concept simply: "dominated quadrant" = worse on BOTH dimensions
@@ -249,7 +250,8 @@ All comparisons include only the following BLIS variants:
 **What you need:** High accuracy for infrastructure sizing, contract negotiation, peak load planning. Errors cost real money.
 
 **Tier 1 Recommendation: BLIS-Evolved**
-- 37% overall MAPE, 13-16% on E2E latency
+- E2E Mean: 13.09% MAPE, TTFT Mean: 24.34% MAPE
+- Best on complex workloads: 15.84% E2E on Mixtral-8x7B TP4
 - Handles all model types (dense, MoE), all hardware (H100, A100, L40S)
 - 667× speedup = answers in ~2 seconds
 - Models vLLM serving parameters (batch size, memory, offload)
@@ -329,9 +331,9 @@ All comparisons include only the following BLIS variants:
 **Decision Matrix:**
 | Your Priority | Recommended Simulator | Why |
 |---------------|----------------------|-----|
-| Best Accuracy | BLIS-Evolved | 37% MAPE, 15-16% on MoE+TP |
+| Best Accuracy | BLIS-Evolved | E2E: 13% MAPE, TTFT: 24% MAPE, 15.84% on MoE+TP |
 | Fastest | LLM-Optimizer | 0.1s, 23,000× speedup |
-| Best Balance | BLIS-Evolved | 667× speedup + 37% MAPE + full coverage |
+| Best Balance | BLIS-Evolved | 667× speedup + 13% E2E MAPE + full coverage |
 | Research/Edge Cases | BLIS-Evolved | Handles MoE, multi-GPU, all hardware |
 | Config Exploration | LLM-Optimizer | Speed optimized for large sweeps |
 
@@ -386,15 +388,22 @@ All figures sourced from `results_iter26/figures/`:
 
 From `results_iter26/sim_comparison_captions.md`:
 
-- **BLIS-Evolved (iter26):** 37.42% overall (TTFT: 24.34%, E2E: 13.09%)
-  - Mixtral-8x7B TP4: 15.84% E2E Mean MAPE
-- **BLIS-Roofline:** 60.19% overall (baseline)
-  - Mixtral-8x7B TP4: 97.57% E2E Mean MAPE
-- **LLMServingSim:**
-  - Mixtral-8x7B TP4: 91.42% E2E Mean MAPE
-- **LLM-Optimizer:** 40-60% MAPE range (38 experiments)
-- **AIConfigurator:** 40-60% MAPE range (19 experiments)
-- **Vidur:** Limited data (4 experiments on general-lite only)
+**BLIS-Evolved (iter26):**
+- E2E Mean: 13.09% MAPE
+- TTFT Mean: 24.34% MAPE
+- Mixtral-8x7B TP4: 15.84% E2E Mean MAPE
+
+**BLIS-Roofline:**
+- Mixtral-8x7B TP4: 97.57% E2E Mean MAPE
+
+**LLMServingSim:**
+- Mixtral-8x7B TP4: 91.42% E2E Mean MAPE
+
+**LLM-Optimizer:** 40-60% MAPE range (38 experiments)
+
+**AIConfigurator:** 40-60% MAPE range (19 experiments)
+
+**Vidur:** Limited data (4 experiments on general-lite only)
 
 ---
 
@@ -440,7 +449,7 @@ From `results_iter26/sim_comparison_captions.md`:
 3. **Progressive disclosure**
    - Lead sentences can stand alone (executives skim)
    - Supporting details follow (practitioners read)
-   - Example: "BLIS-Evolved achieved 37% MAPE. [new sentence] On complex MoE workloads with TP=4, it hit 15-16% error—6× more accurate than the baseline roofline."
+   - Example: "BLIS-Evolved achieved 13% MAPE on E2E latency. [new sentence] On complex MoE workloads with TP=4, it hit 15.84% error—6× more accurate than the baseline roofline."
 
 4. **Punchy transitions**
    - "But accuracy isn't everything..."
