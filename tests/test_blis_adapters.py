@@ -119,6 +119,21 @@ class TestAdapterNames:
         adapter = BLISEvolvedAdapter("/tmp/blis")
         assert adapter.name == "blis-evolved"
 
+    def test_evolved_name_iter27(self):
+        """Iter27 adapter should still report name as blis-evolved."""
+        from experiment.adapters.blis_evolved import BLISEvolvedAdapter
+        adapter = BLISEvolvedAdapter("/tmp/blis", iteration=27)
+        assert adapter.name == "blis-evolved"
+        assert adapter.iteration == 27
+
+    def test_evolved_rejects_invalid_iteration(self):
+        """Evolved adapter should reject invalid iteration values."""
+        from experiment.adapters.blis_evolved import BLISEvolvedAdapter
+        import pytest
+
+        with pytest.raises(ValueError, match="iteration must be 16, 24, 26, or 27"):
+            BLISEvolvedAdapter("/tmp/blis", iteration=99)
+
 
 # ---------------------------------------------------------------------------
 # Tests: can_run()
