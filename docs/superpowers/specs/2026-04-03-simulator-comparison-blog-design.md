@@ -50,7 +50,7 @@ All comparisons include only the following BLIS variants:
 - Opening line: Direct value prop about saving time/money with simulators
 - Embedded scenario: Data scientist deploying Mixtral-8x7B, needs to choose GPU count and batch size
 - Stakes: Five simulators with wildly different approaches, no obvious winner
-- Tease: We tested them head-to-head across 50+ real experiments
+- Tease: We tested them head-to-head across 49 real experiments
 
 **Tone:** Conversational, sets up problem clearly
 
@@ -88,7 +88,7 @@ All comparisons include only the following BLIS variants:
 
 **Content:**
 - Test scope:
-  - 50+ real-world experiments on production hardware
+  - 49 real-world experiments on production hardware using vLLM v0.15.1
   - 7 models: Llama-3.1-8B, Qwen3-14B, CodeLlama-34B, Llama-2-70B (dense); Mixtral-8x7B, Mixtral-8x22B, Llama-4-Scout (MoE)
   - 4 workload types: general-purpose, code generation, roleplay, reasoning
   - 3 GPU types: H100, A100-80GB, L40S
@@ -207,7 +207,7 @@ All comparisons include only the following BLIS variants:
      - No L40S, treats MoE as dense
    - LLMServingSim: 1 experiment (2%)
      - Prohibitive runtime limits practical coverage
-   - BLIS variants: 50+ experiments (100%)
+   - BLIS variants: 49 experiments (100%)
      - All models, all hardware, all configs
 
 2. **What Gets Excluded**
@@ -421,7 +421,7 @@ From `docs/simulator-limitations.md`:
 - **AIConfigurator:** ~20 of 49 experiments (40%)
 - **LLM-Optimizer:** ~40 of 49 experiments (82%)
 - **LLMServingSim:** 1 experiment (2%)
-- **BLIS variants:** 50+ experiments (100%)
+- **BLIS variants:** 49 experiments (100%)
 
 ---
 
@@ -478,7 +478,7 @@ The article succeeds if:
 3. **Both audiences trust the evaluation:**
    - Unbiased presentation (all simulators introduced equally)
    - Data-driven (specific numbers, not claims)
-   - Credible methodology (50+ real experiments, production hardware)
+   - Credible methodology (49 real experiments on vLLM v0.15.1, production hardware)
 
 4. **Article is engaging:**
    - Not boring (punchy writing, surprising findings, concrete scenarios)
