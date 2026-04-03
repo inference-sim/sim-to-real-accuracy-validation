@@ -20,3 +20,4 @@ vidur
 docs/technical-notes/
 .worktrees/
 LLMServingSim/
+.DS_Store
