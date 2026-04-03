@@ -95,24 +95,24 @@ class TestParseArgs:
 
 class TestBuildAdapterRegistry:
     def test_all_adapters_present(self):
-        registry = build_adapter_registry("/bin/blis", "/opt/vidur")
+        registry = build_adapter_registry("/bin/blis", "/opt/vidur", "LLMServingSim")
         assert set(registry.keys()) == set(ALL_ADAPTER_NAMES)
 
     def test_adapter_names_match(self):
-        registry = build_adapter_registry("/bin/blis", "/opt/vidur")
+        registry = build_adapter_registry("/bin/blis", "/opt/vidur", "LLMServingSim")
         for name, adapter in registry.items():
             assert adapter.name == name
 
     def test_only_requested_adapters_instantiated(self):
         """I5: Only instantiate requested adapters."""
         registry = build_adapter_registry(
-            "/bin/blis", "/opt/vidur", adapter_names=["vidur"]
+            "/bin/blis", "/opt/vidur", "LLMServingSim", adapter_names=["vidur"]
         )
         assert set(registry.keys()) == {"vidur"}
 
     def test_unknown_adapter_name_ignored(self):
         registry = build_adapter_registry(
-            "/bin/blis", "/opt/vidur", adapter_names=["nonexistent"]
+            "/bin/blis", "/opt/vidur", "LLMServingSim", adapter_names=["nonexistent"]
         )
         assert len(registry) == 0
 
@@ -151,6 +151,7 @@ class TestRunPipeline:
             data_dir="/data",
             blis_binary="/bin/blis",
             vidur_dir="/opt/vidur",
+            llmservingsim_dir="LLMServingSim",
             output_dir="/out",
             adapter_names=["mock-sim"],
         )
@@ -183,6 +184,7 @@ class TestRunPipeline:
             data_dir="/data",
             blis_binary="/bin/blis",
             vidur_dir="/opt/vidur",
+            llmservingsim_dir="LLMServingSim",
             output_dir="/out",
             adapter_names=["mock-sim"],
         )
@@ -214,6 +216,7 @@ class TestRunPipeline:
             data_dir="/data",
             blis_binary="/bin/blis",
             vidur_dir="/opt/vidur",
+            llmservingsim_dir="LLMServingSim",
             output_dir="/out",
             adapter_names=["failing-sim"],
         )
@@ -242,6 +245,7 @@ class TestRunPipeline:
             data_dir="/data",
             blis_binary="/bin/blis",
             vidur_dir="/opt/vidur",
+            llmservingsim_dir="LLMServingSim",
             output_dir="/out",
             adapter_names=[],
         )
@@ -281,8 +285,8 @@ class TestRunPipeline:
 
         _, runtime_records = run_pipeline(
             data_dir="/data", blis_binary="/bin/blis",
-            vidur_dir="/opt/vidur", output_dir="/out",
-            adapter_names=["mock-sim"],
+            vidur_dir="/opt/vidur", llmservingsim_dir="LLMServingSim",
+            output_dir="/out", adapter_names=["mock-sim"],
         )
 
         assert len(runtime_records) == 1
@@ -303,6 +307,7 @@ class TestRunPipeline:
             data_dir="/empty",
             blis_binary="/bin/blis",
             vidur_dir="/opt/vidur",
+            llmservingsim_dir="LLMServingSim",
             output_dir="/out",
         )
 
@@ -341,6 +346,7 @@ class TestRunPipeline:
             data_dir="/data",
             blis_binary="/bin/blis",
             vidur_dir="/opt/vidur",
+            llmservingsim_dir="LLMServingSim",
             output_dir="/out",
             adapter_names=[],
             no_dp_scaling=False,
@@ -395,6 +401,7 @@ class TestRunPipeline:
             data_dir="/data",
             blis_binary="/bin/blis",
             vidur_dir="/opt/vidur",
+            llmservingsim_dir="LLMServingSim",
             output_dir="/out",
             adapter_names=["mock-sim"],
             no_dp_scaling=True,

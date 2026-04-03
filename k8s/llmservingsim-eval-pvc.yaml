@@ -1,0 +1,12 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: llmservingsim-eval-pvc
+  namespace: diya
+spec:
+  accessModes:
+    - ReadWriteMany
+  resources:
+    requests:
+      storage: 75Gi
+  storageClassName: ibm-spectrum-scale-fileset

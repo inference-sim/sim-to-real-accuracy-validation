@@ -76,12 +76,12 @@ def _make_runtime_row(
 
 
 def _make_full_model_df():
-    """DataFrame with all 7 models, 2 simulators, 6 metrics on H100 defaults."""
+    """DataFrame with all 7 models, 3 simulators, 6 metrics on H100 defaults."""
     from experiment.figures import MODEL_ORDER
 
     rows = []
     for i, model in enumerate(MODEL_ORDER):
-        for sim in ["blis-trained-roofline", "vidur"]:
+        for sim in ["blis-roofline", "blis-evolved", "vidur"]:
             for metric in _METRICS:
                 rows.append(_make_error_row(
                     simulator=sim, model=model, metric_name=metric,
@@ -132,7 +132,7 @@ def _sample_metadata_csv(tmp_path: Path) -> str:
 class TestConstants:
     def test_simulator_order_length(self):
         from experiment.figures import SIMULATOR_ORDER
-        assert len(SIMULATOR_ORDER) == 5
+        assert len(SIMULATOR_ORDER) == 7
 
     def test_excluded_not_in_order(self):
         from experiment.figures import SIMULATOR_ORDER, EXCLUDED_SIMULATORS

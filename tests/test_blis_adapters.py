@@ -114,6 +114,11 @@ class TestAdapterNames:
         adapter = BLISTrainedRooflineAdapter("/tmp/blis")
         assert adapter.name == "blis-trained-roofline"
 
+    def test_evolved_name(self):
+        from experiment.adapters.blis_evolved import BLISEvolvedAdapter
+        adapter = BLISEvolvedAdapter("/tmp/blis")
+        assert adapter.name == "blis-evolved"
+
 
 # ---------------------------------------------------------------------------
 # Tests: can_run()
@@ -214,6 +219,16 @@ class TestCrossModelCanRun:
 class TestTrainedRooflineCanRun:
     def test_always_true(self):
         adapter = BLISTrainedRooflineAdapter("/tmp/blis")
+        exp = _make_experiment()
+        assert adapter.can_run(exp) is True
+
+
+class TestEvolvedCanRun:
+    def test_always_true(self):
+        """Evolved adapter works for any model (iter16 coefficients are cross-model)."""
+        from experiment.adapters.blis_evolved import BLISEvolvedAdapter
+
+        adapter = BLISEvolvedAdapter("/tmp/blis")
         exp = _make_experiment()
         assert adapter.can_run(exp) is True
 
@@ -452,6 +467,18 @@ class TestBLISSubprocessErrors:
         with pytest.raises(RuntimeError, match="BLIS trained-roofline failed.*coefficients missing"):
             adapter.run(exp)
 
+    @patch("experiment.adapters.blis_evolved.subprocess.run")
+    def test_evolved_wraps_subprocess_error(self, mock_run):
+        from experiment.adapters.blis_evolved import BLISEvolvedAdapter
+
+        mock_run.side_effect = subprocess.CalledProcessError(
+            returncode=1, cmd=["blis"], stderr=b"evolved backend not compiled"
+        )
+        adapter = BLISEvolvedAdapter("/tmp/blis")
+        exp = _make_experiment()
+        with pytest.raises(RuntimeError, match="BLIS evolved failed.*evolved backend not compiled"):
+            adapter.run(exp)
+
     @patch("experiment.adapters.blis_blackbox.subprocess.run")
     def test_error_includes_model_name(self, mock_run):
         mock_run.side_effect = subprocess.CalledProcessError(
@@ -461,3 +488,111 @@ class TestBLISSubprocessErrors:
         exp = _make_experiment(model="mistral/Mistral-7B")
         with pytest.raises(RuntimeError, match="mistral/Mistral-7B"):
             adapter.run(exp)
+
+
+# ---------------------------------------------------------------------------
+# Tests: BLISEvolvedAdapter coefficient formatting
+# ---------------------------------------------------------------------------
+
+
+class TestBLISEvolvedCoefficients:
+    def test_format_coeffs_three_values(self):
+        """Alpha coefficients (3 values) should format with 6 decimals."""
+        from experiment.adapters.blis_evolved import BLISEvolvedAdapter
+
+        adapter = BLISEvolvedAdapter("/tmp/blis")
+        result = adapter._format_coeffs([15569.495449697066, 815.0556502348827, 45.705744318725586])
+        assert result == "15569.495450,815.055650,45.705744"
+
+    def test_format_coeffs_seven_values(self):
+        """Beta coefficients (7 values) should format with 6 decimals."""
+        from experiment.adapters.blis_evolved import BLISEvolvedAdapter
+
+        adapter = BLISEvolvedAdapter("/tmp/blis")
+        result = adapter._format_coeffs([
+            0.20081681581824434, 1.6173961192042448, 1.3603417361920076,
+            0.39579536655780084, 62.19421689224744, 2.937563498958273, 169.37780505091155
+        ])
+        assert result == "0.200817,1.617396,1.360342,0.395795,62.194217,2.937563,169.377805"
+
+    def test_format_coeffs_no_trailing_zeros(self):
+        """Formatted coefficients should maintain 6 decimal places."""
+        from experiment.adapters.blis_evolved import BLISEvolvedAdapter
+
+        adapter = BLISEvolvedAdapter("/tmp/blis")
+        result = adapter._format_coeffs([1.0, 2.5, 3.123456789])
+        assert result == "1.000000,2.500000,3.123457"
+
+
+# ---------------------------------------------------------------------------
+# Tests: BLISEvolvedAdapter CLI argument construction
+# ---------------------------------------------------------------------------
+
+
+class TestBLISEvolvedCLIArgs:
+    @patch("experiment.adapters.blis_evolved.subprocess.run")
+    def test_evolved_latency_model_flag(self, mock_run):
+        """Evolved adapter should pass --latency-model evolved."""
+        from experiment.adapters.blis_evolved import BLISEvolvedAdapter
+
+        mock_run.return_value = MagicMock()
+        adapter = BLISEvolvedAdapter("/usr/local/bin/blis")
+        exp = _make_experiment()
+
+        with patch.object(adapter, "_parse_blis_results") as mock_parse:
+            mock_parse.return_value = MagicMock()
+            adapter.run(exp)
+
+        called_args = mock_run.call_args[0][0]
+        idx = called_args.index("--latency-model")
+        assert called_args[idx + 1] == "evolved"
+
+    @patch("experiment.adapters.blis_evolved.subprocess.run")
+    def test_evolved_alpha_coeffs_flag(self, mock_run):
+        """Evolved adapter should pass --alpha-coeffs with iter16 values."""
+        from experiment.adapters.blis_evolved import BLISEvolvedAdapter
+
+        mock_run.return_value = MagicMock()
+        adapter = BLISEvolvedAdapter("/usr/local/bin/blis")
+        exp = _make_experiment()
+
+        with patch.object(adapter, "_parse_blis_results") as mock_parse:
+            mock_parse.return_value = MagicMock()
+            adapter.run(exp)
+
+        called_args = mock_run.call_args[0][0]
+        idx = called_args.index("--alpha-coeffs")
+        alpha_str = called_args[idx + 1]
+
+        # Should be 3 comma-separated values
+        assert alpha_str.count(",") == 2
+        parts = alpha_str.split(",")
+        assert len(parts) == 3
+
+        # Verify first alpha coefficient (QueueingTime ~ 15569.5)
+        assert parts[0].startswith("15569.")
+
+    @patch("experiment.adapters.blis_evolved.subprocess.run")
+    def test_evolved_beta_coeffs_flag(self, mock_run):
+        """Evolved adapter should pass --beta-coeffs with iter16 values."""
+        from experiment.adapters.blis_evolved import BLISEvolvedAdapter
+
+        mock_run.return_value = MagicMock()
+        adapter = BLISEvolvedAdapter("/usr/local/bin/blis")
+        exp = _make_experiment()
+
+        with patch.object(adapter, "_parse_blis_results") as mock_parse:
+            mock_parse.return_value = MagicMock()
+            adapter.run(exp)
+
+        called_args = mock_run.call_args[0][0]
+        idx = called_args.index("--beta-coeffs")
+        beta_str = called_args[idx + 1]
+
+        # Should be 7 comma-separated values
+        assert beta_str.count(",") == 6
+        parts = beta_str.split(",")
+        assert len(parts) == 7
+
+        # Verify first beta coefficient (prefill roofline ~ 0.2)
+        assert parts[0].startswith("0.2")

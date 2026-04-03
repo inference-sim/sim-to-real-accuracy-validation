@@ -7,6 +7,8 @@ Spec: docs/superpowers/specs/2026-03-16-publication-figures-design.md
 from __future__ import annotations
 
 import argparse
+import glob
+import json
 import logging
 import math
 import os
@@ -16,6 +18,7 @@ from pathlib import Path
 
 import matplotlib
 import matplotlib.pyplot as plt
+import matplotlib.ticker as ticker
 import numpy as np
 import pandas as pd
 
@@ -25,46 +28,56 @@ logger = logging.getLogger(__name__)
 # Constants
 # ---------------------------------------------------------------------------
 
-EXCLUDED_SIMULATORS = frozenset({"blis-blackbox", "blis-crossmodel", "vidur"})
+EXCLUDED_SIMULATORS = frozenset({"blis-blackbox", "blis-crossmodel"})
 
 SIMULATOR_ORDER = [
     "blis-trained-roofline",
+    "blis-evolved",
     "blis-roofline",
     "vidur",
     "llm-optimizer-estimate",
     "aiconfigurator-estimate",
+    "llmservingsim",
 ]
 
 SIMULATOR_DISPLAY_NAMES = {
     "blis-trained-roofline": "BLIS-Trained",
+    "blis-evolved": "BLIS-Evolved",
     "blis-roofline": "BLIS-Roofline",
     "vidur": "Vidur",
     "llm-optimizer-estimate": "LLM-Optimizer",
     "aiconfigurator-estimate": "AIConfigurator",
+    "llmservingsim": "LLMServingSim",
 }
 
 COLOR_PALETTE = {
     "blis-trained-roofline": "#4C72B0",
+    "blis-evolved": "#D946EF",
     "blis-roofline": "#64B5F6",
     "vidur": "#DD8452",
     "llm-optimizer-estimate": "#55A868",
     "aiconfigurator-estimate": "#8172B3",
+    "llmservingsim": "#C44E52",
 }
 
 HATCH_PATTERNS = {
     "blis-trained-roofline": "",
+    "blis-evolved": "||",
     "blis-roofline": "//",
     "vidur": "\\\\",
     "llm-optimizer-estimate": "xx",
     "aiconfigurator-estimate": "..",
+    "llmservingsim": "++",
 }
 
 MARKER_STYLES = {
     "blis-trained-roofline": "o",
+    "blis-evolved": "*",
     "blis-roofline": "s",
     "vidur": "D",
     "llm-optimizer-estimate": "^",
     "aiconfigurator-estimate": "v",
+    "llmservingsim": "P",
 }
 
 MODEL_ORDER = [
@@ -103,7 +116,7 @@ METRICS_GRID = [
 # USENIX/ACM double-column = 7in, single-column = 3.33in
 FIGURE_SIZES = {
     "wide": (7.0, 3.2),       # 3-panel figures (Figs 1, 2, 3, 4)
-    "pareto": (3.33, 3.33),   # single-column square (Fig 5)
+    "pareto": (4.5, 4.5),     # single-column square (Fig 5) - increased for better label spacing
 }
 
 RC_PARAMS = {
@@ -296,6 +309,8 @@ def _grouped_bar(
     aggregate: bool = False,
     xlabel_rotation: float = 35,
     metrics: list[tuple[str, str]] | None = None,
+    yscale: str | None = None,
+    yscale_linthresh: float = 100,
 ) -> plt.Figure | None:
     """Grouped bar chart: x = groups, bars = simulators, y = MAPE.
 
@@ -305,6 +320,10 @@ def _grouped_bar(
         If True, take the median MAPE per (group, simulator, metric).
     metrics : list of (key, label) pairs
         Which metrics to plot as subplots. Defaults to E2E Mean only.
+    yscale : str, optional
+        Scale for y-axis ('linear', 'log', 'symlog'). If None, uses linear.
+    yscale_linthresh : float, default=100
+        Linear threshold for symlog scale (values below this use linear scale).
     """
     _apply_rc_params()
     if metrics is None:
@@ -378,9 +397,26 @@ def _grouped_bar(
     # Independent y-axis per subplot with 20% headroom
     pct = r"\%" if matplotlib.rcParams.get("text.usetex") else "%"
     for col_idx, ax in enumerate(axes):
+        metric_key, _ = metrics[col_idx]
         y_top = col_maxes[col_idx] * 1.20 if col_maxes[col_idx] > 0 else 1.0
         ax.set_ylim(bottom=0, top=y_top)
         ax.set_ylabel(f"MAPE ({pct})")
+
+        # Disable scientific notation and offset on y-axis
+        formatter = ticker.ScalarFormatter(useOffset=False, useMathText=False)
+        formatter.set_scientific(False)
+        formatter.set_useOffset(False)
+        ax.yaxis.set_major_formatter(formatter)
+        ax.yaxis.offsetText.set_visible(False)
+
+        # Apply symlog scale to TTFT plots only if bars are too tall
+        if metric_key == "ttft_mean" and y_top > 200:
+            ax.set_yscale('symlog', linthresh=100)
+        # Apply y-axis scale if specified globally
+        elif yscale == 'symlog':
+            ax.set_yscale('symlog', linthresh=yscale_linthresh)
+        elif yscale is not None:
+            ax.set_yscale(yscale)
 
     fig.suptitle(title, fontsize=11, fontweight="bold")
 
@@ -708,11 +744,470 @@ def plot_aggregate_comparison_trace(
     return fig
 
 
+def plot_aggregate_comparison_llmservingsim(
+    df: pd.DataFrame,
+    output_path: str | None = None,
+) -> plt.Figure | None:
+    """Figure 0c: BLIS-Roofline vs LLM-Optimizer vs LLMServingSim for MoE.
+
+    Compares blis-roofline, llm-optimizer-estimate, and llmservingsim on the
+    single Mixtral-8x7B tp4 experiment where all three simulators have data.
+    Shows MAPE for E2E, TTFT, and ITL.
+
+    Note: LLMServingSim only has complete pre-profiled models for a limited
+    set of configurations. This figure demonstrates the comparison for the
+    single available MoE experiment.
+    """
+    _apply_rc_params()
+
+    # Find experiments with data from all three simulators
+    target_sims = {"blis-roofline", "llm-optimizer-estimate", "llmservingsim"}
+    exp_sims = df.groupby("experiment_folder")["simulator"].apply(set)
+    common_exps = exp_sims[exp_sims.apply(lambda s: target_sims.issubset(s))].index
+
+    if len(common_exps) == 0:
+        warnings.warn("Figure 0c: no experiments with data from all three simulators")
+        return None
+
+    df_filtered = df[df["experiment_folder"].isin(common_exps)]
+
+    # Filter to Mixtral-8x7B, general workload, and tp=4
+    df_filtered = df_filtered[
+        (df_filtered["model"] == "mistralai/Mixtral-8x7B-v0.1") &
+        (df_filtered["workload"] == "general") &
+        (df_filtered["tp"] == 4)
+    ]
+
+    if df_filtered.empty:
+        warnings.warn("Figure 0c: no Mixtral-8x7B general tp=4 experiments")
+        return None
+
+    common_exps = df_filtered["experiment_folder"].unique()
+
+    # Extract TP for subtitle
+    tp_val = 4  # We know it's tp=4 from the filter above
+
+    # Prepare data for each metric (all three simulators report all three)
+    metrics_data = []
+
+    # E2E: all three simulators
+    e2e_df = df_filtered[
+        (df_filtered["metric_name"] == "e2e_mean") &
+        (df_filtered["simulator"].isin(list(target_sims)))
+    ]
+    if not e2e_df.empty:
+        e2e_agg = e2e_df.groupby("simulator")["mape"].median()
+        metrics_data.append(("E2E Mean", e2e_agg, list(target_sims)))
+
+    # TTFT: all three simulators
+    ttft_df = df_filtered[
+        (df_filtered["metric_name"] == "ttft_mean") &
+        (df_filtered["simulator"].isin(list(target_sims)))
+    ]
+    if not ttft_df.empty:
+        ttft_agg = ttft_df.groupby("simulator")["mape"].median()
+        metrics_data.append(("TTFT Mean", ttft_agg, list(target_sims)))
+
+    # ITL: all three simulators
+    itl_df = df_filtered[
+        (df_filtered["metric_name"] == "itl_mean") &
+        (df_filtered["simulator"].isin(list(target_sims)))
+    ]
+    if not itl_df.empty:
+        itl_agg = itl_df.groupby("simulator")["mape"].median()
+        metrics_data.append(("ITL Mean", itl_agg, list(target_sims)))
+
+    if not metrics_data:
+        warnings.warn("Figure 0c: no metrics data after aggregation")
+        return None
+
+    # Create figure
+    n_metrics = len(metrics_data)
+    fig, axes = plt.subplots(1, n_metrics, figsize=(10, 4))
+    if n_metrics == 1:
+        axes = [axes]
+
+    bar_width = 0.6
+    labeled_sims = set()  # Track which simulators have been labeled
+
+    for col_idx, (metric_label, agg_data, sims_for_metric) in enumerate(metrics_data):
+        ax = axes[col_idx]
+
+        # Sort simulators by SIMULATOR_ORDER
+        sims_ordered = [s for s in SIMULATOR_ORDER if s in sims_for_metric and s in agg_data.index]
+
+        x = np.arange(len(sims_ordered))
+        heights = [agg_data[sim] for sim in sims_ordered]
+        colors = [COLOR_PALETTE[sim] for sim in sims_ordered]
+        hatches = [HATCH_PATTERNS.get(sim, "") for sim in sims_ordered]
+
+        for i, (pos, height, color, hatch) in enumerate(zip(x, heights, colors, hatches)):
+            sim = sims_ordered[i]
+            # Add label only the first time this simulator is plotted
+            label = SIMULATOR_DISPLAY_NAMES[sim] if sim not in labeled_sims else ""
+            if sim not in labeled_sims:
+                labeled_sims.add(sim)
+
+            ax.bar(
+                pos, height, bar_width,
+                color=color, hatch=hatch,
+                edgecolor="black", linewidth=0.5,
+                label=label,
+            )
+
+        ax.set_xticks([])
+        ax.set_xlim(-0.5, len(sims_ordered) - 0.5)
+
+        y_top = max(heights) * 1.20 if heights else 1.0
+        ax.set_ylim(bottom=0, top=y_top)
+
+        pct = r"\%" if matplotlib.rcParams.get("text.usetex") else "%"
+        ax.set_ylabel(f"MAPE ({pct})")
+        ax.set_title(metric_label, fontsize=10, fontweight="bold")
+
+    # Title with subtitle
+    fig.suptitle(
+        f"BLIS-Roofline vs LLM-Optimizer vs LLMServingSim (n={len(common_exps)}) ↓ for MoE",
+        fontsize=11, fontweight="bold"
+    )
+    fig.text(
+        0.5, 0.91, f"Mixtral-8x7B, H100, general, TP={tp_val}",
+        ha="center", fontsize=9, style="italic"
+    )
+
+    # Collect legend from all axes
+    all_handles, all_labels = [], []
+    for ax in axes:
+        h, l = ax.get_legend_handles_labels()
+        for handle, label in zip(h, l):
+            if label and label not in all_labels:  # Deduplicate by label
+                all_handles.append(handle)
+                all_labels.append(label)
+
+    if all_handles:
+        fig.legend(
+            all_handles, all_labels, loc="upper center",
+            bbox_to_anchor=(0.5, -0.01), ncol=len(all_handles),
+            frameon=False, handlelength=1.5, columnspacing=1.0,
+        )
+
+    fig.tight_layout()
+    fig.subplots_adjust(top=0.86)
+
+    if output_path:
+        _save_figure(fig, output_path)
+    return fig
+
+
+def _plot_aggregate_panel(
+    ax: plt.Axes,
+    df: pd.DataFrame,
+    sim1: str | list[str],
+    sim2: str,
+    metric_key: str,
+    metric_label: str,
+) -> float:
+    """Plot aggregate comparison bars for a single metric on the given axis.
+
+    Returns the maximum bar height for y-axis scaling.
+    """
+    # Handle sim1 as list or string
+    sim1_list = sim1 if isinstance(sim1, list) else [sim1]
+    all_sims = sim1_list + [sim2]
+
+    # Filter to the simulators and this metric
+    df_filtered = df[
+        (df["simulator"].isin(all_sims)) &
+        (df["metric_name"] == metric_key)
+    ]
+
+    if df_filtered.empty:
+        return 0.0
+
+    # Compute median MAPE per simulator
+    agg_data = df_filtered.groupby("simulator")["mape"].median()
+
+    # Order simulators according to SIMULATOR_ORDER
+    sims_ordered = [s for s in SIMULATOR_ORDER if s in all_sims and s in agg_data.index]
+    if not sims_ordered:
+        return 0.0
+
+    x = np.arange(len(sims_ordered))
+    heights = [agg_data[sim] for sim in sims_ordered]
+    colors = [COLOR_PALETTE[sim] for sim in sims_ordered]
+    hatches = [HATCH_PATTERNS.get(sim, "") for sim in sims_ordered]
+
+    bar_width = 0.6
+
+    for i, (pos, height, color, hatch, sim) in enumerate(
+        zip(x, heights, colors, hatches, sims_ordered)
+    ):
+        ax.bar(
+            pos, height, bar_width,
+            color=color, hatch=hatch,
+            edgecolor="black", linewidth=0.5,
+            label=SIMULATOR_DISPLAY_NAMES[sim],
+        )
+
+    ax.set_xticks([])
+    ax.set_xlim(-0.5, len(sims_ordered) - 0.5)
+    ax.set_title(metric_label, fontsize=10, fontweight="bold")
+
+    return max(heights) if heights else 0.0
+
+
+def _plot_model_breakdown_panel(
+    ax: plt.Axes,
+    df: pd.DataFrame,
+    sim1: str | list[str],
+    sim2: str,
+    metric_key: str,
+    metric_label: str,
+) -> float:
+    """Plot model-wise grouped bars for a single metric on the given axis.
+
+    Returns the maximum bar height for y-axis scaling.
+    """
+    # Handle sim1 as list or string
+    sim1_list = sim1 if isinstance(sim1, list) else [sim1]
+    all_sims = sim1_list + [sim2]
+
+    # Filter to the simulators and this metric
+    df_filtered = df[
+        (df["simulator"].isin(all_sims)) &
+        (df["metric_name"] == metric_key)
+    ]
+
+    if df_filtered.empty:
+        return 0.0
+
+    # Only show models that have data for at least one simulator
+    present_models = [m for m in MODEL_ORDER if m in df_filtered["model"].values]
+    if not present_models:
+        return 0.0
+
+    n_models = len(present_models)
+    # Order simulators according to SIMULATOR_ORDER
+    sims_ordered = [s for s in SIMULATOR_ORDER if s in all_sims]
+    n_sims = len(sims_ordered)
+    bar_width = 0.8 / n_sims
+    x = np.arange(n_models)
+    global_max = 0.0
+
+    for sim_idx, sim in enumerate(sims_ordered):
+        offset = (sim_idx - n_sims / 2 + 0.5) * bar_width
+        positions = []
+        heights = []
+
+        for m_idx, model in enumerate(present_models):
+            vals = df_filtered[
+                (df_filtered["model"] == model) &
+                (df_filtered["simulator"] == sim)
+            ]["mape"]
+            if vals.empty:
+                continue
+            mape = vals.median()
+            positions.append(x[m_idx] + offset)
+            heights.append(mape)
+
+        if not positions:
+            continue
+
+        global_max = max(global_max, max(heights))
+
+        ax.bar(
+            positions, heights, bar_width,
+            color=COLOR_PALETTE[sim],
+            hatch=HATCH_PATTERNS.get(sim, ""),
+            edgecolor="black", linewidth=0.5,
+            label=SIMULATOR_DISPLAY_NAMES[sim],
+        )
+
+    ax.set_xticks(x)
+    ax.set_xticklabels(
+        [MODEL_SHORT_LABELS.get(m, m) for m in present_models],
+        rotation=35, ha="right",
+    )
+    ax.set_title(metric_label, fontsize=10, fontweight="bold")
+
+    return global_max
+
+
+def plot_simulator_comparison(
+    df: pd.DataFrame,
+    sim1: str | list[str],
+    sim2: str,
+    output_path: str | None = None,
+    yscale: str | None = None,
+    yscale_linthresh: float = 100,
+) -> plt.Figure | None:
+    """Compare simulators with 2×3 grid (aggregate + model breakdown).
+
+    Top row: aggregate MAPE for E2E, TTFT, ITL
+    Bottom row: per-model MAPE for E2E, TTFT, ITL
+
+    Parameters
+    ----------
+    sim1 : str or list[str]
+        Single simulator or list of simulators to compare (e.g., ["blis-roofline", "blis-evolved"])
+        If a list, will include whichever simulators have data (doesn't require all)
+    sim2 : str
+        Simulator to compare against
+    yscale : str, optional
+        Scale for y-axis ('linear', 'log', 'symlog'). If None, uses linear.
+    yscale_linthresh : float, default=100
+        Linear threshold for symlog scale (values below this use linear scale).
+
+    Only includes experiments where at least one sim1 simulator and sim2 have data.
+    Aggregates across all configs and workloads.
+    """
+    _apply_rc_params()
+
+    # Handle sim1 as list or string
+    sim1_list = sim1 if isinstance(sim1, list) else [sim1]
+
+    # Check which sim1 simulators actually have data
+    available_simulators = set(df["simulator"].unique())
+    available_sim1 = [s for s in sim1_list if s in available_simulators]
+
+    if not available_sim1:
+        sim_names = " & ".join(sim1_list)
+        warnings.warn(f"No data found for {sim_names}")
+        return None
+
+    if sim2 not in available_simulators:
+        warnings.warn(f"No data found for {sim2}")
+        return None
+
+    # Find experiments with data from sim2 and at least one of sim1
+    exp_sims = df.groupby("experiment_folder")["simulator"].apply(set)
+    common_exps = exp_sims[exp_sims.apply(
+        lambda s: sim2 in s and any(sim in s for sim in available_sim1)
+    )].index
+
+    if len(common_exps) == 0:
+        sim_names = " & ".join(available_sim1)
+        warnings.warn(f"No experiments with data from both {sim_names} and {sim2}")
+        return None
+
+    df_filtered = df[df["experiment_folder"].isin(common_exps)]
+
+    # Update sim1 to only include available simulators
+    sim1 = available_sim1 if isinstance(sim1, list) else available_sim1[0]
+
+    # Create 2×3 subplot grid
+    fig, axes = plt.subplots(2, 3, figsize=(10, 6.5))
+
+    metrics = [("e2e_mean", "E2E Mean"), ("ttft_mean", "TTFT Mean"), ("itl_mean", "ITL Mean")]
+
+    # Top row: aggregate panels
+    col_maxes_top = []
+    for col_idx, (metric_key, metric_label) in enumerate(metrics):
+        max_height = _plot_aggregate_panel(
+            axes[0, col_idx], df_filtered, sim1, sim2, metric_key, metric_label
+        )
+        col_maxes_top.append(max_height)
+
+    # Bottom row: model breakdown panels
+    col_maxes_bottom = []
+    for col_idx, (metric_key, metric_label) in enumerate(metrics):
+        max_height = _plot_model_breakdown_panel(
+            axes[1, col_idx], df_filtered, sim1, sim2, metric_key, metric_label
+        )
+        col_maxes_bottom.append(max_height)
+
+    # Set y-axes with 20% headroom per row
+    pct = r"\%" if matplotlib.rcParams.get("text.usetex") else "%"
+    for col_idx in range(3):
+        metric_key, _ = metrics[col_idx]
+
+        # Top row
+        y_top_top = col_maxes_top[col_idx] * 1.20 if col_maxes_top[col_idx] > 0 else 1.0
+        axes[0, col_idx].set_ylim(bottom=0, top=y_top_top)
+        axes[0, col_idx].set_ylabel(f"MAPE ({pct})")
+
+        # Bottom row
+        y_top_bottom = col_maxes_bottom[col_idx] * 1.20 if col_maxes_bottom[col_idx] > 0 else 1.0
+        axes[1, col_idx].set_ylim(bottom=0, top=y_top_bottom)
+        axes[1, col_idx].set_ylabel(f"MAPE ({pct})")
+
+        # Disable scientific notation and offset on y-axis
+        formatter_top = ticker.ScalarFormatter(useOffset=False, useMathText=False)
+        formatter_top.set_scientific(False)
+        formatter_top.set_useOffset(False)
+        axes[0, col_idx].yaxis.set_major_formatter(formatter_top)
+        axes[0, col_idx].yaxis.offsetText.set_visible(False)
+
+        formatter_bottom = ticker.ScalarFormatter(useOffset=False, useMathText=False)
+        formatter_bottom.set_scientific(False)
+        formatter_bottom.set_useOffset(False)
+        axes[1, col_idx].yaxis.set_major_formatter(formatter_bottom)
+        axes[1, col_idx].yaxis.offsetText.set_visible(False)
+
+        # Apply symlog scale to TTFT columns only if bars are too tall
+        if metric_key == "ttft_mean":
+            if y_top_top > 200:
+                axes[0, col_idx].set_yscale('symlog', linthresh=100)
+            if y_top_bottom > 200:
+                axes[1, col_idx].set_yscale('symlog', linthresh=100)
+        # Apply y-axis scale if specified globally
+        elif yscale == 'symlog':
+            axes[0, col_idx].set_yscale('symlog', linthresh=yscale_linthresh)
+            axes[1, col_idx].set_yscale('symlog', linthresh=yscale_linthresh)
+        elif yscale is not None:
+            axes[0, col_idx].set_yscale(yscale)
+            axes[1, col_idx].set_yscale(yscale)
+
+    # Title
+    sim2_display = SIMULATOR_DISPLAY_NAMES.get(sim2, sim2)
+    if isinstance(sim1, list):
+        if len(sim1) == 1:
+            sim1_display = SIMULATOR_DISPLAY_NAMES.get(sim1[0], sim1[0])
+            title = f"{sim1_display} vs {sim2_display} Simulator Comparison (n={len(common_exps)}) ↓"
+        else:
+            # Use \& for LaTeX, & for non-LaTeX
+            sep = r" \& " if matplotlib.rcParams.get("text.usetex") else " & "
+            sim1_display = sep.join([SIMULATOR_DISPLAY_NAMES.get(s, s) for s in sim1])
+            title = f"{sim1_display} vs {sim2_display} (n={len(common_exps)}) ↓"
+    else:
+        sim1_display = SIMULATOR_DISPLAY_NAMES.get(sim1, sim1)
+        title = f"{sim1_display} vs {sim2_display} Simulator Comparison (n={len(common_exps)}) ↓"
+    fig.suptitle(title, fontsize=11, fontweight="bold")
+
+    # Collect legend handles/labels from all axes (deduplicate)
+    all_handles, all_labels = [], []
+    for ax_row in axes:
+        for ax in ax_row:
+            h, l = ax.get_legend_handles_labels()
+            for handle, label in zip(h, l):
+                if label and label not in all_labels:
+                    all_handles.append(handle)
+                    all_labels.append(label)
+
+    if all_handles:
+        ncol = len(all_handles)
+        fig.legend(
+            all_handles, all_labels, loc="upper center",
+            bbox_to_anchor=(0.5, -0.01), ncol=ncol,
+            frameon=False, handlelength=1.5, columnspacing=1.0,
+        )
+
+    fig.tight_layout()
+    fig.subplots_adjust(top=0.93, bottom=0.08)
+
+    if output_path:
+        _save_figure(fig, output_path)
+    return fig
+
+
 def plot_model_sensitivity(
     df: pd.DataFrame,
     output_path: str | None = None,
 ) -> plt.Figure | None:
-    """Figure 1: MAPE across 7 model architectures on H100, default config."""
+    """Figure 1: BLIS-Roofline vs BLIS-Evolved MAPE across 7 model architectures on H100, default config."""
+    # Filter to BLIS-Roofline and BLIS-Evolved
+    df = df[df["simulator"].isin(["blis-roofline", "blis-evolved"])]
+
     if _has_metadata(df):
         df = df[(df["hardware"] == "H100") & (df["config_tag"] == "default")]
     df = df[df["workload"].isin(("general", "general-lite"))]
@@ -724,7 +1219,7 @@ def plot_model_sensitivity(
 
     fig = _grouped_bar(
         df, group_col="model", group_order=MODEL_ORDER,
-        title="Prediction Error Across Model Architectures ↓",
+        title="BLIS-Roofline vs BLIS-Evolved: Prediction Error Across Model Architectures ↓",
         output_path=output_path,
         group_labels=MODEL_SHORT_LABELS,
         metrics=[
@@ -767,6 +1262,8 @@ def plot_hardware_portability(
             ("ttft_mean", "TTFT Mean"),
             ("itl_mean", "ITL Mean"),
         ],
+        yscale='symlog',
+        yscale_linthresh=100,
     )
     if fig is None:
         warnings.warn("Figure 2: no hardware groups with data")
@@ -1113,14 +1610,16 @@ def plot_pareto(
         plt.close(fig)
         return None
 
-    # Per-simulator annotation offsets: hand-tuned to avoid overlap in the
-    # typical cluster layout (BLIS/LLM-Opt/AIC cluster low-MAPE, Vidur far right).
+    # Per-simulator annotation offsets: hand-tuned to avoid overlap with axes and other labels
+    # (BLIS/LLM-Opt/AIC cluster low-MAPE, Vidur middle, LLMServingSim far right).
     _annotation_offsets = {
         "blis-trained-roofline": (-14, -20),
-        "blis-roofline": (14, 16),
-        "vidur": (12, -18),
-        "llm-optimizer-estimate": (14, 16),
-        "aiconfigurator-estimate": (-14, -20),
+        "blis-evolved": (15, -20),
+        "blis-roofline": (15, 28),
+        "vidur": (15, 28),
+        "llm-optimizer-estimate": (-70, -20),
+        "aiconfigurator-estimate": (-55, 20),
+        "llmservingsim": (15, -8),
     }
 
     for sim in SIMULATOR_ORDER:
@@ -1148,17 +1647,21 @@ def plot_pareto(
         ax.annotate(
             SIMULATOR_DISPLAY_NAMES[sim],
             (s["mape_med"], s["rt_med"]),
-            textcoords="offset points", xytext=(ox, oy), fontsize=8,
-            arrowprops={"arrowstyle": "-", "color": "gray", "linewidth": 0.4},
+            textcoords="offset points", xytext=(ox, oy), fontsize=9,
+            bbox=dict(boxstyle="round,pad=0.3", facecolor="white", edgecolor="none", alpha=0.7),
+            arrowprops={"arrowstyle": "-", "color": "gray", "linewidth": 0.6, "alpha": 0.7},
         )
 
     ax.set_xscale("log")
     ax.set_yscale("log")
-    # Tight limits for better spread
+    # Set limits with generous padding to prevent label overlap with axes
     all_mapes = [s["mape_med"] for s in sim_stats.values()]
-    ax.set_xlim(min(all_mapes) * 0.5, max(all_mapes) * 3)
+    ax.set_xlim(min(all_mapes) * 0.35, max(all_mapes) * 5)
     all_rts = [s["rt_med"] for s in sim_stats.values()]
-    ax.set_ylim(min(all_rts) * 0.4, max(all_rts) * 4)
+    ax.set_ylim(min(all_rts) * 0.25, max(all_rts) * 6)
+
+    # Disable grid for cleaner appearance
+    ax.grid(False)
 
     # Pareto-dominated shading (after limits are set)
     if "blis-trained-roofline" in sim_stats:
@@ -1171,46 +1674,207 @@ def plot_pareto(
         )
 
     pct = r"\%" if matplotlib.rcParams.get("text.usetex") else "%"
-    ax.set_xlabel(f"Median MAPE ({pct})")
-    ax.set_ylabel("Median Runtime (s)")
+    ax.set_xlabel(f"Median MAPE ({pct})", fontsize=10)
+    ax.set_ylabel("Median Runtime (s)", fontsize=10)
+    ax.set_title("Accuracy-Speed Pareto Frontier", fontsize=11, fontweight="bold", pad=10)
 
     # Place legend below the plot to avoid overlap with data/annotations
     handles, labels = ax.get_legend_handles_labels()
     if handles:
+        # Use 3 columns for better spacing with 6 simulators
+        ncol = min(3, len(handles))
         fig.legend(
             handles, labels, loc="upper center",
-            bbox_to_anchor=(0.5, -0.02), ncol=len(handles),
-            frameon=False, fontsize=7, handlelength=1.5, columnspacing=1.0,
+            bbox_to_anchor=(0.5, -0.01), ncol=ncol,
+            frameon=False, fontsize=8, handlelength=1.5, columnspacing=1.5,
         )
-    fig.tight_layout()
+    fig.tight_layout(pad=1.5)  # Add padding to prevent label clipping
 
     if output_path:
         _save_figure(fig, output_path)
     return fig
 
 
+def _scale_llmservingsim_runtimes(llmservingsim_runtime_df: pd.DataFrame, results_dir: str) -> pd.DataFrame:
+    """Scale LLMServingSim runtimes from 2000-request runs to full workload size.
+
+    LLMServingSim in cluster_2000req ran only 2000 requests, while other simulators
+    ran the full workload. To make runtimes comparable in the Pareto plot, we scale
+    LLMServingSim's wall_clock_seconds proportionally: runtime × (gt_count / 2000).
+
+    Returns a copy of the dataframe with scaled wall_clock_seconds.
+    """
+    base_dir = os.path.dirname(os.path.abspath(results_dir))
+    if os.path.basename(results_dir) == "cluster_2000req":
+        base_dir = os.path.dirname(base_dir)
+
+    scaled_df = llmservingsim_runtime_df.copy()
+
+    for idx, row in scaled_df.iterrows():
+        exp_path = row.get("experiment_folder", "")
+        exp_folder = os.path.basename(exp_path) if isinstance(exp_path, str) else ""
+
+        if not exp_folder:
+            continue
+
+        try:
+            # Get ground truth request count from actual metrics
+            summary_path = os.path.join(
+                base_dir, f"vllm_data/ground_truth/{exp_folder}/results/summary_lifecycle_metrics.json"
+            )
+            with open(summary_path) as f:
+                summary = json.load(f)
+
+            # Use actual request count from successes (more accurate than load_summary)
+            gt_request_count = summary.get("successes", {}).get("count", 0)
+            if gt_request_count == 0:
+                gt_request_count = summary.get("load_summary", {}).get("count", 0)
+
+            if gt_request_count > 0:
+                # Scale: runtime × (gt_count / 2000)
+                original_runtime = row["wall_clock_seconds"]
+                scaling_factor = gt_request_count / 2000.0
+                scaled_runtime = original_runtime * scaling_factor
+
+                scaled_df.at[idx, "wall_clock_seconds"] = scaled_runtime
+
+                logger.info(
+                    "Scaled LLMServingSim runtime for %s: %.1fs → %.1fs (×%.2f for %d requests)",
+                    exp_folder, original_runtime, scaled_runtime, scaling_factor, gt_request_count
+                )
+
+        except Exception as e:
+            logger.warning("Failed to scale runtime for %s: %s", exp_folder, e)
+            continue
+
+    return scaled_df
+
+
+def _calculate_median_real_duration(runtime_df: pd.DataFrame, results_dir: str) -> float:
+    """Calculate median real experiment duration from actual measured metrics.
+
+    Reads actual durations from summary_lifecycle_metrics.json files rather than
+    planned durations from profile.yaml. Actual duration = total_requests / requests_per_sec.
+
+    Falls back to 1200.0 if ground truth data cannot be found.
+    """
+    # Try to find ground truth summaries relative to results_dir
+    # Handle both results_iter26 and results_iter26/cluster_2000req cases
+    base_dir = os.path.dirname(os.path.abspath(results_dir))
+
+    # For cluster_2000req subdirs, go up one more level
+    if os.path.basename(results_dir) == "cluster_2000req":
+        base_dir = os.path.dirname(base_dir)
+
+    summary_pattern = os.path.join(base_dir, "vllm_data/ground_truth/*/results/summary_lifecycle_metrics.json")
+    summary_files = glob.glob(summary_pattern)
+
+    if not summary_files:
+        logger.warning(
+            "Could not find ground truth summaries at %s, using default 1200s",
+            summary_pattern
+        )
+        return 1200.0
+
+    # Extract actual durations from summary files
+    durations = []
+    for sfile in summary_files:
+        try:
+            with open(sfile) as f:
+                summary = json.load(f)
+
+            # Calculate actual duration from throughput
+            successes = summary.get("successes", {})
+            total_requests = successes.get("count", 0)
+            throughput = successes.get("throughput", {})
+            rps = throughput.get("requests_per_sec", 0)
+
+            if total_requests > 0 and rps > 0:
+                actual_duration = total_requests / rps
+                durations.append(actual_duration)
+        except Exception as e:
+            logger.warning("Failed to parse %s: %s", sfile, e)
+            continue
+
+    if not durations:
+        logger.warning("No valid durations found in ground truth summaries, using default 1200s")
+        return 1200.0
+
+    median_duration = pd.Series(durations).median()
+    logger.info(
+        "Calculated median ACTUAL real experiment duration: %.1fs from %d experiments",
+        median_duration, len(durations)
+    )
+    return median_duration
+
+
 def format_runtime_table_latex(
     runtime_df: pd.DataFrame,
     output_path: str | None = None,
-    real_experiment_seconds: float = 1200.0,
+    results_dir: str = "results",
+    real_experiment_seconds: float | None = None,
 ) -> str:
-    """Table 1: LaTeX tabular with median runtime and speedup vs. real."""
+    """Table 1: LaTeX tabular with median runtime and speedup vs. real.
+
+    Parameters
+    ----------
+    runtime_df : pd.DataFrame
+        Runtime data with wall_clock_seconds column
+    output_path : str, optional
+        Path to save LaTeX table
+    results_dir : str
+        Results directory (used to find ground truth data)
+    real_experiment_seconds : float, optional
+        Real experiment duration. If None, calculated per-simulator from ground truth profiles.
+        For LLMServingSim in cluster_2000req, scales based on 2000-request runs.
+    """
+    is_cluster_2000req = os.path.basename(results_dir) == "cluster_2000req"
+
     lines = [
         r"\begin{tabular}{lrr}",
         r"\toprule",
         r"Simulator & Median Runtime (s) & Speedup vs.\ Real \\",
         r"\midrule",
     ]
+
     for sim in SIMULATOR_ORDER:
         sdf = runtime_df[runtime_df["simulator"] == sim]
         if sdf.empty:
             continue
-        median_t = sdf["wall_clock_seconds"].median()
-        speedup = real_experiment_seconds / median_t if median_t > 0 else float("inf")
+
+        # Check if this simulator has the _cluster_2000req marker
+        has_cluster_marker = "_cluster_2000req" in sdf.columns and sdf["_cluster_2000req"].any()
+
+        # For display: use original runtime if available (for LLMServingSim from cluster)
+        if has_cluster_marker and "_original_wall_clock_seconds" in sdf.columns:
+            median_t = sdf["_original_wall_clock_seconds"].median()
+        else:
+            median_t = sdf["wall_clock_seconds"].median()
+
+        # Calculate real duration for this simulator
+        if real_experiment_seconds is not None:
+            # Use provided duration
+            real_dur = real_experiment_seconds
+        elif (is_cluster_2000req or has_cluster_marker) and sim == "llmservingsim":
+            # For LLMServingSim from cluster_2000req (2000 requests), calculate scaled duration
+            real_dur = _calculate_llmservingsim_scaled_duration(sdf, results_dir)
+        else:
+            # For other simulators, use median from ground truth
+            real_dur = _calculate_median_real_duration(runtime_df, results_dir)
+
+        speedup = real_dur / median_t if median_t > 0 else float("inf")
+
+        # Format speedup: use 1 decimal for < 10×, otherwise integer
+        if speedup < 10:
+            speedup_str = f"{speedup:.1f}"
+        else:
+            speedup_str = f"{speedup:.0f}"
+
         lines.append(
             f"{SIMULATOR_DISPLAY_NAMES[sim]} & {median_t:.1f} "
-            f"& {speedup:.0f}$\\times$ \\\\"
+            f"& {speedup_str}$\\times$ \\\\"
         )
+
     lines += [r"\bottomrule", r"\end{tabular}"]
     tex = "\n".join(lines)
 
@@ -1220,6 +1884,63 @@ def format_runtime_table_latex(
             f.write(tex)
         logger.info("Saved %s", output_path)
     return tex
+
+
+def _calculate_llmservingsim_scaled_duration(llmservingsim_df: pd.DataFrame, results_dir: str) -> float:
+    """Calculate scaled real duration for LLMServingSim which ran 2000 requests.
+
+    Uses actual measured duration and request counts from summary_lifecycle_metrics.json.
+    Returns median of scaled durations across LLMServingSim experiments.
+    """
+    base_dir = os.path.dirname(os.path.abspath(results_dir))
+    if os.path.basename(results_dir) == "cluster_2000req":
+        base_dir = os.path.dirname(base_dir)
+
+    scaled_durations = []
+
+    for _, row in llmservingsim_df.iterrows():
+        exp_path = row.get("experiment_folder", "")
+        exp_folder = os.path.basename(exp_path) if isinstance(exp_path, str) else ""
+
+        if not exp_folder:
+            continue
+
+        # Get actual ground truth duration and request count from metrics
+        try:
+            summary_path = os.path.join(base_dir, f"vllm_data/ground_truth/{exp_folder}/results/summary_lifecycle_metrics.json")
+            with open(summary_path) as f:
+                summary = json.load(f)
+
+            # Calculate actual duration from throughput
+            successes = summary.get("successes", {})
+            gt_request_count = successes.get("count", 0)
+            throughput = successes.get("throughput", {})
+            rps = throughput.get("requests_per_sec", 0)
+
+            if gt_request_count > 0 and rps > 0:
+                gt_duration = gt_request_count / rps
+
+                # Scale: (2000 / gt_count) * actual_duration
+                scaled = (2000.0 / gt_request_count) * gt_duration
+                scaled_durations.append(scaled)
+                logger.debug(
+                    "LLMServingSim %s: %d→2000 requests, %.1fs→%.1fs (actual)",
+                    exp_folder, gt_request_count, gt_duration, scaled
+                )
+        except Exception as e:
+            logger.warning("Failed to scale duration for %s: %s", exp_folder, e)
+            continue
+
+    if not scaled_durations:
+        logger.warning("No scaled durations for LLMServingSim, using default 1200s")
+        return 1200.0
+
+    median_scaled = pd.Series(scaled_durations).median()
+    logger.info(
+        "LLMServingSim scaled ACTUAL real duration (2000-req): %.1fs from %d experiments",
+        median_scaled, len(scaled_durations)
+    )
+    return median_scaled
 
 
 # ---------------------------------------------------------------------------
@@ -1283,27 +2004,59 @@ def main(argv: list[str] | None = None) -> None:
     runtime_df = enrich_with_metadata(runtime_df, args.metadata)
     error_df = _add_config_tags(error_df)
 
-    # Fig 5 (Pareto) uses all simulators (ignore CLI exclusions)
+    # Fig 5 (Pareto) and Table 1 use all simulators (ignore CLI exclusions)
+    # For LLMServingSim, merge data from cluster_2000req if available
     error_df_all = enrich_with_metadata(error_df_full, args.metadata)
     runtime_df_all = enrich_with_metadata(runtime_df_full, args.metadata)
-    error_df_all = _add_config_tags(error_df_all)
 
-    # Fig 0b (BLIS vs Vidur) needs Vidur data, which is excluded from error_df_full
-    # Load raw CSV and filter to just blis-roofline and vidur
-    error_df_0b = pd.read_csv(error_csv)
-    error_df_0b = error_df_0b[error_df_0b["stage_index"] == -1]  # summary rows only
-    error_df_0b = error_df_0b[error_df_0b["simulator"].isin(["blis-roofline", "vidur"])]
-    error_df_0b = enrich_with_metadata(error_df_0b, args.metadata)
-    error_df_0b = _add_config_tags(error_df_0b)
+    # Check for cluster_2000req data and merge LLMServingSim results
+    cluster_error_csv = os.path.join(args.results_dir, "cluster_2000req/error_records.csv")
+    cluster_runtime_csv = os.path.join(args.results_dir, "cluster_2000req/runtime.csv")
+
+    if os.path.exists(cluster_error_csv) and os.path.exists(cluster_runtime_csv):
+        try:
+            cluster_error_df = load_error_data(cluster_error_csv)
+            cluster_runtime_df = load_runtime_data(cluster_runtime_csv)
+
+            # Extract only LLMServingSim from cluster
+            llmsim_error = cluster_error_df[cluster_error_df["simulator"] == "llmservingsim"]
+            llmsim_runtime = cluster_runtime_df[cluster_runtime_df["simulator"] == "llmservingsim"]
+
+            if not llmsim_error.empty and not llmsim_runtime.empty:
+                # Enrich cluster data with metadata
+                llmsim_error = enrich_with_metadata(llmsim_error, args.metadata)
+                llmsim_runtime = enrich_with_metadata(llmsim_runtime, args.metadata)
+
+                # Store original runtime for table display
+                llmsim_runtime["_original_wall_clock_seconds"] = llmsim_runtime["wall_clock_seconds"]
+
+                # Scale LLMServingSim runtimes for fair comparison in Pareto plot
+                # (LLMServingSim ran 2000 requests, need to scale to full workload size)
+                llmsim_runtime = _scale_llmservingsim_runtimes(
+                    llmsim_runtime, args.results_dir
+                )
+
+                # Mark LLMServingSim data as coming from cluster_2000req (for speedup calc)
+                llmsim_runtime["_cluster_2000req"] = True
+
+                # Remove any existing LLMServingSim from main results
+                error_df_all = error_df_all[error_df_all["simulator"] != "llmservingsim"]
+                runtime_df_all = runtime_df_all[runtime_df_all["simulator"] != "llmservingsim"]
+
+                # Merge cluster LLMServingSim with main results
+                error_df_all = pd.concat([error_df_all, llmsim_error], ignore_index=True)
+                runtime_df_all = pd.concat([runtime_df_all, llmsim_runtime], ignore_index=True)
+
+                logger.info("Merged LLMServingSim data from cluster_2000req for Pareto and runtime table")
+        except Exception as e:
+            logger.warning("Failed to merge cluster_2000req data: %s", e)
+
+    error_df_all = _add_config_tags(error_df_all)
 
     out = args.output_dir
     os.makedirs(out, exist_ok=True)
 
     figures = [
-        ("fig0a_aggregate_analytical.pdf",
-         lambda: plot_aggregate_comparison_analytical(error_df, os.path.join(out, "fig0a_aggregate_analytical.pdf"))),
-        ("fig0b_aggregate_trace.pdf",
-         lambda: plot_aggregate_comparison_trace(error_df_0b, os.path.join(out, "fig0b_aggregate_trace.pdf"))),
         ("fig1_model_sensitivity.pdf",
          lambda: plot_model_sensitivity(error_df, os.path.join(out, "fig1_model_sensitivity.pdf"))),
         ("fig2_hardware_portability.pdf",
@@ -1330,15 +2083,83 @@ def main(argv: list[str] | None = None) -> None:
             print(f"  FAIL: {name} ({e})")
             logger.exception("Failed to generate %s", name)
 
-    # Table 1
+    # Table 1 - use runtime_df_all to include LLMServingSim from cluster_2000req
     try:
         tex = format_runtime_table_latex(
-            runtime_df, output_path=os.path.join(out, "table1_runtime.tex"),
+            runtime_df_all,
+            output_path=os.path.join(out, "table1_runtime.tex"),
+            results_dir=args.results_dir,
         )
         print(f"  OK: table1_runtime.tex")
     except Exception as e:
         print(f"  FAIL: table1_runtime.tex ({e})")
         logger.exception("Failed to generate table1_runtime.tex")
+
+    # Simulator comparison figures
+    sim_comparison_dir = os.path.join(out, "sim_comparisons")
+    os.makedirs(sim_comparison_dir, exist_ok=True)
+
+    comparison_pairs = [
+        (["blis-roofline", "blis-evolved"], "vidur", "blis_vs_vidur.pdf"),
+        (["blis-roofline", "blis-evolved"], "llm-optimizer-estimate", "blis_vs_llm_optimizer.pdf"),
+        (["blis-roofline", "blis-evolved"], "aiconfigurator-estimate", "blis_vs_aiconfigurator.pdf"),
+        (["blis-roofline", "blis-evolved"], "llmservingsim", "blis_vs_llmservingsim.pdf"),
+    ]
+
+    for sim1, sim2, filename in comparison_pairs:
+        try:
+            # Determine yscale settings (use symlog for vidur comparison)
+            yscale_kwargs = {}
+            if filename == "blis_vs_vidur.pdf":
+                yscale_kwargs = {"yscale": "symlog", "yscale_linthresh": 100}
+
+            # Special handling for llmservingsim comparisons: use cluster results if available and complete
+            if filename == "blis_vs_llmservingsim.pdf":
+                cluster_error_csv = os.path.join(args.results_dir, "cluster_2000req/error_records.csv")
+                use_cluster = False
+
+                if os.path.exists(cluster_error_csv):
+                    cluster_error_df = load_error_data(cluster_error_csv)
+                    cluster_error_df = enrich_with_metadata(cluster_error_df, args.metadata)
+                    cluster_error_df = _add_config_tags(cluster_error_df)
+
+                    # Check if cluster results have the BLIS variants we need
+                    cluster_sims = set(cluster_error_df["simulator"].unique())
+                    sim1_list = sim1 if isinstance(sim1, list) else [sim1]
+                    has_required_sims = sim2 in cluster_sims and any(s in cluster_sims for s in sim1_list)
+
+                    if has_required_sims:
+                        use_cluster = True
+                        print(f"  Using cluster results for {filename}")
+                        fig = plot_simulator_comparison(
+                            cluster_error_df, sim1, sim2,
+                            os.path.join(sim_comparison_dir, filename),
+                            **yscale_kwargs
+                        )
+
+                if not use_cluster:
+                    # Fall back to regular results if cluster missing or incomplete
+                    print(f"  Using regular results for {filename} (cluster incomplete or missing)")
+                    fig = plot_simulator_comparison(
+                        error_df_full, sim1, sim2,
+                        os.path.join(sim_comparison_dir, filename),
+                        **yscale_kwargs
+                    )
+            else:
+                # Use error_df_full (unfiltered) so we always include all simulators
+                fig = plot_simulator_comparison(
+                    error_df_full, sim1, sim2,
+                    os.path.join(sim_comparison_dir, filename),
+                    **yscale_kwargs
+                )
+            if fig is not None:
+                plt.close(fig)
+                print(f"  OK: sim_comparisons/{filename}")
+            else:
+                print(f"  SKIP: sim_comparisons/{filename} (no shared experiments)")
+        except Exception as e:
+            print(f"  FAIL: sim_comparisons/{filename} ({e})")
+            logger.exception("Failed to generate %s", filename)
 
     print(f"\nFigures saved to {out}")
 

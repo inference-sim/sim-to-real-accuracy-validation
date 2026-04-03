@@ -133,6 +133,9 @@ def discover_experiments(
     for entry in manifest:
         if safe_only and entry.get("safe") != "safe":
             continue
+        # Skip experiments marked as not done (data not yet collected)
+        if not entry.get("done", False):
+            continue
         exp_id = entry.get("id")
         if exp_id is None:
             logger.warning("Manifest entry missing 'id' key, skipping: %s", entry)

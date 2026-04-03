@@ -19,9 +19,11 @@ from experiment.adapters.aiconfigurator_est import AIConfiguratorEstimateAdapter
 from experiment.adapters.base import SimulatorAdapter
 from experiment.adapters.blis_blackbox import BLISBlackboxAdapter
 from experiment.adapters.blis_crossmodel import BLISCrossModelAdapter
+from experiment.adapters.blis_evolved import BLISEvolvedAdapter
 from experiment.adapters.blis_roofline import BLISRooflineAdapter
 from experiment.adapters.blis_trained_roofline import BLISTrainedRooflineAdapter
 from experiment.adapters.llm_optimizer_est import LLMOptimizerEstimateAdapter
+from experiment.adapters.llmservingsim import LLMServingSimAdapter
 from experiment.adapters.vidur import VidurAdapter
 from experiment.ground_truth import discover_experiments, parse_experiment
 from experiment.metrics import ErrorRecord, RuntimeRecord, compute_errors
@@ -31,17 +33,79 @@ ALL_ADAPTER_NAMES = [
     "blis-blackbox",
     "blis-roofline",
     "blis-crossmodel",
+    "blis-evolved",
     "blis-trained-roofline",
     "vidur",
     "llm-optimizer-estimate",
     "aiconfigurator-estimate",
+    "llmservingsim",
 ]
+
+
+def _sample_stages_proportionally(
+    stages: list[dict], max_requests: int
+) -> list[dict]:
+    """Sample stages proportionally to ensure coverage of all stages.
+
+    Args:
+        stages: Original stage config with rate/duration
+        max_requests: Maximum total requests to sample
+
+    Returns:
+        New stage config with adjusted durations to yield max_requests total
+
+    Example:
+        Original: [{"rate": 8, "duration": 600}, {"rate": 20, "duration": 600}]
+                  → 4,800 + 12,000 = 16,800 requests
+        With max_requests=100:
+        - Stage 1: 4,800/16,800 * 100 = 29 requests → 29/8 = 3.625s duration
+        - Stage 2: 12,000/16,800 * 100 = 71 requests → 71/20 = 3.55s duration
+        Returns: [{"rate": 8, "duration": 3.625}, {"rate": 20, "duration": 3.55}]
+    """
+    # Calculate original total requests
+    total_original = sum(
+        round(stage["rate"] * stage["duration"]) for stage in stages
+    )
+
+    # If already under limit, return as-is
+    if total_original <= max_requests:
+        return stages
+
+    # Calculate proportional request counts per stage
+    sampled_stages = []
+    remaining_requests = max_requests
+
+    for i, stage in enumerate(stages):
+        stage_original_requests = round(stage["rate"] * stage["duration"])
+
+        # Last stage gets all remaining requests (handles rounding)
+        if i == len(stages) - 1:
+            stage_sampled_requests = remaining_requests
+        else:
+            # Proportional allocation
+            proportion = stage_original_requests / total_original
+            stage_sampled_requests = round(proportion * max_requests)
+            remaining_requests -= stage_sampled_requests
+
+        # Calculate new duration to yield sampled request count at same rate
+        new_duration = stage_sampled_requests / stage["rate"]
+
+        sampled_stages.append({
+            "rate": stage["rate"],
+            "duration": new_duration,
+        })
+
+    return sampled_stages
 
 
 def build_adapter_registry(
     blis_binary: str,
     vidur_dir: str,
+    llmservingsim_dir: str,
     adapter_names: list[str] | None = None,
+    no_docker: bool = False,
+    max_requests_per_experiment: int | None = None,
+    blis_evolved_iteration: int = 24,
 ) -> dict[str, SimulatorAdapter]:
     """Build a name → adapter instance mapping.
 
@@ -51,10 +115,16 @@ def build_adapter_registry(
         "blis-blackbox": lambda: BLISBlackboxAdapter(blis_binary),
         "blis-roofline": lambda: BLISRooflineAdapter(blis_binary),
         "blis-crossmodel": lambda: BLISCrossModelAdapter(blis_binary),
+        "blis-evolved": lambda: BLISEvolvedAdapter(blis_binary, iteration=blis_evolved_iteration),
         "blis-trained-roofline": lambda: BLISTrainedRooflineAdapter(blis_binary),
         "vidur": lambda: VidurAdapter(vidur_dir),
         "llm-optimizer-estimate": lambda: LLMOptimizerEstimateAdapter(),
         "aiconfigurator-estimate": lambda: AIConfiguratorEstimateAdapter(),
+        "llmservingsim": lambda: LLMServingSimAdapter(
+            llmservingsim_dir,
+            use_docker=not no_docker,
+            max_requests_per_experiment=max_requests_per_experiment,
+        ),
     }
     if adapter_names is None:
         adapter_names = list(factories.keys())
@@ -65,9 +135,13 @@ def run_pipeline(
     data_dir: str,
     blis_binary: str,
     vidur_dir: str,
+    llmservingsim_dir: str,
     output_dir: str,
     adapter_names: list[str] | None = None,
     no_dp_scaling: bool = False,
+    no_docker: bool = False,
+    max_requests_per_experiment: int | None = None,
+    blis_evolved_iteration: int = 24,
 ) -> tuple[list[ErrorRecord], list[RuntimeRecord]]:
     """Core pipeline: discover → run → compute errors → report.
 
@@ -106,7 +180,10 @@ def run_pipeline(
               f"(excluded {filtered_count} with DP > 1)")
 
     # 3. Build adapter registry (only requested adapters)
-    adapters = build_adapter_registry(blis_binary, vidur_dir, adapter_names)
+    adapters = build_adapter_registry(
+        blis_binary, vidur_dir, llmservingsim_dir, adapter_names, no_docker,
+        max_requests_per_experiment, blis_evolved_iteration
+    )
 
     # 4. Run all (experiment, adapter) pairs
     all_records: list[ErrorRecord] = []
@@ -114,38 +191,53 @@ def run_pipeline(
     fail_count = 0
     skip_count = 0
     for exp in experiments:
-        for adapter_name, adapter in adapters.items():
-            if not adapter.can_run(exp):
-                skip_count += 1
-                continue
-            try:
-                t0 = time.perf_counter()
-                result = adapter.run(exp)
-                elapsed = time.perf_counter() - t0
-                result.wall_clock_seconds = elapsed
-                records = compute_errors(exp, result)
-                all_records.extend(records)
-                runtime_records.append(RuntimeRecord(
-                    simulator=adapter_name,
-                    experiment_folder=exp.folder,
-                    model=exp.model,
-                    workload=exp.workload,
-                    wall_clock_seconds=elapsed,
-                    exp_id=exp.exp_id,
-                    hardware=exp.hardware,
-                    dp=exp.dp,
-                    cpu_offload=exp.cpu_offload,
-                    gpu_mem_util=exp.gpu_mem_util,
-                    precision=exp.precision,
-                    tp=exp.tp,
-                    max_num_batched_tokens=exp.max_num_batched_tokens,
-                ))
-                print(f"  OK: {adapter_name} × {exp.model} ({exp.workload}) [{elapsed:.2f}s]")
-            except Exception as exc:
-                fail_count += 1
-                logger.error(
-                    "FAIL: %s × %s (%s): %s", adapter_name, exp.model, exp.workload, exc,
-                )
+        # Apply proportional sampling to experiment stages if max_requests is set
+        # This ensures all adapters see the same sampled workload for fair comparison
+        original_stages = exp.profile_config["load"]["stages"]
+        if max_requests_per_experiment and max_requests_per_experiment > 0:
+            sampled_stages = _sample_stages_proportionally(
+                original_stages, max_requests_per_experiment
+            )
+            exp.profile_config["load"]["stages"] = sampled_stages
+        else:
+            sampled_stages = original_stages
+
+        try:
+            for adapter_name, adapter in adapters.items():
+                if not adapter.can_run(exp):
+                    skip_count += 1
+                    continue
+                try:
+                    t0 = time.perf_counter()
+                    result = adapter.run(exp)
+                    elapsed = time.perf_counter() - t0
+                    result.wall_clock_seconds = elapsed
+                    records = compute_errors(exp, result)
+                    all_records.extend(records)
+                    runtime_records.append(RuntimeRecord(
+                        simulator=adapter_name,
+                        experiment_folder=exp.folder,
+                        model=exp.model,
+                        workload=exp.workload,
+                        wall_clock_seconds=elapsed,
+                        exp_id=exp.exp_id,
+                        hardware=exp.hardware,
+                        dp=exp.dp,
+                        cpu_offload=exp.cpu_offload,
+                        gpu_mem_util=exp.gpu_mem_util,
+                        precision=exp.precision,
+                        tp=exp.tp,
+                        max_num_batched_tokens=exp.max_num_batched_tokens,
+                    ))
+                    print(f"  OK: {adapter_name} × {exp.model} ({exp.workload}) [{elapsed:.2f}s]")
+                except Exception as exc:
+                    fail_count += 1
+                    logger.error(
+                        "FAIL: %s × %s (%s): %s", adapter_name, exp.model, exp.workload, exc,
+                    )
+        finally:
+            # Restore original stages after all adapters have run on this experiment
+            exp.profile_config["load"]["stages"] = original_stages
 
     if skip_count:
         logger.info("Skipped %d (experiment, adapter) pairs via can_run()", skip_count)
@@ -178,6 +270,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Path to the cloned Vidur repository.",
     )
     parser.add_argument(
+        "--llmservingsim-dir",
+        default="LLMServingSim",
+        help="Path to LLMServingSim directory containing main.py",
+    )
+    parser.add_argument(
+        "--no-docker",
+        action="store_true",
+        help="Disable Docker for LLMServingSim (use native execution)",
+    )
+    parser.add_argument(
         "--output-dir",
         default="results",
         help="Directory where reports and CSV will be saved.",
@@ -199,6 +301,19 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="Enable verbose logging (INFO level).",
     )
+    parser.add_argument(
+        "--max-requests-per-experiment",
+        type=int,
+        default=0,
+        help="Limit number of requests per experiment (default: 0 = unlimited). Set to a positive number to sample workload.",
+    )
+    parser.add_argument(
+        "--blis-evolved-iteration",
+        type=int,
+        default=26,
+        choices=[16, 24, 26],
+        help="Which iteration coefficients to use for blis-evolved adapter (default: 26)",
+    )
     return parser.parse_args(argv)
 
 
@@ -216,9 +331,13 @@ def main(argv: list[str] | None = None) -> None:
         data_dir=args.data_dir,
         blis_binary=args.blis_binary,
         vidur_dir=args.vidur_dir,
+        llmservingsim_dir=args.llmservingsim_dir,
         output_dir=args.output_dir,
         adapter_names=args.adapters,
         no_dp_scaling=args.no_dp_scaling,
+        no_docker=args.no_docker,
+        max_requests_per_experiment=args.max_requests_per_experiment,
+        blis_evolved_iteration=args.blis_evolved_iteration,
     )
 
 
