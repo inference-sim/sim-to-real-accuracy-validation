@@ -90,7 +90,11 @@ All comparisons include only the following BLIS variants:
 - Test scope:
   - 38 real-world experiments on production hardware using vLLM v0.15.1
   - 7 models: Llama-3.1-8B, Qwen3-14B, CodeLlama-34B, Llama-2-70B (dense); Mixtral-8x7B, Mixtral-8x22B, Llama-4-Scout (MoE)
-  - 4 workload types: general-purpose, code generation, roleplay, reasoning
+  - 4 workload types from real ServeGen traces (Alibaba):
+    - **General-Purpose:** Highly variable burstiness and temporal shifts; tests auto-scaling and dynamic resource allocation
+    - **Code Generation:** Development-cycle patterns with template-based outputs; evaluates structured generation performance
+    - **Role-Playing:** Smoother, human-paced interaction; suitable for conversational serving systems
+    - **Reasoning:** Bimodal output behavior with separate reasoning/answer tokens; relevant for reasoning-optimized architectures
   - 3 GPU types: H100, A100-80GB, L40S
   - Config sweeps: tensor parallelism, batch sizes, memory settings, CPU offload
 - **MAPE Callout Box:**
