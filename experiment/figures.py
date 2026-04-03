@@ -7,6 +7,8 @@ Spec: docs/superpowers/specs/2026-03-16-publication-figures-design.md
 from __future__ import annotations
 
 import argparse
+import glob
+import json
 import logging
 import math
 import os
@@ -114,7 +116,7 @@ METRICS_GRID = [
 # USENIX/ACM double-column = 7in, single-column = 3.33in
 FIGURE_SIZES = {
     "wide": (7.0, 3.2),       # 3-panel figures (Figs 1, 2, 3, 4)
-    "pareto": (3.33, 3.33),   # single-column square (Fig 5)
+    "pareto": (4.5, 4.5),     # single-column square (Fig 5) - increased for better label spacing
 }
 
 RC_PARAMS = {
@@ -1608,14 +1610,16 @@ def plot_pareto(
         plt.close(fig)
         return None
 
-    # Per-simulator annotation offsets: hand-tuned to avoid overlap in the
-    # typical cluster layout (BLIS/LLM-Opt/AIC cluster low-MAPE, Vidur far right).
+    # Per-simulator annotation offsets: hand-tuned to avoid overlap with axes and other labels
+    # (BLIS/LLM-Opt/AIC cluster low-MAPE, Vidur middle, LLMServingSim far right).
     _annotation_offsets = {
         "blis-trained-roofline": (-14, -20),
-        "blis-roofline": (14, 16),
-        "vidur": (12, -18),
-        "llm-optimizer-estimate": (14, 16),
-        "aiconfigurator-estimate": (-14, -20),
+        "blis-evolved": (15, -20),
+        "blis-roofline": (15, 28),
+        "vidur": (15, 28),
+        "llm-optimizer-estimate": (-70, -20),
+        "aiconfigurator-estimate": (-55, 20),
+        "llmservingsim": (15, -8),
     }
 
     for sim in SIMULATOR_ORDER:
@@ -1643,17 +1647,21 @@ def plot_pareto(
         ax.annotate(
             SIMULATOR_DISPLAY_NAMES[sim],
             (s["mape_med"], s["rt_med"]),
-            textcoords="offset points", xytext=(ox, oy), fontsize=8,
-            arrowprops={"arrowstyle": "-", "color": "gray", "linewidth": 0.4},
+            textcoords="offset points", xytext=(ox, oy), fontsize=9,
+            bbox=dict(boxstyle="round,pad=0.3", facecolor="white", edgecolor="none", alpha=0.7),
+            arrowprops={"arrowstyle": "-", "color": "gray", "linewidth": 0.6, "alpha": 0.7},
         )
 
     ax.set_xscale("log")
     ax.set_yscale("log")
-    # Tight limits for better spread
+    # Set limits with generous padding to prevent label overlap with axes
     all_mapes = [s["mape_med"] for s in sim_stats.values()]
-    ax.set_xlim(min(all_mapes) * 0.5, max(all_mapes) * 3)
+    ax.set_xlim(min(all_mapes) * 0.35, max(all_mapes) * 5)
     all_rts = [s["rt_med"] for s in sim_stats.values()]
-    ax.set_ylim(min(all_rts) * 0.4, max(all_rts) * 4)
+    ax.set_ylim(min(all_rts) * 0.25, max(all_rts) * 6)
+
+    # Disable grid for cleaner appearance
+    ax.grid(False)
 
     # Pareto-dominated shading (after limits are set)
     if "blis-trained-roofline" in sim_stats:
@@ -1666,46 +1674,207 @@ def plot_pareto(
         )
 
     pct = r"\%" if matplotlib.rcParams.get("text.usetex") else "%"
-    ax.set_xlabel(f"Median MAPE ({pct})")
-    ax.set_ylabel("Median Runtime (s)")
+    ax.set_xlabel(f"Median MAPE ({pct})", fontsize=10)
+    ax.set_ylabel("Median Runtime (s)", fontsize=10)
+    ax.set_title("Accuracy-Speed Pareto Frontier", fontsize=11, fontweight="bold", pad=10)
 
     # Place legend below the plot to avoid overlap with data/annotations
     handles, labels = ax.get_legend_handles_labels()
     if handles:
+        # Use 3 columns for better spacing with 6 simulators
+        ncol = min(3, len(handles))
         fig.legend(
             handles, labels, loc="upper center",
-            bbox_to_anchor=(0.5, -0.02), ncol=len(handles),
-            frameon=False, fontsize=7, handlelength=1.5, columnspacing=1.0,
+            bbox_to_anchor=(0.5, -0.01), ncol=ncol,
+            frameon=False, fontsize=8, handlelength=1.5, columnspacing=1.5,
         )
-    fig.tight_layout()
+    fig.tight_layout(pad=1.5)  # Add padding to prevent label clipping
 
     if output_path:
         _save_figure(fig, output_path)
     return fig
 
 
+def _scale_llmservingsim_runtimes(llmservingsim_runtime_df: pd.DataFrame, results_dir: str) -> pd.DataFrame:
+    """Scale LLMServingSim runtimes from 2000-request runs to full workload size.
+
+    LLMServingSim in cluster_2000req ran only 2000 requests, while other simulators
+    ran the full workload. To make runtimes comparable in the Pareto plot, we scale
+    LLMServingSim's wall_clock_seconds proportionally: runtime × (gt_count / 2000).
+
+    Returns a copy of the dataframe with scaled wall_clock_seconds.
+    """
+    base_dir = os.path.dirname(os.path.abspath(results_dir))
+    if os.path.basename(results_dir) == "cluster_2000req":
+        base_dir = os.path.dirname(base_dir)
+
+    scaled_df = llmservingsim_runtime_df.copy()
+
+    for idx, row in scaled_df.iterrows():
+        exp_path = row.get("experiment_folder", "")
+        exp_folder = os.path.basename(exp_path) if isinstance(exp_path, str) else ""
+
+        if not exp_folder:
+            continue
+
+        try:
+            # Get ground truth request count from actual metrics
+            summary_path = os.path.join(
+                base_dir, f"vllm_data/ground_truth/{exp_folder}/results/summary_lifecycle_metrics.json"
+            )
+            with open(summary_path) as f:
+                summary = json.load(f)
+
+            # Use actual request count from successes (more accurate than load_summary)
+            gt_request_count = summary.get("successes", {}).get("count", 0)
+            if gt_request_count == 0:
+                gt_request_count = summary.get("load_summary", {}).get("count", 0)
+
+            if gt_request_count > 0:
+                # Scale: runtime × (gt_count / 2000)
+                original_runtime = row["wall_clock_seconds"]
+                scaling_factor = gt_request_count / 2000.0
+                scaled_runtime = original_runtime * scaling_factor
+
+                scaled_df.at[idx, "wall_clock_seconds"] = scaled_runtime
+
+                logger.info(
+                    "Scaled LLMServingSim runtime for %s: %.1fs → %.1fs (×%.2f for %d requests)",
+                    exp_folder, original_runtime, scaled_runtime, scaling_factor, gt_request_count
+                )
+
+        except Exception as e:
+            logger.warning("Failed to scale runtime for %s: %s", exp_folder, e)
+            continue
+
+    return scaled_df
+
+
+def _calculate_median_real_duration(runtime_df: pd.DataFrame, results_dir: str) -> float:
+    """Calculate median real experiment duration from actual measured metrics.
+
+    Reads actual durations from summary_lifecycle_metrics.json files rather than
+    planned durations from profile.yaml. Actual duration = total_requests / requests_per_sec.
+
+    Falls back to 1200.0 if ground truth data cannot be found.
+    """
+    # Try to find ground truth summaries relative to results_dir
+    # Handle both results_iter26 and results_iter26/cluster_2000req cases
+    base_dir = os.path.dirname(os.path.abspath(results_dir))
+
+    # For cluster_2000req subdirs, go up one more level
+    if os.path.basename(results_dir) == "cluster_2000req":
+        base_dir = os.path.dirname(base_dir)
+
+    summary_pattern = os.path.join(base_dir, "vllm_data/ground_truth/*/results/summary_lifecycle_metrics.json")
+    summary_files = glob.glob(summary_pattern)
+
+    if not summary_files:
+        logger.warning(
+            "Could not find ground truth summaries at %s, using default 1200s",
+            summary_pattern
+        )
+        return 1200.0
+
+    # Extract actual durations from summary files
+    durations = []
+    for sfile in summary_files:
+        try:
+            with open(sfile) as f:
+                summary = json.load(f)
+
+            # Calculate actual duration from throughput
+            successes = summary.get("successes", {})
+            total_requests = successes.get("count", 0)
+            throughput = successes.get("throughput", {})
+            rps = throughput.get("requests_per_sec", 0)
+
+            if total_requests > 0 and rps > 0:
+                actual_duration = total_requests / rps
+                durations.append(actual_duration)
+        except Exception as e:
+            logger.warning("Failed to parse %s: %s", sfile, e)
+            continue
+
+    if not durations:
+        logger.warning("No valid durations found in ground truth summaries, using default 1200s")
+        return 1200.0
+
+    median_duration = pd.Series(durations).median()
+    logger.info(
+        "Calculated median ACTUAL real experiment duration: %.1fs from %d experiments",
+        median_duration, len(durations)
+    )
+    return median_duration
+
+
 def format_runtime_table_latex(
     runtime_df: pd.DataFrame,
     output_path: str | None = None,
-    real_experiment_seconds: float = 1200.0,
+    results_dir: str = "results",
+    real_experiment_seconds: float | None = None,
 ) -> str:
-    """Table 1: LaTeX tabular with median runtime and speedup vs. real."""
+    """Table 1: LaTeX tabular with median runtime and speedup vs. real.
+
+    Parameters
+    ----------
+    runtime_df : pd.DataFrame
+        Runtime data with wall_clock_seconds column
+    output_path : str, optional
+        Path to save LaTeX table
+    results_dir : str
+        Results directory (used to find ground truth data)
+    real_experiment_seconds : float, optional
+        Real experiment duration. If None, calculated per-simulator from ground truth profiles.
+        For LLMServingSim in cluster_2000req, scales based on 2000-request runs.
+    """
+    is_cluster_2000req = os.path.basename(results_dir) == "cluster_2000req"
+
     lines = [
         r"\begin{tabular}{lrr}",
         r"\toprule",
         r"Simulator & Median Runtime (s) & Speedup vs.\ Real \\",
         r"\midrule",
     ]
+
     for sim in SIMULATOR_ORDER:
         sdf = runtime_df[runtime_df["simulator"] == sim]
         if sdf.empty:
             continue
-        median_t = sdf["wall_clock_seconds"].median()
-        speedup = real_experiment_seconds / median_t if median_t > 0 else float("inf")
+
+        # Check if this simulator has the _cluster_2000req marker
+        has_cluster_marker = "_cluster_2000req" in sdf.columns and sdf["_cluster_2000req"].any()
+
+        # For display: use original runtime if available (for LLMServingSim from cluster)
+        if has_cluster_marker and "_original_wall_clock_seconds" in sdf.columns:
+            median_t = sdf["_original_wall_clock_seconds"].median()
+        else:
+            median_t = sdf["wall_clock_seconds"].median()
+
+        # Calculate real duration for this simulator
+        if real_experiment_seconds is not None:
+            # Use provided duration
+            real_dur = real_experiment_seconds
+        elif (is_cluster_2000req or has_cluster_marker) and sim == "llmservingsim":
+            # For LLMServingSim from cluster_2000req (2000 requests), calculate scaled duration
+            real_dur = _calculate_llmservingsim_scaled_duration(sdf, results_dir)
+        else:
+            # For other simulators, use median from ground truth
+            real_dur = _calculate_median_real_duration(runtime_df, results_dir)
+
+        speedup = real_dur / median_t if median_t > 0 else float("inf")
+
+        # Format speedup: use 1 decimal for < 10×, otherwise integer
+        if speedup < 10:
+            speedup_str = f"{speedup:.1f}"
+        else:
+            speedup_str = f"{speedup:.0f}"
+
         lines.append(
             f"{SIMULATOR_DISPLAY_NAMES[sim]} & {median_t:.1f} "
-            f"& {speedup:.0f}$\\times$ \\\\"
+            f"& {speedup_str}$\\times$ \\\\"
         )
+
     lines += [r"\bottomrule", r"\end{tabular}"]
     tex = "\n".join(lines)
 
@@ -1715,6 +1884,63 @@ def format_runtime_table_latex(
             f.write(tex)
         logger.info("Saved %s", output_path)
     return tex
+
+
+def _calculate_llmservingsim_scaled_duration(llmservingsim_df: pd.DataFrame, results_dir: str) -> float:
+    """Calculate scaled real duration for LLMServingSim which ran 2000 requests.
+
+    Uses actual measured duration and request counts from summary_lifecycle_metrics.json.
+    Returns median of scaled durations across LLMServingSim experiments.
+    """
+    base_dir = os.path.dirname(os.path.abspath(results_dir))
+    if os.path.basename(results_dir) == "cluster_2000req":
+        base_dir = os.path.dirname(base_dir)
+
+    scaled_durations = []
+
+    for _, row in llmservingsim_df.iterrows():
+        exp_path = row.get("experiment_folder", "")
+        exp_folder = os.path.basename(exp_path) if isinstance(exp_path, str) else ""
+
+        if not exp_folder:
+            continue
+
+        # Get actual ground truth duration and request count from metrics
+        try:
+            summary_path = os.path.join(base_dir, f"vllm_data/ground_truth/{exp_folder}/results/summary_lifecycle_metrics.json")
+            with open(summary_path) as f:
+                summary = json.load(f)
+
+            # Calculate actual duration from throughput
+            successes = summary.get("successes", {})
+            gt_request_count = successes.get("count", 0)
+            throughput = successes.get("throughput", {})
+            rps = throughput.get("requests_per_sec", 0)
+
+            if gt_request_count > 0 and rps > 0:
+                gt_duration = gt_request_count / rps
+
+                # Scale: (2000 / gt_count) * actual_duration
+                scaled = (2000.0 / gt_request_count) * gt_duration
+                scaled_durations.append(scaled)
+                logger.debug(
+                    "LLMServingSim %s: %d→2000 requests, %.1fs→%.1fs (actual)",
+                    exp_folder, gt_request_count, gt_duration, scaled
+                )
+        except Exception as e:
+            logger.warning("Failed to scale duration for %s: %s", exp_folder, e)
+            continue
+
+    if not scaled_durations:
+        logger.warning("No scaled durations for LLMServingSim, using default 1200s")
+        return 1200.0
+
+    median_scaled = pd.Series(scaled_durations).median()
+    logger.info(
+        "LLMServingSim scaled ACTUAL real duration (2000-req): %.1fs from %d experiments",
+        median_scaled, len(scaled_durations)
+    )
+    return median_scaled
 
 
 # ---------------------------------------------------------------------------
@@ -1778,9 +2004,53 @@ def main(argv: list[str] | None = None) -> None:
     runtime_df = enrich_with_metadata(runtime_df, args.metadata)
     error_df = _add_config_tags(error_df)
 
-    # Fig 5 (Pareto) uses all simulators (ignore CLI exclusions)
+    # Fig 5 (Pareto) and Table 1 use all simulators (ignore CLI exclusions)
+    # For LLMServingSim, merge data from cluster_2000req if available
     error_df_all = enrich_with_metadata(error_df_full, args.metadata)
     runtime_df_all = enrich_with_metadata(runtime_df_full, args.metadata)
+
+    # Check for cluster_2000req data and merge LLMServingSim results
+    cluster_error_csv = os.path.join(args.results_dir, "cluster_2000req/error_records.csv")
+    cluster_runtime_csv = os.path.join(args.results_dir, "cluster_2000req/runtime.csv")
+
+    if os.path.exists(cluster_error_csv) and os.path.exists(cluster_runtime_csv):
+        try:
+            cluster_error_df = load_error_data(cluster_error_csv)
+            cluster_runtime_df = load_runtime_data(cluster_runtime_csv)
+
+            # Extract only LLMServingSim from cluster
+            llmsim_error = cluster_error_df[cluster_error_df["simulator"] == "llmservingsim"]
+            llmsim_runtime = cluster_runtime_df[cluster_runtime_df["simulator"] == "llmservingsim"]
+
+            if not llmsim_error.empty and not llmsim_runtime.empty:
+                # Enrich cluster data with metadata
+                llmsim_error = enrich_with_metadata(llmsim_error, args.metadata)
+                llmsim_runtime = enrich_with_metadata(llmsim_runtime, args.metadata)
+
+                # Store original runtime for table display
+                llmsim_runtime["_original_wall_clock_seconds"] = llmsim_runtime["wall_clock_seconds"]
+
+                # Scale LLMServingSim runtimes for fair comparison in Pareto plot
+                # (LLMServingSim ran 2000 requests, need to scale to full workload size)
+                llmsim_runtime = _scale_llmservingsim_runtimes(
+                    llmsim_runtime, args.results_dir
+                )
+
+                # Mark LLMServingSim data as coming from cluster_2000req (for speedup calc)
+                llmsim_runtime["_cluster_2000req"] = True
+
+                # Remove any existing LLMServingSim from main results
+                error_df_all = error_df_all[error_df_all["simulator"] != "llmservingsim"]
+                runtime_df_all = runtime_df_all[runtime_df_all["simulator"] != "llmservingsim"]
+
+                # Merge cluster LLMServingSim with main results
+                error_df_all = pd.concat([error_df_all, llmsim_error], ignore_index=True)
+                runtime_df_all = pd.concat([runtime_df_all, llmsim_runtime], ignore_index=True)
+
+                logger.info("Merged LLMServingSim data from cluster_2000req for Pareto and runtime table")
+        except Exception as e:
+            logger.warning("Failed to merge cluster_2000req data: %s", e)
+
     error_df_all = _add_config_tags(error_df_all)
 
     out = args.output_dir
@@ -1813,10 +2083,12 @@ def main(argv: list[str] | None = None) -> None:
             print(f"  FAIL: {name} ({e})")
             logger.exception("Failed to generate %s", name)
 
-    # Table 1
+    # Table 1 - use runtime_df_all to include LLMServingSim from cluster_2000req
     try:
         tex = format_runtime_table_latex(
-            runtime_df, output_path=os.path.join(out, "table1_runtime.tex"),
+            runtime_df_all,
+            output_path=os.path.join(out, "table1_runtime.tex"),
+            results_dir=args.results_dir,
         )
         print(f"  OK: table1_runtime.tex")
     except Exception as e:
