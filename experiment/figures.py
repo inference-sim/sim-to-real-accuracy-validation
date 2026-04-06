@@ -1040,11 +1040,12 @@ def plot_simulator_comparison(
     output_path: str | None = None,
     yscale: str | None = None,
     yscale_linthresh: float = 100,
+    show_aggregate: bool = True,
 ) -> plt.Figure | None:
-    """Compare simulators with 2×3 grid (aggregate + model breakdown).
+    """Compare simulators with 2×3 grid (aggregate + model breakdown) or 1×3 grid (model breakdown only).
 
-    Top row: aggregate MAPE for E2E, TTFT, ITL
-    Bottom row: per-model MAPE for E2E, TTFT, ITL
+    Top row (if show_aggregate=True): aggregate MAPE for E2E, TTFT, ITL
+    Bottom row (or only row if show_aggregate=False): per-model MAPE for E2E, TTFT, ITL
 
     Parameters
     ----------
@@ -1057,6 +1058,9 @@ def plot_simulator_comparison(
         Scale for y-axis ('linear', 'log', 'symlog'). If None, uses linear.
     yscale_linthresh : float, default=100
         Linear threshold for symlog scale (values below this use linear scale).
+    show_aggregate : bool, default=True
+        If True, show 2×3 grid with aggregate (top) and model breakdown (bottom).
+        If False, show 1×3 grid with model breakdown only.
 
     Only includes experiments where at least one sim1 simulator and sim2 have data.
     Aggregates across all configs and workloads.
@@ -1095,68 +1099,84 @@ def plot_simulator_comparison(
     # Update sim1 to only include available simulators
     sim1 = available_sim1 if isinstance(sim1, list) else available_sim1[0]
 
-    # Create 2×3 subplot grid
-    fig, axes = plt.subplots(2, 3, figsize=(10, 6.5))
+    # Create subplot grid (2×3 or 1×3 depending on show_aggregate)
+    if show_aggregate:
+        fig, axes = plt.subplots(2, 3, figsize=(10, 6.5))
+        # axes is 2D array: axes[row, col]
+    else:
+        fig, axes_1d = plt.subplots(1, 3, figsize=(10, 3.5))
+        # Wrap in 2D array for uniform indexing: axes[0, col] = model breakdown
+        axes = np.array([axes_1d])  # Shape (1, 3)
 
     metrics = [("e2e_mean", "E2E Mean"), ("ttft_mean", "TTFT Mean"), ("itl_mean", "ITL Mean")]
 
-    # Top row: aggregate panels
+    # Top row: aggregate panels (only if show_aggregate=True)
     col_maxes_top = []
-    for col_idx, (metric_key, metric_label) in enumerate(metrics):
-        max_height = _plot_aggregate_panel(
-            axes[0, col_idx], df_filtered, sim1, sim2, metric_key, metric_label
-        )
-        col_maxes_top.append(max_height)
+    if show_aggregate:
+        for col_idx, (metric_key, metric_label) in enumerate(metrics):
+            max_height = _plot_aggregate_panel(
+                axes[0, col_idx], df_filtered, sim1, sim2, metric_key, metric_label
+            )
+            col_maxes_top.append(max_height)
 
-    # Bottom row: model breakdown panels
+    # Bottom row (or only row): model breakdown panels
     col_maxes_bottom = []
+    bottom_row_idx = 1 if show_aggregate else 0
     for col_idx, (metric_key, metric_label) in enumerate(metrics):
         max_height = _plot_model_breakdown_panel(
-            axes[1, col_idx], df_filtered, sim1, sim2, metric_key, metric_label
+            axes[bottom_row_idx, col_idx], df_filtered, sim1, sim2, metric_key, metric_label
         )
         col_maxes_bottom.append(max_height)
 
     # Set y-axes with 20% headroom per row
     pct = r"\%" if matplotlib.rcParams.get("text.usetex") else "%"
+    bottom_row_idx = 1 if show_aggregate else 0
+
     for col_idx in range(3):
         metric_key, _ = metrics[col_idx]
 
-        # Top row
-        y_top_top = col_maxes_top[col_idx] * 1.20 if col_maxes_top[col_idx] > 0 else 1.0
-        axes[0, col_idx].set_ylim(bottom=0, top=y_top_top)
-        axes[0, col_idx].set_ylabel(f"MAPE ({pct})")
+        # Top row (aggregate) - only if show_aggregate=True
+        if show_aggregate:
+            y_top_top = col_maxes_top[col_idx] * 1.20 if col_maxes_top[col_idx] > 0 else 1.0
+            axes[0, col_idx].set_ylim(bottom=0, top=y_top_top)
+            axes[0, col_idx].set_ylabel(f"MAPE ({pct})")
 
-        # Bottom row
+            # Disable scientific notation and offset on y-axis
+            formatter_top = ticker.ScalarFormatter(useOffset=False, useMathText=False)
+            formatter_top.set_scientific(False)
+            formatter_top.set_useOffset(False)
+            axes[0, col_idx].yaxis.set_major_formatter(formatter_top)
+            axes[0, col_idx].yaxis.offsetText.set_visible(False)
+
+            # Apply symlog scale to TTFT columns only if bars are too tall
+            if metric_key == "ttft_mean" and y_top_top > 200:
+                axes[0, col_idx].set_yscale('symlog', linthresh=100)
+            # Apply y-axis scale if specified globally
+            elif yscale == 'symlog':
+                axes[0, col_idx].set_yscale('symlog', linthresh=yscale_linthresh)
+            elif yscale is not None:
+                axes[0, col_idx].set_yscale(yscale)
+
+        # Bottom row (or only row if show_aggregate=False): model breakdown
         y_top_bottom = col_maxes_bottom[col_idx] * 1.20 if col_maxes_bottom[col_idx] > 0 else 1.0
-        axes[1, col_idx].set_ylim(bottom=0, top=y_top_bottom)
-        axes[1, col_idx].set_ylabel(f"MAPE ({pct})")
+        axes[bottom_row_idx, col_idx].set_ylim(bottom=0, top=y_top_bottom)
+        axes[bottom_row_idx, col_idx].set_ylabel(f"MAPE ({pct})")
 
         # Disable scientific notation and offset on y-axis
-        formatter_top = ticker.ScalarFormatter(useOffset=False, useMathText=False)
-        formatter_top.set_scientific(False)
-        formatter_top.set_useOffset(False)
-        axes[0, col_idx].yaxis.set_major_formatter(formatter_top)
-        axes[0, col_idx].yaxis.offsetText.set_visible(False)
-
         formatter_bottom = ticker.ScalarFormatter(useOffset=False, useMathText=False)
         formatter_bottom.set_scientific(False)
         formatter_bottom.set_useOffset(False)
-        axes[1, col_idx].yaxis.set_major_formatter(formatter_bottom)
-        axes[1, col_idx].yaxis.offsetText.set_visible(False)
+        axes[bottom_row_idx, col_idx].yaxis.set_major_formatter(formatter_bottom)
+        axes[bottom_row_idx, col_idx].yaxis.offsetText.set_visible(False)
 
         # Apply symlog scale to TTFT columns only if bars are too tall
-        if metric_key == "ttft_mean":
-            if y_top_top > 200:
-                axes[0, col_idx].set_yscale('symlog', linthresh=100)
-            if y_top_bottom > 200:
-                axes[1, col_idx].set_yscale('symlog', linthresh=100)
+        if metric_key == "ttft_mean" and y_top_bottom > 200:
+            axes[bottom_row_idx, col_idx].set_yscale('symlog', linthresh=100)
         # Apply y-axis scale if specified globally
         elif yscale == 'symlog':
-            axes[0, col_idx].set_yscale('symlog', linthresh=yscale_linthresh)
-            axes[1, col_idx].set_yscale('symlog', linthresh=yscale_linthresh)
+            axes[bottom_row_idx, col_idx].set_yscale('symlog', linthresh=yscale_linthresh)
         elif yscale is not None:
-            axes[0, col_idx].set_yscale(yscale)
-            axes[1, col_idx].set_yscale(yscale)
+            axes[bottom_row_idx, col_idx].set_yscale(yscale)
 
     # Title
     sim2_display = SIMULATOR_DISPLAY_NAMES.get(sim2, sim2)
@@ -1188,12 +1208,16 @@ def plot_simulator_comparison(
         ncol = len(all_handles)
         fig.legend(
             all_handles, all_labels, loc="upper center",
-            bbox_to_anchor=(0.5, -0.01), ncol=ncol,
+            bbox_to_anchor=(0.5, -0.05), ncol=ncol,
             frameon=False, handlelength=1.5, columnspacing=1.0,
         )
 
     fig.tight_layout()
-    fig.subplots_adjust(top=0.93, bottom=0.08)
+    # Adjust spacing: more room for title in 1×3 layout (less vertical space)
+    if show_aggregate:
+        fig.subplots_adjust(top=0.90, bottom=0.08)  # 2×3 layout
+    else:
+        fig.subplots_adjust(top=0.85, bottom=0.08)  # 1×3 layout needs more space
 
     if output_path:
         _save_figure(fig, output_path)
@@ -1968,6 +1992,10 @@ def parse_figure_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--exclude-simulators", nargs="+", default=[],
         help="Simulators to hide from all figures (e.g. --exclude-simulators vidur)",
     )
+    parser.add_argument(
+        "--sim-comparison-no-aggregate", action="store_true",
+        help="Hide aggregate row in simulator comparison figures (show only model breakdown)",
+    )
     return parser.parse_args(argv)
 
 
@@ -2112,6 +2140,9 @@ def main(argv: list[str] | None = None) -> None:
             yscale_kwargs = {}
             if filename == "blis_vs_vidur.pdf":
                 yscale_kwargs = {"yscale": "symlog", "yscale_linthresh": 100}
+
+            # Add show_aggregate parameter from CLI args
+            yscale_kwargs["show_aggregate"] = not args.sim_comparison_no_aggregate
 
             # Special handling for llmservingsim comparisons: use cluster results if available and complete
             if filename == "blis_vs_llmservingsim.pdf":

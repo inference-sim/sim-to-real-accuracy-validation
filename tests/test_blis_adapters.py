@@ -119,6 +119,27 @@ class TestAdapterNames:
         adapter = BLISEvolvedAdapter("/tmp/blis")
         assert adapter.name == "blis-evolved"
 
+    def test_evolved_name_iter27(self):
+        """Iter27 adapter should still report name as blis-evolved."""
+        from experiment.adapters.blis_evolved import BLISEvolvedAdapter
+        adapter = BLISEvolvedAdapter("/tmp/blis", iteration=27)
+        assert adapter.name == "blis-evolved"
+        assert adapter.iteration == 27
+
+    def test_evolved_name_iter29(self):
+        """Iter29 adapter should still report name as blis-evolved."""
+        from experiment.adapters.blis_evolved import BLISEvolvedAdapter
+        adapter = BLISEvolvedAdapter("/tmp/blis", iteration=29)
+        assert adapter.name == "blis-evolved"
+        assert adapter.iteration == 29
+
+    def test_evolved_rejects_invalid_iteration(self):
+        """Evolved adapter should reject invalid iteration values."""
+        from experiment.adapters.blis_evolved import BLISEvolvedAdapter
+
+        with pytest.raises(ValueError, match="iteration must be 16, 24, 26, 27, or 29"):
+            BLISEvolvedAdapter("/tmp/blis", iteration=99)
+
 
 # ---------------------------------------------------------------------------
 # Tests: can_run()
@@ -476,7 +497,7 @@ class TestBLISSubprocessErrors:
         )
         adapter = BLISEvolvedAdapter("/tmp/blis")
         exp = _make_experiment()
-        with pytest.raises(RuntimeError, match="BLIS evolved failed.*evolved backend not compiled"):
+        with pytest.raises(RuntimeError, match="BLIS evolved iter26 failed.*evolved backend not compiled"):
             adapter.run(exp)
 
     @patch("experiment.adapters.blis_blackbox.subprocess.run")
@@ -553,7 +574,7 @@ class TestBLISEvolvedCLIArgs:
         from experiment.adapters.blis_evolved import BLISEvolvedAdapter
 
         mock_run.return_value = MagicMock()
-        adapter = BLISEvolvedAdapter("/usr/local/bin/blis")
+        adapter = BLISEvolvedAdapter("/usr/local/bin/blis", iteration=16)
         exp = _make_experiment()
 
         with patch.object(adapter, "_parse_blis_results") as mock_parse:
@@ -578,7 +599,7 @@ class TestBLISEvolvedCLIArgs:
         from experiment.adapters.blis_evolved import BLISEvolvedAdapter
 
         mock_run.return_value = MagicMock()
-        adapter = BLISEvolvedAdapter("/usr/local/bin/blis")
+        adapter = BLISEvolvedAdapter("/usr/local/bin/blis", iteration=16)
         exp = _make_experiment()
 
         with patch.object(adapter, "_parse_blis_results") as mock_parse:
