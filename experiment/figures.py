@@ -33,6 +33,7 @@ EXCLUDED_SIMULATORS = frozenset({"blis-blackbox", "blis-crossmodel"})
 SIMULATOR_ORDER = [
     "blis-trained-roofline",
     "blis-trained-physics",
+    "blis-evolved",
     "blis-roofline",
     "vidur",
     "llm-optimizer-estimate",
@@ -43,6 +44,7 @@ SIMULATOR_ORDER = [
 SIMULATOR_DISPLAY_NAMES = {
     "blis-trained-roofline": "BLIS-Trained",
     "blis-trained-physics": "BLIS-Trained-Physics",
+    "blis-evolved": "BLIS-Evolved",
     "blis-roofline": "BLIS-Roofline",
     "vidur": "Vidur",
     "llm-optimizer-estimate": "LLM-Optimizer",
@@ -53,6 +55,7 @@ SIMULATOR_DISPLAY_NAMES = {
 COLOR_PALETTE = {
     "blis-trained-roofline": "#4C72B0",
     "blis-trained-physics": "#D946EF",
+    "blis-evolved": "#9C27B0",
     "blis-roofline": "#64B5F6",
     "vidur": "#DD8452",
     "llm-optimizer-estimate": "#55A868",
@@ -63,6 +66,7 @@ COLOR_PALETTE = {
 HATCH_PATTERNS = {
     "blis-trained-roofline": "",
     "blis-trained-physics": "||",
+    "blis-evolved": "--",
     "blis-roofline": "//",
     "vidur": "\\\\",
     "llm-optimizer-estimate": "xx",
@@ -73,6 +77,7 @@ HATCH_PATTERNS = {
 MARKER_STYLES = {
     "blis-trained-roofline": "o",
     "blis-trained-physics": "*",
+    "blis-evolved": "p",
     "blis-roofline": "s",
     "vidur": "D",
     "llm-optimizer-estimate": "^",
@@ -1050,7 +1055,7 @@ def plot_simulator_comparison(
     Parameters
     ----------
     sim1 : str or list[str]
-        Single simulator or list of simulators to compare (e.g., ["blis-roofline", "blis-trained-physics"])
+        Single simulator or list of simulators to compare (e.g., ["blis-roofline", "blis-trained-physics", "blis-evolved"])
         If a list, will include whichever simulators have data (doesn't require all)
     sim2 : str
         Simulator to compare against
@@ -1228,9 +1233,9 @@ def plot_model_sensitivity(
     df: pd.DataFrame,
     output_path: str | None = None,
 ) -> plt.Figure | None:
-    """Figure 1: BLIS-Roofline vs BLIS-Trained-Physics MAPE across 7 model architectures on H100, default config."""
-    # Filter to BLIS-Roofline and BLIS-Trained-Physics
-    df = df[df["simulator"].isin(["blis-roofline", "blis-trained-physics"])]
+    """Figure 1: BLIS variants MAPE across 7 model architectures on H100, default config."""
+    # Filter to BLIS variants (roofline, trained-physics, evolved)
+    df = df[df["simulator"].isin(["blis-roofline", "blis-trained-physics", "blis-evolved"])]
 
     if _has_metadata(df):
         df = df[(df["hardware"] == "H100") & (df["config_tag"] == "default")]
@@ -1639,6 +1644,7 @@ def plot_pareto(
     _annotation_offsets = {
         "blis-trained-roofline": (-14, -20),
         "blis-trained-physics": (15, -20),
+        "blis-evolved": (-30, 15),
         "blis-roofline": (15, 28),
         "vidur": (15, 28),
         "llm-optimizer-estimate": (-70, -20),
@@ -2128,10 +2134,10 @@ def main(argv: list[str] | None = None) -> None:
     os.makedirs(sim_comparison_dir, exist_ok=True)
 
     comparison_pairs = [
-        (["blis-roofline", "blis-trained-physics"], "vidur", "blis_vs_vidur.pdf"),
-        (["blis-roofline", "blis-trained-physics"], "llm-optimizer-estimate", "blis_vs_llm_optimizer.pdf"),
-        (["blis-roofline", "blis-trained-physics"], "aiconfigurator-estimate", "blis_vs_aiconfigurator.pdf"),
-        (["blis-roofline", "blis-trained-physics"], "llmservingsim", "blis_vs_llmservingsim.pdf"),
+        (["blis-roofline", "blis-trained-physics", "blis-evolved"], "vidur", "blis_vs_vidur.pdf"),
+        (["blis-roofline", "blis-trained-physics", "blis-evolved"], "llm-optimizer-estimate", "blis_vs_llm_optimizer.pdf"),
+        (["blis-roofline", "blis-trained-physics", "blis-evolved"], "aiconfigurator-estimate", "blis_vs_aiconfigurator.pdf"),
+        (["blis-roofline", "blis-trained-physics", "blis-evolved"], "llmservingsim", "blis_vs_llmservingsim.pdf"),
     ]
 
     for sim1, sim2, filename in comparison_pairs:
