@@ -17,12 +17,9 @@ logger = logging.getLogger(__name__)
 
 from experiment.adapters.aiconfigurator_est import AIConfiguratorEstimateAdapter
 from experiment.adapters.base import SimulatorAdapter
-from experiment.adapters.blis_blackbox import BLISBlackboxAdapter
-from experiment.adapters.blis_crossmodel import BLISCrossModelAdapter
 from experiment.adapters.blis_evolved import BLISEvolvedAdapter
 from experiment.adapters.blis_roofline import BLISRooflineAdapter
 from experiment.adapters.blis_trained_physics import BLISTrainedPhysicsAdapter
-from experiment.adapters.blis_trained_roofline import BLISTrainedRooflineAdapter
 from experiment.adapters.llm_optimizer_est import LLMOptimizerEstimateAdapter
 from experiment.adapters.llmservingsim import LLMServingSimAdapter
 from experiment.adapters.vidur import VidurAdapter
@@ -31,12 +28,9 @@ from experiment.metrics import ErrorRecord, RuntimeRecord, compute_errors
 from experiment.report import generate_report
 
 ALL_ADAPTER_NAMES = [
-    "blis-blackbox",
     "blis-roofline",
-    "blis-crossmodel",
     "blis-evolved",
     "blis-trained-physics",
-    "blis-trained-roofline",
     "vidur",
     "llm-optimizer-estimate",
     "aiconfigurator-estimate",
@@ -114,12 +108,9 @@ def build_adapter_registry(
     Only instantiates adapters listed in *adapter_names* (default: all).
     """
     factories: dict[str, callable] = {
-        "blis-blackbox": lambda: BLISBlackboxAdapter(blis_binary),
         "blis-roofline": lambda: BLISRooflineAdapter(blis_binary),
-        "blis-crossmodel": lambda: BLISCrossModelAdapter(blis_binary),
         "blis-evolved": lambda: BLISEvolvedAdapter(blis_binary, iteration=blis_evolved_iteration),
         "blis-trained-physics": lambda: BLISTrainedPhysicsAdapter(blis_binary),
-        "blis-trained-roofline": lambda: BLISTrainedRooflineAdapter(blis_binary),
         "vidur": lambda: VidurAdapter(vidur_dir),
         "llm-optimizer-estimate": lambda: LLMOptimizerEstimateAdapter(),
         "aiconfigurator-estimate": lambda: AIConfiguratorEstimateAdapter(),

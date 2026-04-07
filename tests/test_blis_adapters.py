@@ -10,10 +10,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 import yaml
 
-from experiment.adapters.blis_blackbox import BLISBlackboxAdapter
-from experiment.adapters.blis_crossmodel import BLISCrossModelAdapter
 from experiment.adapters.blis_roofline import BLISRooflineAdapter
-from experiment.adapters.blis_trained_roofline import BLISTrainedRooflineAdapter
 from experiment.data_model import (
     Experiment,
     LatencyDistribution,
