@@ -617,3 +617,73 @@ class TestBLISEvolvedCLIArgs:
 
         # Verify first beta coefficient (prefill roofline ~ 0.2)
         assert parts[0].startswith("0.2")
+
+
+# ---------------------------------------------------------------------------
+# Tests: BLISTrainedPhysicsAdapter
+# ---------------------------------------------------------------------------
+
+
+class TestTrainedPhysicsAdapterName:
+    def test_trained_physics_name(self):
+        from experiment.adapters.blis_trained_physics import BLISTrainedPhysicsAdapter
+        adapter = BLISTrainedPhysicsAdapter("/tmp/blis")
+        assert adapter.name == "blis-trained-physics"
+
+
+class TestTrainedPhysicsCanRun:
+    def test_always_true(self):
+        from experiment.adapters.blis_trained_physics import BLISTrainedPhysicsAdapter
+        adapter = BLISTrainedPhysicsAdapter("/tmp/blis")
+        exp = _make_experiment()
+        assert adapter.can_run(exp) is True
+
+
+class TestTrainedPhysicsCLIArgs:
+    @patch("experiment.adapters.blis_trained_physics.subprocess.run")
+    def test_trained_physics_latency_model_flag(self, mock_run):
+        """Trained-physics adapter should pass --latency-model trained-physics."""
+        from experiment.adapters.blis_trained_physics import BLISTrainedPhysicsAdapter
+
+        mock_run.return_value = MagicMock()
+        adapter = BLISTrainedPhysicsAdapter("/usr/local/bin/blis")
+        exp = _make_experiment()
+
+        with patch.object(adapter, "_parse_blis_results") as mock_parse:
+            mock_parse.return_value = MagicMock()
+            adapter.run(exp)
+
+        called_args = mock_run.call_args[0][0]
+        idx = called_args.index("--latency-model")
+        assert called_args[idx + 1] == "trained-physics"
+
+    @patch("experiment.adapters.blis_trained_physics.subprocess.run")
+    def test_trained_physics_no_coefficient_flags(self, mock_run):
+        """Trained-physics adapter should NOT pass --alpha-coeffs or --beta-coeffs."""
+        from experiment.adapters.blis_trained_physics import BLISTrainedPhysicsAdapter
+
+        mock_run.return_value = MagicMock()
+        adapter = BLISTrainedPhysicsAdapter("/usr/local/bin/blis")
+        exp = _make_experiment()
+
+        with patch.object(adapter, "_parse_blis_results") as mock_parse:
+            mock_parse.return_value = MagicMock()
+            adapter.run(exp)
+
+        called_args = mock_run.call_args[0][0]
+        assert "--alpha-coeffs" not in called_args
+        assert "--beta-coeffs" not in called_args
+
+
+class TestTrainedPhysicsSubprocessErrors:
+    @patch("experiment.adapters.blis_trained_physics.subprocess.run")
+    def test_trained_physics_wraps_subprocess_error(self, mock_run):
+        from experiment.adapters.blis_trained_physics import BLISTrainedPhysicsAdapter
+
+        mock_run.side_effect = subprocess.CalledProcessError(
+            returncode=1, cmd=["blis"], stderr=b"physics model not found"
+        )
+        adapter = BLISTrainedPhysicsAdapter("/tmp/blis")
+        exp = _make_experiment()
+        with pytest.raises(RuntimeError, match="BLIS trained-physics failed.*physics model not found"):
+            adapter.run(exp)
