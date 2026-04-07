@@ -21,6 +21,7 @@ from experiment.adapters.blis_blackbox import BLISBlackboxAdapter
 from experiment.adapters.blis_crossmodel import BLISCrossModelAdapter
 from experiment.adapters.blis_evolved import BLISEvolvedAdapter
 from experiment.adapters.blis_roofline import BLISRooflineAdapter
+from experiment.adapters.blis_trained_physics import BLISTrainedPhysicsAdapter
 from experiment.adapters.blis_trained_roofline import BLISTrainedRooflineAdapter
 from experiment.adapters.llm_optimizer_est import LLMOptimizerEstimateAdapter
 from experiment.adapters.llmservingsim import LLMServingSimAdapter
@@ -34,6 +35,7 @@ ALL_ADAPTER_NAMES = [
     "blis-roofline",
     "blis-crossmodel",
     "blis-evolved",
+    "blis-trained-physics",
     "blis-trained-roofline",
     "vidur",
     "llm-optimizer-estimate",
@@ -116,6 +118,7 @@ def build_adapter_registry(
         "blis-roofline": lambda: BLISRooflineAdapter(blis_binary),
         "blis-crossmodel": lambda: BLISCrossModelAdapter(blis_binary),
         "blis-evolved": lambda: BLISEvolvedAdapter(blis_binary, iteration=blis_evolved_iteration),
+        "blis-trained-physics": lambda: BLISTrainedPhysicsAdapter(blis_binary),
         "blis-trained-roofline": lambda: BLISTrainedRooflineAdapter(blis_binary),
         "vidur": lambda: VidurAdapter(vidur_dir),
         "llm-optimizer-estimate": lambda: LLMOptimizerEstimateAdapter(),
