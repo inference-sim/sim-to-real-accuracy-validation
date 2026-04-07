@@ -32,7 +32,7 @@ EXCLUDED_SIMULATORS = frozenset({"blis-blackbox", "blis-crossmodel"})
 
 SIMULATOR_ORDER = [
     "blis-trained-roofline",
-    "blis-evolved",
+    "blis-trained-physics",
     "blis-roofline",
     "vidur",
     "llm-optimizer-estimate",
@@ -42,7 +42,7 @@ SIMULATOR_ORDER = [
 
 SIMULATOR_DISPLAY_NAMES = {
     "blis-trained-roofline": "BLIS-Trained",
-    "blis-evolved": "BLIS-Evolved",
+    "blis-trained-physics": "BLIS-Trained-Physics",
     "blis-roofline": "BLIS-Roofline",
     "vidur": "Vidur",
     "llm-optimizer-estimate": "LLM-Optimizer",
@@ -52,7 +52,7 @@ SIMULATOR_DISPLAY_NAMES = {
 
 COLOR_PALETTE = {
     "blis-trained-roofline": "#4C72B0",
-    "blis-evolved": "#D946EF",
+    "blis-trained-physics": "#D946EF",
     "blis-roofline": "#64B5F6",
     "vidur": "#DD8452",
     "llm-optimizer-estimate": "#55A868",
@@ -62,7 +62,7 @@ COLOR_PALETTE = {
 
 HATCH_PATTERNS = {
     "blis-trained-roofline": "",
-    "blis-evolved": "||",
+    "blis-trained-physics": "||",
     "blis-roofline": "//",
     "vidur": "\\\\",
     "llm-optimizer-estimate": "xx",
@@ -72,7 +72,7 @@ HATCH_PATTERNS = {
 
 MARKER_STYLES = {
     "blis-trained-roofline": "o",
-    "blis-evolved": "*",
+    "blis-trained-physics": "*",
     "blis-roofline": "s",
     "vidur": "D",
     "llm-optimizer-estimate": "^",
