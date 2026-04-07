@@ -165,3 +165,68 @@ Total improvement: **37.8% relative reduction** (60.19% → 37.42%)
 | `Error: invalid beta-coeffs format` / `expected 10 beta coefficients, got N` | Wrong number of beta coefficients (iter24 requires 10, not 7 or 9) | Update BLIS to version with decode-split support (10-beta mode) |
 | `Error: invalid alpha-coeffs format` / `expected 3 alpha coefficients, got N` | Wrong number of alpha coefficients or malformed comma-separated values | Verify alpha has exactly 3 comma-separated float values |
 | `--alpha-coeffs: unrecognized argument` | BLIS binary version too old | Update to a BLIS version that supports the evolved latency model CLI flags |
+
+## BLIS Trained-Physics Adapter
+
+### Overview
+
+The BLIS Trained-Physics adapter (`blis-trained-physics`) uses `--latency-model trained-physics` with globally-fitted roofline basis functions and architecture-aware corrections. Unlike the evolved adapter which passes coefficients on the command line, the trained-physics model loads its 13 coefficients (10 beta + 3 alpha) from `defaults.yaml` automatically via the BLIS binary.
+
+This adapter generalizes across model architectures, workloads, and TP configurations without per-model calibration. It is the recommended adapter for new models.
+
+### Architecture
+
+The trained-physics model uses **13 coefficients** (10 beta + 3 alpha):
+
+**Beta coefficients (10 values):**
+- Prefill compute/memory split
+- Decode compute/memory split
+- Weight loading correction
+- TP communication correction
+- Per-layer overhead
+- Per-request batch overhead
+- Per-step constant overhead
+- MoE-layer overhead (architecture-aware)
+
+**Alpha coefficients (3 values):**
+- API queueing overhead
+- Post-decode fixed overhead
+- Per-token output processing overhead
+
+### Supported Configurations
+
+- **Hardware**: H100, A100-80GB, L40S (any hardware supported by BLIS)
+- **Architectures**: MoE (e.g., Mixtral, Scout), GQA (e.g., Llama, Qwen), dense
+- **Models**: Any model -- cross-model coefficients require no per-model profiling
+- **Precision**: FP16, FP8
+- **Features**: KV offloading, multi-stage workloads, shared-prefix workloads
+
+### Usage
+
+```bash
+python -m experiment.run \
+  --data-dir vllm_data/ground_truth \
+  --output-dir results \
+  --adapters blis-trained-physics \
+  --blis-binary /path/to/blis
+```
+
+### Requirements
+
+- BLIS binary compiled with the `trained-physics` latency backend
+- The binary must support the `--latency-model trained-physics` CLI flag
+- Coefficients are loaded from `defaults.yaml` by the BLIS binary (no command-line coefficient injection needed)
+
+### How It Works
+
+1. **Eligibility**: `can_run()` returns `True` for all experiments (cross-model, no per-model profiling)
+2. **Workload Generation**: Converts experiment profile config into a BLIS `WorkloadSpec` YAML
+3. **Execution**: Runs the BLIS binary via subprocess with `--latency-model trained-physics` and all common flags (model, tp, hardware, KV offloading parameters, seed)
+4. **Parsing**: Reads the JSON results file and constructs a `SimulatorResult` with per-stage `StageMetrics`
+
+### Troubleshooting
+
+| Error | Cause | Fix |
+|-------|-------|-----|
+| `BLIS trained-physics failed (rc=1)` | Binary does not support `--latency-model trained-physics` | Rebuild BLIS with trained-physics backend enabled |
+| Missing `defaults.yaml` coefficients | BLIS cannot find the trained-physics coefficients file | Ensure `defaults.yaml` is present in the BLIS directory with trained-physics coefficients |
