@@ -1050,7 +1050,7 @@ def plot_simulator_comparison(
     Parameters
     ----------
     sim1 : str or list[str]
-        Single simulator or list of simulators to compare (e.g., ["blis-roofline", "blis-evolved"])
+        Single simulator or list of simulators to compare (e.g., ["blis-roofline", "blis-trained-physics"])
         If a list, will include whichever simulators have data (doesn't require all)
     sim2 : str
         Simulator to compare against
@@ -1228,9 +1228,9 @@ def plot_model_sensitivity(
     df: pd.DataFrame,
     output_path: str | None = None,
 ) -> plt.Figure | None:
-    """Figure 1: BLIS-Roofline vs BLIS-Evolved MAPE across 7 model architectures on H100, default config."""
-    # Filter to BLIS-Roofline and BLIS-Evolved
-    df = df[df["simulator"].isin(["blis-roofline", "blis-evolved"])]
+    """Figure 1: BLIS-Roofline vs BLIS-Trained-Physics MAPE across 7 model architectures on H100, default config."""
+    # Filter to BLIS-Roofline and BLIS-Trained-Physics
+    df = df[df["simulator"].isin(["blis-roofline", "blis-trained-physics"])]
 
     if _has_metadata(df):
         df = df[(df["hardware"] == "H100") & (df["config_tag"] == "default")]
@@ -1243,7 +1243,7 @@ def plot_model_sensitivity(
 
     fig = _grouped_bar(
         df, group_col="model", group_order=MODEL_ORDER,
-        title="BLIS-Roofline vs BLIS-Evolved: Prediction Error Across Model Architectures ↓",
+        title="BLIS-Roofline vs BLIS-Trained-Physics: Prediction Error Across Model Architectures ↓",
         output_path=output_path,
         group_labels=MODEL_SHORT_LABELS,
         metrics=[
@@ -1638,7 +1638,7 @@ def plot_pareto(
     # (BLIS/LLM-Opt/AIC cluster low-MAPE, Vidur middle, LLMServingSim far right).
     _annotation_offsets = {
         "blis-trained-roofline": (-14, -20),
-        "blis-evolved": (15, -20),
+        "blis-trained-physics": (15, -20),
         "blis-roofline": (15, 28),
         "vidur": (15, 28),
         "llm-optimizer-estimate": (-70, -20),
@@ -2128,10 +2128,10 @@ def main(argv: list[str] | None = None) -> None:
     os.makedirs(sim_comparison_dir, exist_ok=True)
 
     comparison_pairs = [
-        (["blis-roofline", "blis-evolved"], "vidur", "blis_vs_vidur.pdf"),
-        (["blis-roofline", "blis-evolved"], "llm-optimizer-estimate", "blis_vs_llm_optimizer.pdf"),
-        (["blis-roofline", "blis-evolved"], "aiconfigurator-estimate", "blis_vs_aiconfigurator.pdf"),
-        (["blis-roofline", "blis-evolved"], "llmservingsim", "blis_vs_llmservingsim.pdf"),
+        (["blis-roofline", "blis-trained-physics"], "vidur", "blis_vs_vidur.pdf"),
+        (["blis-roofline", "blis-trained-physics"], "llm-optimizer-estimate", "blis_vs_llm_optimizer.pdf"),
+        (["blis-roofline", "blis-trained-physics"], "aiconfigurator-estimate", "blis_vs_aiconfigurator.pdf"),
+        (["blis-roofline", "blis-trained-physics"], "llmservingsim", "blis_vs_llmservingsim.pdf"),
     ]
 
     for sim1, sim2, filename in comparison_pairs:

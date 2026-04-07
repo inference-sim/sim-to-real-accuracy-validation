@@ -81,7 +81,7 @@ def _make_full_model_df():
 
     rows = []
     for i, model in enumerate(MODEL_ORDER):
-        for sim in ["blis-roofline", "blis-evolved", "vidur"]:
+        for sim in ["blis-roofline", "blis-trained-physics", "vidur"]:
             for metric in _METRICS:
                 rows.append(_make_error_row(
                     simulator=sim, model=model, metric_name=metric,
@@ -726,7 +726,7 @@ class TestSimulatorComparison:
     def _make_comparison_df(self):
         """Create data for sim comparison tests."""
         rows = []
-        for sim in ["blis-roofline", "blis-evolved", "vidur"]:
+        for sim in ["blis-roofline", "blis-trained-physics", "vidur"]:
             for model in ["model-A", "model-B"]:
                 for metric in _METRICS:
                     rows.append(_make_error_row(
@@ -739,7 +739,7 @@ class TestSimulatorComparison:
         from experiment.figures import plot_simulator_comparison
         df = self._make_comparison_df()
         fig = plot_simulator_comparison(
-            df, ["blis-roofline", "blis-evolved"], "vidur",
+            df, ["blis-roofline", "blis-trained-physics"], "vidur",
             output_path=None, show_aggregate=True
         )
         assert fig is not None
@@ -751,7 +751,7 @@ class TestSimulatorComparison:
         from experiment.figures import plot_simulator_comparison
         df = self._make_comparison_df()
         fig = plot_simulator_comparison(
-            df, ["blis-roofline", "blis-evolved"], "vidur",
+            df, ["blis-roofline", "blis-trained-physics"], "vidur",
             output_path=None, show_aggregate=False
         )
         assert fig is not None
@@ -764,7 +764,7 @@ class TestSimulatorComparison:
         df = self._make_comparison_df()
         # Test default parameter value (show_aggregate=True by default)
         fig = plot_simulator_comparison(
-            df, ["blis-roofline", "blis-evolved"], "vidur",
+            df, ["blis-roofline", "blis-trained-physics"], "vidur",
             output_path=None
         )
         assert fig is not None
