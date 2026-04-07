@@ -28,10 +28,9 @@ logger = logging.getLogger(__name__)
 # Constants
 # ---------------------------------------------------------------------------
 
-EXCLUDED_SIMULATORS = frozenset({"blis-blackbox", "blis-crossmodel"})
+EXCLUDED_SIMULATORS = frozenset({"blis-blackbox", "blis-crossmodel", "blis-trained-roofline"})
 
 SIMULATOR_ORDER = [
-    "blis-trained-roofline",
     "blis-trained-physics",
     "blis-evolved",
     "blis-roofline",
@@ -42,7 +41,6 @@ SIMULATOR_ORDER = [
 ]
 
 SIMULATOR_DISPLAY_NAMES = {
-    "blis-trained-roofline": "BLIS-Trained",
     "blis-trained-physics": "BLIS-Trained-Physics",
     "blis-evolved": "BLIS-Evolved",
     "blis-roofline": "BLIS-Roofline",
@@ -53,7 +51,6 @@ SIMULATOR_DISPLAY_NAMES = {
 }
 
 COLOR_PALETTE = {
-    "blis-trained-roofline": "#4C72B0",
     "blis-trained-physics": "#D946EF",
     "blis-evolved": "#9C27B0",
     "blis-roofline": "#64B5F6",
@@ -64,7 +61,6 @@ COLOR_PALETTE = {
 }
 
 HATCH_PATTERNS = {
-    "blis-trained-roofline": "",
     "blis-trained-physics": "||",
     "blis-evolved": "--",
     "blis-roofline": "//",
@@ -75,7 +71,6 @@ HATCH_PATTERNS = {
 }
 
 MARKER_STYLES = {
-    "blis-trained-roofline": "o",
     "blis-trained-physics": "*",
     "blis-evolved": "p",
     "blis-roofline": "s",
@@ -1642,7 +1637,6 @@ def plot_pareto(
     # Per-simulator annotation offsets: hand-tuned to avoid overlap with axes and other labels
     # (BLIS/LLM-Opt/AIC cluster low-MAPE, Vidur middle, LLMServingSim far right).
     _annotation_offsets = {
-        "blis-trained-roofline": (-14, -20),
         "blis-trained-physics": (15, -20),
         "blis-evolved": (-30, 15),
         "blis-roofline": (15, 28),
