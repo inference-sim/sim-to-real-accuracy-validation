@@ -115,7 +115,7 @@ METRICS_GRID = [
 
 # USENIX/ACM double-column = 7in, single-column = 3.33in
 FIGURE_SIZES = {
-    "wide": (7.0, 3.2),       # 3-panel figures (Figs 1, 2, 3, 4)
+    "wide": (10.0, 3.2),      # 3-panel figures (Figs 1, 2, 3, 4) - increased width for better spacing
     "pareto": (4.5, 4.5),     # single-column square (Fig 5) - increased for better label spacing
 }
 
@@ -341,9 +341,85 @@ def _grouped_bar(
     n_cols = len(metrics)
     figsize = figsize or FIGURE_SIZES["wide"]
 
-    fig, axes = plt.subplots(1, n_cols, figsize=figsize)
-    if n_cols == 1:
-        axes = [axes]
+    # Pre-analyze which columns need axis breaks
+    break_configs = []  # List of (use_break, lower_max, upper_min, upper_max, all_heights) per column
+    for metric_key, _ in metrics:
+        all_heights = []
+        for sim in simulators:
+            for group_val in present_groups:
+                vals = df[
+                    (df[group_col] == group_val)
+                    & (df["simulator"] == sim)
+                    & (df["metric_name"] == metric_key)
+                ]["mape"]
+                if not vals.empty:
+                    mape = vals.median() if aggregate else vals.iloc[0]
+                    all_heights.append(mape)
+
+        use_break = False
+        lower_max = 0
+        upper_min = 0
+        upper_max = 0
+        if len(all_heights) >= 3:
+            sorted_heights = sorted(all_heights, reverse=True)
+            tallest = sorted_heights[0]
+
+            # Metric-specific absolute thresholds
+            if "ttft" in metric_key.lower():
+                threshold = 200  # TTFT threshold
+            else:
+                threshold = 100  # E2E and ITL threshold
+
+            if tallest > threshold:  # Trigger if any bar exceeds threshold
+                use_break = True
+                # Bottom axis shows bars up to threshold
+                lower_max = threshold
+                # Top axis shows ALL outliers (anything > threshold)
+                outliers = [h for h in all_heights if h > threshold]
+                if outliers:
+                    min_outlier = min(outliers)
+                    max_outlier = max(outliers)
+                    upper_min = min_outlier * 0.9  # Start slightly below smallest outlier
+                    upper_max = max_outlier * 1.15  # End above largest outlier
+                else:
+                    upper_min = tallest * 0.85
+                    upper_max = tallest * 1.20
+
+        break_configs.append((use_break, lower_max, upper_min, upper_max, all_heights))
+
+    # Create figure with gridspec for flexible axis layout
+    from matplotlib.gridspec import GridSpec
+    fig = plt.figure(figsize=figsize)
+
+    # Create axes list - may contain single or paired axes per column
+    axes = []  # Each element is either a single ax or (ax_top, ax_bottom) tuple
+
+    # Calculate proper spacing for subplots
+    left_margin = 0.08
+    right_margin = 0.02
+    between_margin = 0.08
+    available_width = 1.0 - left_margin - right_margin - (n_cols - 1) * between_margin
+    subplot_width = available_width / n_cols
+
+    for col_idx in range(n_cols):
+        use_break = break_configs[col_idx][0]
+        subplot_left = left_margin + col_idx * (subplot_width + between_margin)
+        subplot_right = subplot_left + subplot_width
+
+        if use_break:
+            # Create two stacked axes with a small gap
+            # Give bottom axis much more space (4x) since it has all the detailed bars
+            gs = GridSpec(2, 1, figure=fig, left=subplot_left, right=subplot_right,
+                         bottom=0.15, top=0.82, hspace=0.05, height_ratios=[1, 4])
+            ax_top = fig.add_subplot(gs[0])
+            ax_bottom = fig.add_subplot(gs[1], sharex=ax_top)
+            axes.append((ax_top, ax_bottom))
+        else:
+            # Create single axis with same positioning
+            gs = GridSpec(1, 1, figure=fig, left=subplot_left, right=subplot_right,
+                         bottom=0.15, top=0.82)
+            ax = fig.add_subplot(gs[0])
+            axes.append(ax)
 
     bar_width = 0.8 / n_sims
     x = np.arange(n_groups)
@@ -351,7 +427,15 @@ def _grouped_bar(
     labeled_sims = set()  # Track which simulators have been labeled
 
     for col_idx, (metric_key, metric_label) in enumerate(metrics):
-        ax = axes[col_idx]
+        ax_obj = axes[col_idx]
+        use_break = break_configs[col_idx][0]
+
+        # Determine which axes to plot on
+        if use_break:
+            ax_top, ax_bottom = ax_obj
+            axes_to_plot = [ax_top, ax_bottom]
+        else:
+            axes_to_plot = [ax_obj]
 
         for sim_idx, sim in enumerate(simulators):
             offset = (sim_idx - n_sims / 2 + 0.5) * bar_width
@@ -378,52 +462,154 @@ def _grouped_bar(
             label = SIMULATOR_DISPLAY_NAMES[sim] if sim not in labeled_sims else ""
             if sim not in labeled_sims:
                 labeled_sims.add(sim)
-            ax.bar(
-                positions, heights, bar_width,
-                color=COLOR_PALETTE[sim],
-                hatch=HATCH_PATTERNS.get(sim, ""),
-                edgecolor="black", linewidth=0.5,
-                label=label,
-            )
 
-        ax.set_xticks(x)
-        ha = "right" if xlabel_rotation else "center"
-        ax.set_xticklabels(
-            [(group_labels or {}).get(g, g) for g in present_groups],
-            rotation=xlabel_rotation, ha=ha,
-        )
-        ax.set_title(metric_label)
+            # For broken axes, draw bars intelligently
+            if use_break:
+                _, lower_max, upper_min, _, _ = break_configs[col_idx]
 
-    # Independent y-axis per subplot with 20% headroom
+                # Draw ALL bars on bottom axis (will be clipped by ylim)
+                ax_bottom.bar(
+                    positions, heights, bar_width,
+                    color=COLOR_PALETTE[sim],
+                    hatch=HATCH_PATTERNS.get(sim, ""),
+                    edgecolor="black", linewidth=0.5,
+                    label=label,
+                )
+
+                # Only draw bars on top axis if they reach into the top region
+                positions_top = []
+                heights_top = []
+                for pos, height in zip(positions, heights):
+                    if height >= upper_min:
+                        positions_top.append(pos)
+                        heights_top.append(height)
+
+                if positions_top:
+                    ax_top.bar(
+                        positions_top, heights_top, bar_width,
+                        color=COLOR_PALETTE[sim],
+                        hatch=HATCH_PATTERNS.get(sim, ""),
+                        edgecolor="black", linewidth=0.5,
+                        label="",  # Don't label on top axis, already labeled on bottom
+                    )
+            else:
+                # Single axis - draw normally
+                ax_obj.bar(
+                    positions, heights, bar_width,
+                    color=COLOR_PALETTE[sim],
+                    hatch=HATCH_PATTERNS.get(sim, ""),
+                    edgecolor="black", linewidth=0.5,
+                    label=label,
+                )
+
+        # Set x-ticks and labels
+        for ax_plot in axes_to_plot:
+            ax_plot.set_xticks(x)
+            if ax_plot == axes_to_plot[-1]:  # Only show x-labels on bottom axis
+                ha = "right" if xlabel_rotation else "center"
+                ax_plot.set_xticklabels(
+                    [(group_labels or {}).get(g, g) for g in present_groups],
+                    rotation=xlabel_rotation, ha=ha,
+                )
+            else:
+                ax_plot.set_xticklabels([])
+                plt.setp(ax_plot.get_xticklabels(), visible=False)
+
+        # Set title on top axis
+        if use_break:
+            ax_top.set_title(metric_label)
+        else:
+            ax_obj.set_title(metric_label)
+
+    # Configure y-axes
     pct = r"\%" if matplotlib.rcParams.get("text.usetex") else "%"
-    for col_idx, ax in enumerate(axes):
+    for col_idx in range(n_cols):
         metric_key, _ = metrics[col_idx]
         y_top = col_maxes[col_idx] * 1.20 if col_maxes[col_idx] > 0 else 1.0
-        ax.set_ylim(bottom=0, top=y_top)
-        ax.set_ylabel(f"MAPE ({pct})")
 
-        # Disable scientific notation and offset on y-axis
-        formatter = ticker.ScalarFormatter(useOffset=False, useMathText=False)
-        formatter.set_scientific(False)
-        formatter.set_useOffset(False)
-        ax.yaxis.set_major_formatter(formatter)
-        ax.yaxis.offsetText.set_visible(False)
+        use_break, lower_max, upper_min, upper_max, all_heights = break_configs[col_idx]
+        ax_obj = axes[col_idx]
 
-        # Apply symlog scale to TTFT plots only if bars are too tall
-        if metric_key == "ttft_mean" and y_top > 200:
-            ax.set_yscale('symlog', linthresh=100)
-        # Apply y-axis scale if specified globally
-        elif yscale == 'symlog':
-            ax.set_yscale('symlog', linthresh=yscale_linthresh)
-        elif yscale is not None:
-            ax.set_yscale(yscale)
+        if use_break:
+            ax_top, ax_bottom = ax_obj
+
+            # Bottom axis: show 0 to lower_max
+            ax_bottom.set_ylim(0, lower_max)
+            ax_bottom.set_ylabel(f"MAPE ({pct})")
+
+            # Manually set bottom axis ticks to avoid showing the threshold value
+            # if it would appear at the top of the bottom axis
+            bottom_ticks = ax_bottom.get_yticks()
+            # Filter out any ticks that are very close to lower_max (within 1%)
+            bottom_ticks = [t for t in bottom_ticks if t < lower_max * 0.99]
+            ax_bottom.set_yticks(bottom_ticks)
+
+            # Top axis: show upper_min to upper_max
+            ax_top.set_ylim(upper_min, upper_max)
+
+            # Manually set top axis ticks to avoid showing values near the threshold
+            top_ticks = ax_top.get_yticks()
+            # Filter out any ticks that are very close to upper_min or lower_max
+            top_ticks = [t for t in top_ticks if t > lower_max * 1.05]
+            ax_top.set_yticks(top_ticks)
+
+            # Hide the spines between the axes
+            ax_top.spines['bottom'].set_visible(False)
+            ax_bottom.spines['top'].set_visible(False)
+            ax_top.xaxis.tick_top()
+            ax_top.tick_params(labeltop=False, top=False)  # Don't show x-labels or ticks on top
+            ax_bottom.xaxis.tick_bottom()
+
+            # Add break markers on both axes
+            d = 0.015  # Size of diagonal lines
+            kwargs = dict(transform=ax_bottom.transAxes, color='k', clip_on=False, linewidth=1.5)
+            # Bottom axis - draw break at top
+            ax_bottom.plot((-d, +d), (1 - d, 1 + d), **kwargs)
+            ax_bottom.plot((-d, +d), (1 - d + 0.02, 1 + d + 0.02), **kwargs)
+
+            kwargs = dict(transform=ax_top.transAxes, color='k', clip_on=False, linewidth=1.5)
+            # Top axis - draw break at bottom
+            ax_top.plot((-d, +d), (0 - d, 0 + d), **kwargs)
+            ax_top.plot((-d, +d), (0 - d - 0.02, 0 + d - 0.02), **kwargs)
+
+            # Format both axes
+            for ax_plot in [ax_top, ax_bottom]:
+                formatter = ticker.ScalarFormatter(useOffset=False, useMathText=False)
+                formatter.set_scientific(False)
+                formatter.set_useOffset(False)
+                ax_plot.yaxis.set_major_formatter(formatter)
+                ax_plot.yaxis.offsetText.set_visible(False)
+        else:
+            # Single axis - normal behavior
+            ax_obj.set_ylim(bottom=0, top=y_top)
+            ax_obj.set_ylabel(f"MAPE ({pct})")
+
+            # Disable scientific notation
+            formatter = ticker.ScalarFormatter(useOffset=False, useMathText=False)
+            formatter.set_scientific(False)
+            formatter.set_useOffset(False)
+            ax_obj.yaxis.set_major_formatter(formatter)
+            ax_obj.yaxis.offsetText.set_visible(False)
+
+            # Apply symlog scale if needed
+            if metric_key == "ttft_mean" and y_top > 200:
+                ax_obj.set_yscale('symlog', linthresh=100)
+            elif yscale == 'symlog':
+                ax_obj.set_yscale('symlog', linthresh=yscale_linthresh)
+            elif yscale is not None:
+                ax_obj.set_yscale(yscale)
 
     fig.suptitle(title, fontsize=11, fontweight="bold")
 
-    # Collect legend handles/labels from all axes (not just axes[0])
-    # to include simulators that don't have data in the first metric column
+    # Collect legend handles/labels from all axes
     all_handles, all_labels = [], []
-    for ax in axes:
+    for ax_obj in axes:
+        if isinstance(ax_obj, tuple):
+            # Broken axis - get from bottom axis
+            ax = ax_obj[1]
+        else:
+            ax = ax_obj
+
         h, l = ax.get_legend_handles_labels()
         for handle, label in zip(h, l):
             if label and label not in all_labels:  # Deduplicate by label
@@ -437,9 +623,9 @@ def _grouped_bar(
             frameon=False, handlelength=1.5, columnspacing=1.0,
         )
 
-    fig.tight_layout()
-    # tight_layout doesn't account for suptitle — push axes down to make room
-    fig.subplots_adjust(top=0.86)
+    # Don't use tight_layout with custom gridspec - manually adjust instead
+    fig.suptitle(title, fontsize=11, fontweight="bold")
+    fig.subplots_adjust(top=0.88, bottom=0.12)
 
     if output_path:
         _save_figure(fig, output_path)
@@ -1228,12 +1414,15 @@ def plot_model_sensitivity(
     df: pd.DataFrame,
     output_path: str | None = None,
 ) -> plt.Figure | None:
-    """Figure 1: BLIS variants MAPE across 7 model architectures on H100, default config."""
-    # Filter to BLIS variants (roofline, trained-physics, evolved)
-    df = df[df["simulator"].isin(["blis-roofline", "blis-trained-physics", "blis-evolved"])]
+    """Figure 1: All simulators MAPE across 7 model architectures on H100, default config."""
+    # Filter to all simulators in SIMULATOR_ORDER
+    df = df[df["simulator"].isin(SIMULATOR_ORDER)]
 
     if _has_metadata(df):
-        df = df[(df["hardware"] == "H100") & (df["config_tag"] == "default")]
+        df = df[df["hardware"] == "H100"]
+        # Only filter by config_tag if it exists
+        if "config_tag" in df.columns:
+            df = df[df["config_tag"] == "default"]
     df = df[df["workload"].isin(("general", "general-lite"))]
     df = df[df["model"].isin(MODEL_ORDER)]
 
@@ -1243,7 +1432,7 @@ def plot_model_sensitivity(
 
     fig = _grouped_bar(
         df, group_col="model", group_order=MODEL_ORDER,
-        title="BLIS-Roofline vs BLIS-Trained-Physics: Prediction Error Across Model Architectures ↓",
+        title="Prediction Error Across Model Architectures (All Simulators) ↓",
         output_path=output_path,
         group_labels=MODEL_SHORT_LABELS,
         metrics=[
@@ -1266,7 +1455,9 @@ def plot_hardware_portability(
         warnings.warn("Figure 2: skipped (no hardware metadata)")
         return None
 
-    df = df[df["config_tag"] == "default"]
+    # Only filter by config_tag if it exists
+    if "config_tag" in df.columns:
+        df = df[df["config_tag"] == "default"]
     df = df[df["workload"].isin(("general", "general-lite"))]
     df = df[df["dp"].replace("", 1).fillna(1).astype(float) <= 1]
 
@@ -1300,7 +1491,10 @@ def plot_workload_sensitivity(
 ) -> plt.Figure | None:
     """Figure 3: MAPE across 4 workload types, aggregated over 4 models."""
     if _has_metadata(df):
-        df = df[(df["hardware"] == "H100") & (df["config_tag"] == "default")]
+        df = df[df["hardware"] == "H100"]
+        # Only filter by config_tag if it exists
+        if "config_tag" in df.columns:
+            df = df[df["config_tag"] == "default"]
         df = df[df["dp"].replace("", 1).fillna(1).astype(float) <= 1]
     df = df[df["model"].isin(FIGURE3_MODELS)]
 
@@ -1313,6 +1507,7 @@ def plot_workload_sensitivity(
         title="Prediction Error Across Workload Types ↓",
         output_path=output_path,
         group_labels=WORKLOAD_DISPLAY_NAMES, aggregate=True,
+        figsize=(10.0, 4.0),  # Taller than default for better readability
         metrics=[
             ("e2e_mean", "E2E Mean"),
             ("ttft_mean", "TTFT Mean"),
@@ -1634,16 +1829,20 @@ def plot_pareto(
         plt.close(fig)
         return None
 
-    # Per-simulator annotation offsets: hand-tuned to avoid overlap with axes and other labels
-    # (BLIS/LLM-Opt/AIC cluster low-MAPE, Vidur middle, LLMServingSim far right).
+    # Per-simulator annotation offsets: USER-SPECIFIED EXACT POSITIONS
+    # AIConfigurator → RIGHT of purple dot
+    # BLIS-Trained-Physics → BELOW pink dot (raised to clear x-axis)
+    # BLIS-Roofline → ABOVE light blue (cyan) dot (slightly lower)
+    # LLM-Optimizer → TOP of green dot
+    # Ensure no axis collision
     _annotation_offsets = {
-        "blis-trained-physics": (15, -20),
-        "blis-evolved": (-30, 15),
-        "blis-roofline": (15, 28),
-        "vidur": (15, 28),
-        "llm-optimizer-estimate": (-70, -20),
-        "aiconfigurator-estimate": (-55, 20),
-        "llmservingsim": (15, -8),
+        "blis-trained-physics": (10, -35),      # BELOW pink point - raised to clear x-axis
+        "blis-evolved": (35, -22),              # RIGHT and DOWN, separate from cluster
+        "blis-roofline": (10, 28),              # ABOVE cyan (light blue) point - slightly lower
+        "vidur": (25, 15),                      # Right side
+        "llm-optimizer-estimate": (10, 35),     # TOP of green point
+        "aiconfigurator-estimate": (40, 5),     # RIGHT of purple point
+        "llmservingsim": (25, -15),             # Right and down from red point
     }
 
     for sim in SIMULATOR_ORDER:
@@ -1653,36 +1852,40 @@ def plot_pareto(
         marker_size = 120 if sim == "blis-trained-roofline" else 60
 
         # Clamp error bars to avoid negative values on log scale
-        yerr_lo = min(s["rt_med"] - s["rt_q1"], s["rt_med"] * 0.9)
-        yerr_hi = s["rt_q3"] - s["rt_med"]
+        xerr_lo = min(s["rt_med"] - s["rt_q1"], s["rt_med"] * 0.9)
+        xerr_hi = s["rt_q3"] - s["rt_med"]
 
+        # AXES SWAPPED: Runtime on x-axis, MAPE on y-axis
         ax.errorbar(
-            s["mape_med"], s["rt_med"],
-            xerr=[[s["mape_med"] - s["mape_q1"]], [s["mape_q3"] - s["mape_med"]]],
-            yerr=[[max(yerr_lo, 0)], [yerr_hi]],
+            s["rt_med"], s["mape_med"],
+            xerr=[[max(xerr_lo, 0)], [xerr_hi]],
+            yerr=[[s["mape_med"] - s["mape_q1"]], [s["mape_q3"] - s["mape_med"]]],
             fmt="none", ecolor=COLOR_PALETTE[sim], elinewidth=1, capsize=3,
         )
         ax.scatter(
-            s["mape_med"], s["rt_med"], s=marker_size,
+            s["rt_med"], s["mape_med"], s=marker_size,
             color=COLOR_PALETTE[sim], edgecolor="black", linewidth=0.5,
             zorder=5, label=SIMULATOR_DISPLAY_NAMES[sim],
         )
         ox, oy = _annotation_offsets.get(sim, (10, 8))
+
+        # Subtle, thin arrows for all labels
         ax.annotate(
             SIMULATOR_DISPLAY_NAMES[sim],
-            (s["mape_med"], s["rt_med"]),
+            (s["rt_med"], s["mape_med"]),
             textcoords="offset points", xytext=(ox, oy), fontsize=9,
-            bbox=dict(boxstyle="round,pad=0.3", facecolor="white", edgecolor="none", alpha=0.7),
-            arrowprops={"arrowstyle": "-", "color": "gray", "linewidth": 0.6, "alpha": 0.7},
+            bbox=dict(boxstyle="round,pad=0.3", facecolor="white", edgecolor="none", alpha=0.85),
+            arrowprops={"arrowstyle": "-", "color": "gray", "linewidth": 0.5, "alpha": 0.6},
         )
 
     ax.set_xscale("log")
     ax.set_yscale("log")
-    # Set limits with generous padding to prevent label overlap with axes
-    all_mapes = [s["mape_med"] for s in sim_stats.values()]
-    ax.set_xlim(min(all_mapes) * 0.35, max(all_mapes) * 5)
+    # Set limits with MORE generous padding to prevent label-axis collision
+    # AXES SWAPPED: Runtime on x-axis, MAPE on y-axis
     all_rts = [s["rt_med"] for s in sim_stats.values()]
-    ax.set_ylim(min(all_rts) * 0.25, max(all_rts) * 6)
+    ax.set_xlim(min(all_rts) * 0.18, max(all_rts) * 8)
+    all_mapes = [s["mape_med"] for s in sim_stats.values()]
+    ax.set_ylim(min(all_mapes) * 0.28, max(all_mapes) * 6)
 
     # Disable grid for cleaner appearance
     ax.grid(False)
@@ -1692,14 +1895,15 @@ def plot_pareto(
         bt = sim_stats["blis-trained-roofline"]
         xlim = ax.get_xlim()
         ylim = ax.get_ylim()
-        ax.fill_between(
-            [bt["mape_med"], xlim[1]], bt["rt_med"], ylim[1],
+        # AXES SWAPPED: Fill region above and to the right
+        ax.fill_betweenx(
+            [bt["mape_med"], ylim[1]], bt["rt_med"], xlim[1],
             color="#90E0EF", alpha=0.15, zorder=0,
         )
 
     pct = r"\%" if matplotlib.rcParams.get("text.usetex") else "%"
-    ax.set_xlabel(f"Median MAPE ({pct})", fontsize=10)
-    ax.set_ylabel("Median Runtime (s)", fontsize=10)
+    ax.set_xlabel("Median Runtime (s)", fontsize=10)
+    ax.set_ylabel(f"Median MAPE ({pct})", fontsize=10)
     ax.set_title("Accuracy-Speed Pareto Frontier", fontsize=11, fontweight="bold", pad=10)
 
     # Place legend below the plot to avoid overlap with data/annotations
