@@ -163,19 +163,43 @@ class BLISEvolvedAdapter(BaseBLISAdapter):
         1.94710771,          # β₂ᵦ: Decode memory (+1.3% vs iter27)
     ]
 
+    # Iter36 optimised coefficients (recalibrated after bug fixes)
+    ITER36_ALPHA: list[float] = [
+        15563.20,            # α₀: QueueingTime (~15.6ms fixed API overhead)
+        2.03,                # α₁: PostDecodeFixedOverhead (µs, -775µs vs iter29 due to bug fixes)
+        0.992,               # α₂: OutputTokenProcessingTime (µs/token, -44.9µs vs iter29)
+    ]
+
+    ITER36_BETA: list[float] = [
+        0.152,               # β₁ₐ: Prefill compute (7.2× FlashAttention, stable from iter29)
+        0.0,                 # β₂ₐ: Decode compute (zero — memory-bound)
+        1.265,               # β₃: Weight loading (-7% vs iter29)
+        0.565,               # β₄: TP All-Reduce (-25% vs iter29, less TP communication)
+        32.10,               # β₅: Per-layer overhead (µs/layer, stable)
+        0.899,               # β₆: Per-request scheduling (µs/req, -80% vs iter29, bug fixes reduced overhead)
+        126.0,               # β₇: Per-step constant (µs/step, stable)
+        481.9,               # β₈: Per-MoE-layer overhead (µs/MoE-layer, stable)
+        0.0,                 # β₁ᵦ: Prefill memory (zero — compute-bound)
+        2.087,               # β₂ᵦ: Decode memory (+7% vs iter29, more KV cache bandwidth)
+    ]
+
     def __init__(self, blis_binary: str, iteration: int = 26):
         """Initialize BLIS evolved adapter.
 
         Parameters
         ----------
         blis_binary : str
-            Path to BLIS binary
+            Path to BLIS binary (ignored - always uses blis_iter36)
         iteration : int, default=26
-            Which iteration coefficients to use (16, 24, 26, 27, or 29)
+            Which iteration coefficients to use (16, 24, 26, 27, 29, or 36)
         """
-        super().__init__(blis_binary)
-        if iteration not in (16, 24, 26, 27, 29):
-            raise ValueError(f"iteration must be 16, 24, 26, 27, or 29, got {iteration}")
+        # IMPORTANT: evolved adapter ALWAYS uses blis_iter36, not the default blis
+        # The blis_iter36 binary has the "evolved" backend
+        blis_dir = os.path.dirname(os.path.abspath(blis_binary))
+        blis_iter36_path = os.path.join(blis_dir, "blis_iter36")
+        super().__init__(blis_iter36_path)
+        if iteration not in (16, 24, 26, 27, 29, 36):
+            raise ValueError(f"iteration must be 16, 24, 26, 27, 29, or 36, got {iteration}")
         self.iteration = iteration
 
     @staticmethod
@@ -205,9 +229,12 @@ class BLISEvolvedAdapter(BaseBLISAdapter):
         elif self.iteration == 27:
             alpha = self.ITER27_ALPHA
             beta = self.ITER27_BETA
-        else:  # iteration == 29
+        elif self.iteration == 29:
             alpha = self.ITER29_ALPHA
             beta = self.ITER29_BETA
+        else:  # iteration == 36
+            alpha = self.ITER36_ALPHA
+            beta = self.ITER36_BETA
 
         with tempfile.TemporaryDirectory() as tmpdir:
             spec_path = os.path.join(tmpdir, "workload_spec.yaml")

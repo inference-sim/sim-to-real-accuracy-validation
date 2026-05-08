@@ -223,7 +223,12 @@ def run_pipeline(
                         tp=exp.tp,
                         max_num_batched_tokens=exp.max_num_batched_tokens,
                     ))
-                    print(f"  OK: {adapter_name} × {exp.model} ({exp.workload}) [{elapsed:.2f}s]")
+                    # Calculate completion percentage
+                    gt_requests = exp.summary.num_requests
+                    sim_requests = result.summary.num_requests
+                    completion_pct = (sim_requests / gt_requests * 100) if gt_requests > 0 else 0
+                    print(f"  OK: {adapter_name} × {exp.model} ({exp.workload}) [{elapsed:.2f}s] "
+                          f"- {sim_requests}/{gt_requests} requests ({completion_pct:.1f}% complete)")
                 except Exception as exc:
                     fail_count += 1
                     logger.error(
@@ -305,7 +310,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--blis-evolved-iteration",
         type=int,
         default=26,
-        choices=[16, 24, 26, 27, 29],
+        choices=[16, 24, 26, 27, 29, 36],
         help="Which iteration coefficients to use for blis-evolved adapter (default: 26)",
     )
     return parser.parse_args(argv)
