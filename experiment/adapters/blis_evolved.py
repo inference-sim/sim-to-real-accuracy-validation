@@ -1,8 +1,9 @@
 """BLIS evolved adapter -- physics-informed latency with learned coefficients.
 
 Uses the ``evolved`` latency backend which combines roofline basis functions
-with learned correction terms. Supports iter16 (7-beta), iter24 (10-beta), and
-iter26 (10-beta with TP All-Reduce) coefficient sets.
+with learned correction terms. Supports iter16 (7-beta), iter24 (10-beta),
+iter26 (10-beta with TP All-Reduce), and iter27 (10-beta with CMA-ES joint
+optimization) coefficient sets.
 """
 
 from __future__ import annotations
@@ -19,7 +20,8 @@ class BLISEvolvedAdapter(BaseBLISAdapter):
     """BLIS simulator with ``--latency-model evolved``.
 
     Passes alpha/beta coefficients on the command line via ``--alpha-coeffs``
-    and ``--beta-coeffs``. Supports iter16 (7 betas) and iter24 (10 betas).
+    and ``--beta-coeffs``. Supports iter16 (7 betas), iter24 (10 betas),
+    iter26 (10 betas), and iter27 (10 betas).
 
     Iter16 training summary
     -----------------------
@@ -121,19 +123,83 @@ class BLISEvolvedAdapter(BaseBLISAdapter):
         1.2632,              # β₂ᵦ: Decode memory (26% overhead)
     ]
 
+    # Iter27 optimised coefficients (10 betas with CMA-ES joint optimization)
+    ITER27_ALPHA: list[float] = [
+        15563.199579,        # α₀: QueueingTime (~15.6ms fixed API overhead)
+        777.3455,            # α₁: PostDecodeFixedOverhead (~0.8ms per-request)
+        45.907545,           # α₂: OutputTokenProcessingTime (µs/token streaming)
+    ]
+
+    ITER27_BETA: list[float] = [
+        0.152128,            # β₁ₐ: Prefill compute (7.2× FlashAttention, +9% vs iter26)
+        0.000721,            # β₂ₐ: Decode compute (near-zero — memory-bound)
+        1.363621,            # β₃: Weight loading (36% overhead, stable)
+        0.752037,            # β₄: TP All-Reduce (+83% vs iter26 — better comm capture)
+        32.394131,           # β₅: Per-layer overhead (µs/layer, -35% as β₄ absorbed)
+        2.805128,            # β₆: Per-request scheduling (µs/req)
+        126.024825,          # β₇: Per-step constant (µs/step, -26% reduction)
+        505.508488,          # β₈: Per-MoE-layer overhead (µs/MoE-layer, +18%)
+        0.000746,            # β₁ᵦ: Prefill memory (near-zero — compute-bound)
+        1.922366,            # β₂ᵦ: Decode memory (+52% vs iter26 — stronger correction)
+    ]
+
+    # Iter29 optimised coefficients (sequential golden section search)
+    ITER29_ALPHA: list[float] = [
+        15563.199579,        # α₀: QueueingTime (~15.6ms fixed API overhead)
+        777.3455,            # α₁: PostDecodeFixedOverhead (~0.8ms per-request)
+        45.907545,           # α₂: OutputTokenProcessingTime (µs/token streaming)
+    ]
+
+    ITER29_BETA: list[float] = [
+        0.152128,            # β₁ₐ: Prefill compute (7.2× FlashAttention, stable)
+        0.0,                 # β₂ₐ: Decode compute (zero — memory-bound)
+        1.36252915,          # β₃: Weight loading (36% overhead, -0.08% vs iter27)
+        0.752037,            # β₄: TP All-Reduce (stable from iter27)
+        32.09546717,         # β₅: Per-layer overhead (µs/layer, -0.92% fine-tune)
+        4.41684444,          # β₆: Per-request scheduling (µs/req, +57% vs iter27)
+        126.024825,          # β₇: Per-step constant (µs/step, stable)
+        481.8613888,         # β₈: Per-MoE-layer overhead (µs/MoE-layer, -4.7% vs iter27)
+        0.0,                 # β₁ᵦ: Prefill memory (zero — compute-bound)
+        1.94710771,          # β₂ᵦ: Decode memory (+1.3% vs iter27)
+    ]
+
+    # Iter36 optimised coefficients (recalibrated after bug fixes)
+    ITER36_ALPHA: list[float] = [
+        15563.20,            # α₀: QueueingTime (~15.6ms fixed API overhead)
+        2.03,                # α₁: PostDecodeFixedOverhead (µs, -775µs vs iter29 due to bug fixes)
+        0.992,               # α₂: OutputTokenProcessingTime (µs/token, -44.9µs vs iter29)
+    ]
+
+    ITER36_BETA: list[float] = [
+        0.152,               # β₁ₐ: Prefill compute (7.2× FlashAttention, stable from iter29)
+        0.0,                 # β₂ₐ: Decode compute (zero — memory-bound)
+        1.265,               # β₃: Weight loading (-7% vs iter29)
+        0.565,               # β₄: TP All-Reduce (-25% vs iter29, less TP communication)
+        32.10,               # β₅: Per-layer overhead (µs/layer, stable)
+        0.899,               # β₆: Per-request scheduling (µs/req, -80% vs iter29, bug fixes reduced overhead)
+        126.0,               # β₇: Per-step constant (µs/step, stable)
+        481.9,               # β₈: Per-MoE-layer overhead (µs/MoE-layer, stable)
+        0.0,                 # β₁ᵦ: Prefill memory (zero — compute-bound)
+        2.087,               # β₂ᵦ: Decode memory (+7% vs iter29, more KV cache bandwidth)
+    ]
+
     def __init__(self, blis_binary: str, iteration: int = 26):
         """Initialize BLIS evolved adapter.
 
         Parameters
         ----------
         blis_binary : str
-            Path to BLIS binary
+            Path to BLIS binary (ignored - always uses blis_iter36)
         iteration : int, default=26
-            Which iteration coefficients to use (16, 24, or 26)
+            Which iteration coefficients to use (16, 24, 26, 27, 29, or 36)
         """
-        super().__init__(blis_binary)
-        if iteration not in (16, 24, 26):
-            raise ValueError(f"iteration must be 16, 24, or 26, got {iteration}")
+        # IMPORTANT: evolved adapter ALWAYS uses blis_iter36, not the default blis
+        # The blis_iter36 binary has the "evolved" backend
+        blis_dir = os.path.dirname(os.path.abspath(blis_binary))
+        blis_iter36_path = os.path.join(blis_dir, "blis_iter36")
+        super().__init__(blis_iter36_path)
+        if iteration not in (16, 24, 26, 27, 29, 36):
+            raise ValueError(f"iteration must be 16, 24, 26, 27, 29, or 36, got {iteration}")
         self.iteration = iteration
 
     @staticmethod
@@ -157,9 +223,18 @@ class BLISEvolvedAdapter(BaseBLISAdapter):
         elif self.iteration == 24:
             alpha = self.ITER24_ALPHA
             beta = self.ITER24_BETA
-        else:  # iteration == 26
+        elif self.iteration == 26:
             alpha = self.ITER26_ALPHA
             beta = self.ITER26_BETA
+        elif self.iteration == 27:
+            alpha = self.ITER27_ALPHA
+            beta = self.ITER27_BETA
+        elif self.iteration == 29:
+            alpha = self.ITER29_ALPHA
+            beta = self.ITER29_BETA
+        else:  # iteration == 36
+            alpha = self.ITER36_ALPHA
+            beta = self.ITER36_BETA
 
         with tempfile.TemporaryDirectory() as tmpdir:
             spec_path = os.path.join(tmpdir, "workload_spec.yaml")

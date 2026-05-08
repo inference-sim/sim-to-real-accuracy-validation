@@ -124,6 +124,7 @@ python -m experiment.run --adapters blis-roofline vidur llm-optimizer-estimate a
 ```bash
 python -m experiment.run \
   --data-dir vllm_data/ground_truth \
+  --no-dp-scaling \
   --blis-binary inference-sim/blis \
   --vidur-dir vidur \
   --output-dir results

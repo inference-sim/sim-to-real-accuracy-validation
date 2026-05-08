@@ -17,11 +17,9 @@ logger = logging.getLogger(__name__)
 
 from experiment.adapters.aiconfigurator_est import AIConfiguratorEstimateAdapter
 from experiment.adapters.base import SimulatorAdapter
-from experiment.adapters.blis_blackbox import BLISBlackboxAdapter
-from experiment.adapters.blis_crossmodel import BLISCrossModelAdapter
 from experiment.adapters.blis_evolved import BLISEvolvedAdapter
 from experiment.adapters.blis_roofline import BLISRooflineAdapter
-from experiment.adapters.blis_trained_roofline import BLISTrainedRooflineAdapter
+from experiment.adapters.blis_trained_physics import BLISTrainedPhysicsAdapter
 from experiment.adapters.llm_optimizer_est import LLMOptimizerEstimateAdapter
 from experiment.adapters.llmservingsim import LLMServingSimAdapter
 from experiment.adapters.vidur import VidurAdapter
@@ -30,11 +28,9 @@ from experiment.metrics import ErrorRecord, RuntimeRecord, compute_errors
 from experiment.report import generate_report
 
 ALL_ADAPTER_NAMES = [
-    "blis-blackbox",
     "blis-roofline",
-    "blis-crossmodel",
     "blis-evolved",
-    "blis-trained-roofline",
+    "blis-trained-physics",
     "vidur",
     "llm-optimizer-estimate",
     "aiconfigurator-estimate",
@@ -112,11 +108,9 @@ def build_adapter_registry(
     Only instantiates adapters listed in *adapter_names* (default: all).
     """
     factories: dict[str, callable] = {
-        "blis-blackbox": lambda: BLISBlackboxAdapter(blis_binary),
         "blis-roofline": lambda: BLISRooflineAdapter(blis_binary),
-        "blis-crossmodel": lambda: BLISCrossModelAdapter(blis_binary),
         "blis-evolved": lambda: BLISEvolvedAdapter(blis_binary, iteration=blis_evolved_iteration),
-        "blis-trained-roofline": lambda: BLISTrainedRooflineAdapter(blis_binary),
+        "blis-trained-physics": lambda: BLISTrainedPhysicsAdapter(blis_binary),
         "vidur": lambda: VidurAdapter(vidur_dir),
         "llm-optimizer-estimate": lambda: LLMOptimizerEstimateAdapter(),
         "aiconfigurator-estimate": lambda: AIConfiguratorEstimateAdapter(),
@@ -229,7 +223,12 @@ def run_pipeline(
                         tp=exp.tp,
                         max_num_batched_tokens=exp.max_num_batched_tokens,
                     ))
-                    print(f"  OK: {adapter_name} × {exp.model} ({exp.workload}) [{elapsed:.2f}s]")
+                    # Calculate completion percentage
+                    gt_requests = exp.summary.num_requests
+                    sim_requests = result.summary.num_requests
+                    completion_pct = (sim_requests / gt_requests * 100) if gt_requests > 0 else 0
+                    print(f"  OK: {adapter_name} × {exp.model} ({exp.workload}) [{elapsed:.2f}s] "
+                          f"- {sim_requests}/{gt_requests} requests ({completion_pct:.1f}% complete)")
                 except Exception as exc:
                     fail_count += 1
                     logger.error(
@@ -311,7 +310,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--blis-evolved-iteration",
         type=int,
         default=26,
-        choices=[16, 24, 26],
+        choices=[16, 24, 26, 27, 29, 36],
         help="Which iteration coefficients to use for blis-evolved adapter (default: 26)",
     )
     return parser.parse_args(argv)

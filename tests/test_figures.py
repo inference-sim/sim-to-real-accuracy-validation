@@ -25,7 +25,7 @@ _METRICS = ["e2e_mean", "e2e_p99", "ttft_mean", "ttft_p99", "itl_mean", "itl_p99
 
 
 def _make_error_row(
-    simulator="blis-trained-roofline",
+    simulator="blis-trained-physics",
     model="meta-llama/Llama-3.1-8B-Instruct",
     workload="general",
     metric_name="e2e_mean",
@@ -60,7 +60,7 @@ def _make_error_row(
 
 
 def _make_runtime_row(
-    simulator="blis-trained-roofline",
+    simulator="blis-trained-physics",
     model="meta-llama/Llama-3.1-8B-Instruct",
     workload="general",
     wall_clock_seconds=1.5,
@@ -81,7 +81,7 @@ def _make_full_model_df():
 
     rows = []
     for i, model in enumerate(MODEL_ORDER):
-        for sim in ["blis-roofline", "blis-evolved", "vidur"]:
+        for sim in ["blis-roofline", "blis-trained-physics", "vidur"]:
             for metric in _METRICS:
                 rows.append(_make_error_row(
                     simulator=sim, model=model, metric_name=metric,
@@ -95,11 +95,11 @@ def _sample_error_csv(tmp_path: Path) -> str:
     path.write_text(
         "simulator,experiment_folder,model,workload,stage_index,metric_name,"
         "predicted,actual,mape,mpe,absolute_error\n"
-        "blis-trained-roofline,/exp/1,meta-llama/Llama-3.1-8B-Instruct,general,"
+        "blis-trained-physics,/exp/1,meta-llama/Llama-3.1-8B-Instruct,general,"
         "-1,e2e_mean,110,100,10,10,10\n"
         "blis-crossmodel,/exp/1,meta-llama/Llama-3.1-8B-Instruct,general,"
         "-1,e2e_mean,200,100,100,100,100\n"
-        "blis-trained-roofline,/exp/1,meta-llama/Llama-3.1-8B-Instruct,general,"
+        "blis-trained-physics,/exp/1,meta-llama/Llama-3.1-8B-Instruct,general,"
         "0,e2e_mean,115,100,15,15,15\n"
     )
     return str(path)
@@ -109,7 +109,7 @@ def _sample_runtime_csv(tmp_path: Path) -> str:
     path = tmp_path / "runtime.csv"
     path.write_text(
         "simulator,experiment_folder,model,workload,wall_clock_seconds\n"
-        "blis-trained-roofline,/exp/1,meta-llama/Llama-3.1-8B-Instruct,general,1.5\n"
+        "blis-trained-physics,/exp/1,meta-llama/Llama-3.1-8B-Instruct,general,1.5\n"
         "blis-crossmodel,/exp/1,meta-llama/Llama-3.1-8B-Instruct,general,3.0\n"
     )
     return str(path)
@@ -264,7 +264,7 @@ class TestFigure2:
     def _make_df(self):
         rows = []
         for hw in ["H100", "A100-80GB", "L40S"]:
-            for sim in ["blis-trained-roofline", "blis-roofline"]:
+            for sim in ["blis-trained-physics", "blis-roofline"]:
                 for metric in _METRICS:
                     for model_idx in range(4):
                         rows.append(_make_error_row(
@@ -300,7 +300,7 @@ class TestFigure3:
         rows = []
         for wl in ["general", "codegen", "roleplay", "reasoning"]:
             for model in FIGURE3_MODELS:
-                for sim in ["blis-trained-roofline"]:
+                for sim in ["blis-trained-physics"]:
                     for metric in _METRICS:
                         rows.append(_make_error_row(
                             simulator=sim, model=model, workload=wl,
@@ -326,7 +326,7 @@ class TestFigure4:
         """Create a DataFrame where *param_col* takes multiple *values*."""
         rows = []
         for val in values:
-            for sim in ["blis-trained-roofline", "vidur"]:
+            for sim in ["blis-trained-physics", "vidur"]:
                 for metric in _METRICS:
                     row = _make_error_row(
                         simulator=sim, model=model,
@@ -357,7 +357,7 @@ class TestFigure4:
         rows = []
         for tp in [1, 2]:
             for mbt in [1024, 2048, 4096]:
-                for sim in ["blis-trained-roofline", "vidur"]:
+                for sim in ["blis-trained-physics", "vidur"]:
                     for metric in _METRICS:
                         row = _make_error_row(
                             simulator=sim, model=FIG4A_MODEL,
@@ -394,7 +394,7 @@ class TestFigure4:
 class TestFigure5:
     def _make_data(self):
         error_rows, runtime_rows = [], []
-        for sim in ["blis-trained-roofline", "vidur"]:
+        for sim in ["blis-trained-physics", "vidur"]:
             for i in range(5):
                 for metric in _METRICS:
                     error_rows.append(_make_error_row(
@@ -438,7 +438,7 @@ class TestFigure5:
 class TestTable1:
     def _make_runtime_df(self):
         rows = []
-        for sim, t in [("blis-trained-roofline", 1.2), ("vidur", 30.0)]:
+        for sim, t in [("blis-trained-physics", 1.2), ("vidur", 30.0)]:
             for i in range(3):
                 rows.append(_make_runtime_row(
                     simulator=sim, wall_clock_seconds=t + i * 0.5,
@@ -491,6 +491,16 @@ class TestCLI:
         from experiment.figures import parse_figure_args
         args = parse_figure_args(["--exclude-simulators", "vidur", "blis-roofline"])
         assert args.exclude_simulators == ["vidur", "blis-roofline"]
+
+    def test_parse_args_sim_comparison_no_aggregate(self):
+        from experiment.figures import parse_figure_args
+        args = parse_figure_args(["--sim-comparison-no-aggregate"])
+        assert args.sim_comparison_no_aggregate is True
+
+    def test_parse_args_sim_comparison_default_aggregate(self):
+        from experiment.figures import parse_figure_args
+        args = parse_figure_args([])
+        assert args.sim_comparison_no_aggregate is False
 
 
 # ---------------------------------------------------------------------------
@@ -705,3 +715,58 @@ class TestDeriveConfigTag:
         df = pd.DataFrame([{"simulator": "vidur", "mape": 10.0}])
         result = _add_config_tags(df)
         assert result["config_tag"].iloc[0] == "default"
+
+
+# ---------------------------------------------------------------------------
+# Tests: Simulator Comparison Figures
+# ---------------------------------------------------------------------------
+
+
+class TestSimulatorComparison:
+    def _make_comparison_df(self):
+        """Create data for sim comparison tests."""
+        rows = []
+        for sim in ["blis-roofline", "blis-trained-physics", "vidur"]:
+            for model in ["model-A", "model-B"]:
+                for metric in _METRICS:
+                    rows.append(_make_error_row(
+                        simulator=sim, model=model, metric_name=metric,
+                        mape=15.0, experiment_folder=f"/exp/{model}",
+                    ))
+        return pd.DataFrame(rows)
+
+    def test_returns_figure_with_aggregate(self):
+        from experiment.figures import plot_simulator_comparison
+        df = self._make_comparison_df()
+        fig = plot_simulator_comparison(
+            df, ["blis-roofline", "blis-trained-physics"], "vidur",
+            output_path=None, show_aggregate=True
+        )
+        assert fig is not None
+        # Should have 2 rows × 3 columns = 6 axes
+        assert len(fig.axes) == 6
+        plt.close(fig)
+
+    def test_returns_figure_without_aggregate(self):
+        from experiment.figures import plot_simulator_comparison
+        df = self._make_comparison_df()
+        fig = plot_simulator_comparison(
+            df, ["blis-roofline", "blis-trained-physics"], "vidur",
+            output_path=None, show_aggregate=False
+        )
+        assert fig is not None
+        # Should have 1 row × 3 columns = 3 axes
+        assert len(fig.axes) == 3
+        plt.close(fig)
+
+    def test_default_shows_aggregate(self):
+        from experiment.figures import plot_simulator_comparison
+        df = self._make_comparison_df()
+        # Test default parameter value (show_aggregate=True by default)
+        fig = plot_simulator_comparison(
+            df, ["blis-roofline", "blis-trained-physics"], "vidur",
+            output_path=None
+        )
+        assert fig is not None
+        assert len(fig.axes) == 6  # 2×3 grid
+        plt.close(fig)
