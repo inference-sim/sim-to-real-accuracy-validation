@@ -10,8 +10,9 @@ build/
 # Ground truth data (large, not tracked)
 vllm_data/
 
-# Generated results
-results/
+# Generated results (track figure_captions.md)
+results/*
+!results/figure_captions.md
 
 # External repos (should be symlinks to local clones)
 inference-sim
