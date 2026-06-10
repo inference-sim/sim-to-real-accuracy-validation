@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 # Constants
 # ---------------------------------------------------------------------------
 
-EXCLUDED_SIMULATORS = frozenset({"blis-blackbox", "blis-crossmodel", "blis-trained-roofline"})
+EXCLUDED_SIMULATORS = frozenset({"blis-blackbox", "blis-crossmodel", "blis-trained-roofline", "blis-roofline", "blis-evolved"})
 
 SIMULATOR_ORDER = [
     "blis-trained-physics",
@@ -41,7 +41,7 @@ SIMULATOR_ORDER = [
 ]
 
 SIMULATOR_DISPLAY_NAMES = {
-    "blis-trained-physics": "BLIS-Trained-Physics",
+    "blis-trained-physics": "BLIS",
     "blis-evolved": "BLIS-Evolved",
     "blis-roofline": "BLIS-Roofline",
     "vidur": "Vidur",
@@ -437,6 +437,19 @@ def _grouped_bar(
         else:
             axes_to_plot = [ax_obj]
 
+        # Precompute which groups have only one simulator with data
+        sims_per_group = {}
+        for g_idx, group_val in enumerate(present_groups):
+            count = sum(
+                1 for s in simulators
+                if not df[
+                    (df[group_col] == group_val)
+                    & (df["simulator"] == s)
+                    & (df["metric_name"] == metric_key)
+                ]["mape"].empty
+            )
+            sims_per_group[g_idx] = count
+
         for sim_idx, sim in enumerate(simulators):
             offset = (sim_idx - n_sims / 2 + 0.5) * bar_width
             positions = []
@@ -451,7 +464,9 @@ def _grouped_bar(
                 if vals.empty:
                     continue
                 mape = vals.median() if aggregate else vals.iloc[0]
-                positions.append(x[g_idx] + offset)
+                # Center bar if this is the only simulator in the group
+                pos = x[g_idx] if sims_per_group[g_idx] == 1 else x[g_idx] + offset
+                positions.append(pos)
                 heights.append(mape)
 
             if not positions:
@@ -502,8 +517,9 @@ def _grouped_bar(
                     label=label,
                 )
 
-        # Set x-ticks and labels
+        # Set x-ticks, labels, and explicit xlim to avoid sharex clipping
         for ax_plot in axes_to_plot:
+            ax_plot.set_xlim(-0.5, n_groups - 0.5)
             ax_plot.set_xticks(x)
             if ax_plot == axes_to_plot[-1]:  # Only show x-labels on bottom axis
                 ha = "right" if xlabel_rotation else "center"
