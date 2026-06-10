@@ -10,9 +10,9 @@ build/
 # Ground truth data (large, not tracked)
 vllm_data/
 
-# Generated results (track figure_captions.md)
-results/*
-!results/figure_captions.md
+# Ground truth CSVs are large; track figures and captions
+results/error_records.csv
+results/cluster_2000req/
 
 # External repos (should be symlinks to local clones)
 inference-sim
