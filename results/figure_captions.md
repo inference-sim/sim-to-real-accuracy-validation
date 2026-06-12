@@ -4,11 +4,11 @@
 
 | Simulator | Source | Commit/Version |
 |-----------|--------|----------------|
-| BLIS | [inference-sim](https://github.com/inference-sim/inference-sim) | `b05154c` |
+| BLIS | [inference-sim](https://github.com/inference-sim/inference-sim) | `78dc73e7` (main) |
 | Vidur | [microsoft/vidur](https://github.com/microsoft/vidur) | `8383d29` |
 | LLM-Optimizer | [bentoml/llm-optimizer](https://github.com/bentoml/llm-optimizer) | `bb82d22` |
-| AIConfigurator | [aiconfigurator SDK](https://pypi.org/project/aiconfigurator/) | `0.8.0` |
-| LLMServingSim | [casys-kaist/LLMServingSim](https://github.com/casys-kaist/LLMServingSim) | `baf0feb` |
+| AIConfigurator | [aiconfigurator SDK](https://pypi.org/project/aiconfigurator/) | `0.9.0` |
+| LLMServingSim | [casys-kaist/LLMServingSim](https://github.com/casys-kaist/LLMServingSim) | `3012eb1` (v1.1.0) |
 
 ## Ground Truth
 
@@ -19,7 +19,7 @@ All ground-truth measurements were collected using [inference-perf](https://gith
 - **BLIS variant.** "BLIS" refers to the `blis-trained-physics` latency mode (learned alpha/beta coefficients + physics-based TP All-Reduce modeling).
 - **Metrics.** All figures report summary-level MAPE (`stage_index = -1`), not per-stage.
 - **Simulation types.** BLIS and Vidur replay full per-request traces. LLM-Optimizer and AIConfigurator are analytical (concurrency derived via Little's Law from ground-truth E2E). LLMServingSim is cycle-accurate.
-- **Coverage gaps.** Vidur/AIConfigurator exclude MoE models. LLM-Optimizer approximates MoE as dense. AIConfigurator is H100-only. Only BLIS supports all hardware, workloads, and config parameters.
+- **Coverage gaps.** Vidur excludes MoE models. LLM-Optimizer approximates MoE as dense. AIConfigurator supports H100, A100-80GB, and L40S. Only BLIS supports all hardware, workloads, and config parameters.
 
 ---
 

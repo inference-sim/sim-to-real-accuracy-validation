@@ -1,18 +1,17 @@
 # Sim-to-Real Accuracy Validation
 
-Compare 7 inference-serving simulators against ground-truth latency data collected from vLLM, producing MAPE/MPE error tables, CSV exports, and publication figures.
+Compare 6 inference-serving simulators against ground-truth latency data collected from vLLM, producing MAPE/MPE error tables, CSV exports, and publication figures.
 
 ## Simulators
 
 | Adapter | Type | Description |
 |---------|------|-------------|
-| `blis-blackbox` | Subprocess (Go) | BLIS with trained alpha/beta regression coefficients per model |
 | `blis-roofline` | Subprocess (Go) | BLIS with hardware roofline latency model |
-| `blis-crossmodel` | Subprocess (Go) | BLIS with globally-fitted cross-model coefficients |
-| `blis-trained-roofline` | Subprocess (Go) | BLIS with trained roofline coefficients |
+| `blis-trained-physics` | Subprocess (Go) | BLIS with trained-physics latency model (cross-model coefficients from defaults.yaml) |
 | `vidur` | Subprocess (Python) | Discrete-event simulator with vLLM scheduler emulation |
 | `llm-optimizer-estimate` | In-process (Python) | Analytical roofline estimator from llm-optimizer |
 | `aiconfigurator-estimate` | In-process (Python) | Analytical estimator from AIConfigurator SDK |
+| `llmservingsim` | Subprocess (Python/C++) | Cycle-accurate simulator based on AstraSim |
 
 ## Project Structure
 
@@ -30,13 +29,12 @@ sim-to-real-accuracy-validation/
 │   ├── figures.py              # Publication figures (independent CLI entry point)
 │   └── adapters/
 │       ├── base.py             # SimulatorAdapter ABC + shared BLIS logic
-│       ├── blis_blackbox.py
 │       ├── blis_roofline.py
-│       ├── blis_crossmodel.py
-│       ├── blis_trained_roofline.py
+│       ├── blis_trained_physics.py
 │       ├── vidur.py
 │       ├── llm_optimizer_est.py
-│       └── aiconfigurator_est.py
+│       ├── aiconfigurator_est.py
+│       └── llmservingsim.py
 ├── tests/                      # Unit + integration tests (pytest)
 ├── vllm_data/ground_truth/     # 16 ground-truth experiment directories (not tracked, see below)
 ├── inference-sim -> ../inference-sim   # Symlink to BLIS simulator repo
@@ -59,15 +57,17 @@ This repo expects `inference-sim`, `llm-optimizer`, and `vidur` to be symlinks t
 
 | Repo | Commit | Description |
 |------|--------|-------------|
-| [inference-sim](https://github.com/inference-sim/inference-sim) | `b05154c` | hypothesis(H30-H32): BLIS replay vs real vLLM — three-way crossmodel validation |
+| [inference-sim](https://github.com/inference-sim/inference-sim) | `78dc73e7` | feat(config): DP/EP config plumbing for trained-physics MoE |
 | [llm-optimizer](https://github.com/bentoml/llm-optimizer) | `bb82d22` | feat: add support for max workers |
 | [vidur](https://github.com/microsoft/vidur) | `8383d29` | [Bugfix]: Revert scheduler regression and introduce canary branch |
+| [LLMServingSim](https://github.com/casys-kaist/LLMServingSim) | `3012eb1` (v1.1.0) | Release v1.1.0: vLLM-based profiler, bench validation, DP+EP MoE |
+| [aiconfigurator](https://pypi.org/project/aiconfigurator/) | `0.9.0` | SDK with model_path API, bfloat16/fp8 profiles, MoE HYBRID mode |
 
 Clone at the pinned versions and create symlinks (assuming repos live under the same parent directory):
 
 ```bash
 # Clone at pinned commits
-git clone git@github.com:inference-sim/inference-sim.git ../inference-sim && git -C ../inference-sim checkout b05154c
+git clone git@github.com:inference-sim/inference-sim.git ../inference-sim && git -C ../inference-sim checkout 78dc73e7
 git clone git@github.com:bentoml/llm-optimizer.git ../llm-optimizer && git -C ../llm-optimizer checkout bb82d22
 git clone git@github.com:microsoft/vidur.git ../vidur && git -C ../vidur checkout 8383d29
 
@@ -90,7 +90,7 @@ mkdir -p vllm_data/ground_truth
 
 ```bash
 cd inference-sim
-go build -o blis main.go
+go build -o blis .
 cd ..
 ```
 
@@ -100,7 +100,7 @@ cd ..
 pip install numpy pyyaml pandas matplotlib   # experiment package deps (pandas/matplotlib for figures)
 pip install -e vidur/                         # Vidur simulator
 pip install -e llm-optimizer/                 # LLM optimizer estimator
-pip install aiconfigurator                    # AIConfigurator SDK
+pip install aiconfigurator==0.9.0             # AIConfigurator SDK
 ```
 
 ### 5. (Optional) HuggingFace authentication
@@ -116,7 +116,7 @@ export HUGGING_FACE_HUB_TOKEN=hf_...
 ### Quickstart
 
 ```bash
-python -m experiment.run --adapters blis-roofline vidur llm-optimizer-estimate aiconfigurator-estimate --data-dir vllm_data/ground_truth --blis-binary inference-sim/blis --vidur-dir vidur --output-dir results --no-dp-scaling
+python -m experiment.run --adapters blis-roofline blis-trained-physics vidur llm-optimizer-estimate aiconfigurator-estimate llmservingsim --data-dir vllm_data/ground_truth --blis-binary inference-sim/blis --vidur-dir vidur --llmservingsim-dir LLMServingSim --output-dir results --no-dp-scaling
 ```
 
 ### Run all simulators
@@ -170,7 +170,8 @@ This produces 5 PDF figures and 1 LaTeX table under `results/figures/`.
 | `--blis-binary` | `inference-sim/blis` | Path to compiled BLIS binary |
 | `--vidur-dir` | `vidur` | Path to cloned Vidur repository |
 | `--output-dir` | `results` | Where reports and CSV are saved |
-| `--adapters` | all 7 | Space-separated list of adapters to run |
+| `--llmservingsim-dir` | `LLMServingSim` | Path to LLMServingSim directory |
+| `--adapters` | all 6 | Space-separated list of adapters to run |
 | `--no-dp-scaling` | *(disabled)* | Exclude experiments with data parallelism > 1 |
 
 ### Figures CLI options
@@ -181,7 +182,7 @@ This produces 5 PDF figures and 1 LaTeX table under `results/figures/`.
 | `--output-dir` | `results/figures` | Where figures are saved |
 | `--metadata` | *(none)* | Path to `experiment_metadata.csv` for hardware/config enrichment |
 
-Valid adapter names: `blis-blackbox`, `blis-roofline`, `blis-crossmodel`, `blis-trained-roofline`, `vidur`, `llm-optimizer-estimate`, `aiconfigurator-estimate`.
+Valid adapter names: `blis-roofline`, `blis-trained-physics`, `vidur`, `llm-optimizer-estimate`, `aiconfigurator-estimate`, `llmservingsim`.
 
 ## Cluster Deployment
 
@@ -214,15 +215,14 @@ Failures at any step are logged and skipped — the pipeline does not abort on i
 
 Not every adapter can run every experiment. The `can_run()` method filters incompatible pairs, and the pipeline skips them automatically. See [docs/simulator-limitations.md](docs/simulator-limitations.md) for full details.
 
-| Adapter | Key filters | Coverage (49 experiments) |
+| Adapter | Key filters | Coverage (38 experiments) |
 |---------|-------------|--------------------------|
-| `blis-blackbox` | Model must have coefficients in `inference-sim/defaults.yaml` | Varies |
-| `blis-roofline` | Always runs | All 49 |
-| `blis-crossmodel` | Always runs | All 49 |
-| `blis-trained-roofline` | Model must have trained coefficients | Varies |
+| `blis-roofline` | Always runs | All 38 |
+| `blis-trained-physics` | Always runs | All 38 |
 | `vidur` | 3 pre-profiled models, H100/A100 only, no FP8 | ~9 |
-| `llm-optimizer-estimate` | H100/A100, `shared_prefix` workloads, no Llama-4-Scout | ~40 |
-| `aiconfigurator-estimate` | H100 only, dense models, `shared_prefix` workloads | ~20 |
+| `llm-optimizer-estimate` | H100/A100, `shared_prefix` workloads, no Llama-4-Scout | ~34 |
+| `aiconfigurator-estimate` | H100/A100/L40S, FP16/FP8, `shared_prefix` workloads | ~38 |
+| `llmservingsim` | H100 only, FP16, models with profiler data | ~5 |
 
 ## Output
 
