@@ -166,11 +166,11 @@ class TestCanRun:
         })
         assert adapter.can_run(exp) is False
 
-    def test_cannot_run_moe_model(self):
-        """Mixtral (MoE) models are skipped — vllm backend unsupported."""
+    def test_can_run_moe_model(self):
+        """MoE models are now supported via HYBRID database mode (≥0.9.0)."""
         adapter = AIConfiguratorEstimateAdapter()
         exp = _make_experiment(model="mistralai/Mixtral-8x7B-v0.1")
-        assert adapter.can_run(exp) is False
+        assert adapter.can_run(exp) is True
 
     def test_can_run_non_moe_model(self):
         """CodeLlama is not MoE — should pass."""
@@ -178,49 +178,44 @@ class TestCanRun:
         exp = _make_experiment(model="codellama/CodeLlama-34b-Instruct-hf")
         assert adapter.can_run(exp) is True
 
-    def test_can_run_rejects_non_h100(self):
+    def test_can_run_accepts_a100(self):
         exp = _make_experiment()
         exp.hardware = "A100-80GB"
-        assert AIConfiguratorEstimateAdapter().can_run(exp) is False
+        assert AIConfiguratorEstimateAdapter().can_run(exp) is True
 
-    def test_can_run_rejects_l40s(self):
+    def test_can_run_accepts_l40s(self):
         exp = _make_experiment()
         exp.hardware = "L40S"
+        assert AIConfiguratorEstimateAdapter().can_run(exp) is True
+
+    def test_can_run_rejects_unsupported_hardware(self):
+        exp = _make_experiment()
+        exp.hardware = "T4"
         assert AIConfiguratorEstimateAdapter().can_run(exp) is False
 
-    def test_can_run_rejects_mixtral_8x22b_instruct(self):
-        """_MOE_MODELS should include the Instruct variant."""
+    def test_can_run_accepts_mixtral_8x22b(self):
+        """MoE models are now supported (≥0.9.0 with HYBRID mode)."""
         exp = _make_experiment(model="mistralai/Mixtral-8x22B-Instruct-v0.1")
-        assert AIConfiguratorEstimateAdapter().can_run(exp) is False
+        assert AIConfiguratorEstimateAdapter().can_run(exp) is True
 
-    def test_can_run_rejects_mixtral_8x22b_base(self):
-        """_MOE_MODELS should include the base variant."""
-        exp = _make_experiment(model="mistralai/Mixtral-8x22B-v0.1")
-        assert AIConfiguratorEstimateAdapter().can_run(exp) is False
-
-    def test_can_run_rejects_llama4_scout(self):
+    def test_can_run_accepts_llama4_scout(self):
+        """MoE models are now supported (≥0.9.0 with HYBRID mode)."""
         exp = _make_experiment(model="RedHatAI/Llama-4-Scout-17B-16E-Instruct-FP8-dynamic")
-        assert AIConfiguratorEstimateAdapter().can_run(exp) is False
+        assert AIConfiguratorEstimateAdapter().can_run(exp) is True
 
     def test_can_run_rejects_unknown_precision(self):
         exp = _make_experiment(precision="INT8")
         assert AIConfiguratorEstimateAdapter().can_run(exp) is False
 
 
-class TestModelNameMapping:
-    def test_known_model_mapped(self):
-        assert AIConfiguratorEstimateAdapter._resolve_model_name(
-            "meta-llama/Llama-2-7b-hf"
-        ) == "LLAMA2_7B"
-
-    def test_known_model_70b_mapped(self):
-        assert AIConfiguratorEstimateAdapter._resolve_model_name(
-            "meta-llama/Llama-2-70b-hf"
-        ) == "LLAMA2_70B"
-
-    def test_unknown_model_passthrough(self):
-        hf_id = "codellama/CodeLlama-34b-Instruct-hf"
-        assert AIConfiguratorEstimateAdapter._resolve_model_name(hf_id) == hf_id
+class TestModelPath:
+    def test_model_path_passed_directly(self):
+        """In ≥0.9.0, HuggingFace model IDs are passed directly as model_path."""
+        adapter = AIConfiguratorEstimateAdapter()
+        exp = _make_experiment(model="meta-llama/Llama-2-7b-hf")
+        _, output_length, prefix_length = adapter._extract_lengths(exp)
+        # model_path should be the raw HF ID
+        assert exp.model == "meta-llama/Llama-2-7b-hf"
 
 
 class TestThroughputMatching:
@@ -284,9 +279,10 @@ class TestThroughputMatching:
 class TestInputOutputExtraction:
     def test_extracts_from_shared_prefix(self):
         exp = _make_experiment()
-        inp, out = AIConfiguratorEstimateAdapter._extract_lengths(exp)
+        inp, out, prefix = AIConfiguratorEstimateAdapter._extract_lengths(exp)
         assert inp == 566   # 466 + 100
         assert out == 247
+        assert prefix == 100  # system_prompt_len
 
 
 class TestRunWithMock:
@@ -307,7 +303,7 @@ class TestRunWithMock:
     @patch("experiment.adapters.aiconfigurator_est._run_task")
     @patch("experiment.adapters.aiconfigurator_est._create_task_config")
     def test_task_config_args(self, mock_create, mock_run):
-        """Verify that TaskConfig receives the correct mapped arguments."""
+        """Verify that TaskConfig receives the correct arguments (0.9.0 API)."""
         mock_create.return_value = MagicMock()
         mock_run.return_value = {"pareto_df": _make_pareto_df(), "pareto_frontier_df": None}
 
@@ -317,15 +313,17 @@ class TestRunWithMock:
 
         mock_create.assert_called_once_with(
             serving_mode="agg",
-            model_name="LLAMA2_7B",
+            model_path="meta-llama/Llama-2-7b-hf",
             system_name="h100_sxm",
             backend_name="vllm",
             total_gpus=1,
             isl=566,
             osl=247,
+            prefix=100,
             ttft=150000.0,
             tpot=200.0,
-            profiles=["float16_default"],
+            profiles=["bfloat16"],
+            database_mode=None,
         )
 
     @patch("experiment.adapters.aiconfigurator_est._run_task")
@@ -413,8 +411,8 @@ class TestRunWithMock:
 
     @patch("experiment.adapters.aiconfigurator_est._run_task")
     @patch("experiment.adapters.aiconfigurator_est._create_task_config")
-    def test_hf_passthrough_model(self, mock_create, mock_run):
-        """Models not in _MODEL_MAP should be passed through to AIConfigurator."""
+    def test_model_path_passed_directly(self, mock_create, mock_run):
+        """HuggingFace model IDs are passed directly as model_path (0.9.0 API)."""
         mock_create.return_value = MagicMock()
         mock_run.return_value = {"pareto_df": _make_pareto_df(), "pareto_frontier_df": None}
 
@@ -424,7 +422,7 @@ class TestRunWithMock:
 
         mock_create.assert_called_once()
         call_kwargs = mock_create.call_args[1]
-        assert call_kwargs["model_name"] == "codellama/CodeLlama-34b-Instruct-hf"
+        assert call_kwargs["model_path"] == "codellama/CodeLlama-34b-Instruct-hf"
 
     @patch("experiment.adapters.aiconfigurator_est._run_task")
     @patch("experiment.adapters.aiconfigurator_est._create_task_config")
@@ -453,6 +451,20 @@ class TestRunWithMock:
 
     @patch("experiment.adapters.aiconfigurator_est._run_task")
     @patch("experiment.adapters.aiconfigurator_est._create_task_config")
+    def test_run_task_raises_no_feasible_config(self, mock_create, mock_run):
+        """NoFeasibleConfigError from TaskRunner should be wrapped in RuntimeError."""
+        from aiconfigurator.sdk.errors import NoFeasibleConfigError
+
+        mock_create.return_value = MagicMock()
+        mock_run.side_effect = NoFeasibleConfigError("No config satisfies SLA")
+
+        adapter = AIConfiguratorEstimateAdapter()
+        exp = _make_experiment()
+        with pytest.raises(RuntimeError, match="AIConfigurator failed"):
+            adapter.run(exp)
+
+    @patch("experiment.adapters.aiconfigurator_est._run_task")
+    @patch("experiment.adapters.aiconfigurator_est._create_task_config")
     def test_empty_pareto_df(self, mock_create, mock_run):
         """Empty pareto_df should raise RuntimeError."""
         mock_create.return_value = MagicMock()
@@ -476,10 +488,40 @@ class TestRunWithMock:
         with pytest.raises(RuntimeError, match="No AIConfigurator results for tp=4"):
             adapter.run(exp)
 
+    @patch("experiment.adapters.aiconfigurator_est._check_is_moe", return_value=True)
     @patch("experiment.adapters.aiconfigurator_est._run_task")
     @patch("experiment.adapters.aiconfigurator_est._create_task_config")
-    def test_fp8_passes_empty_profiles(self, mock_create, mock_run):
-        """FP8 experiments should pass profiles=[] to AIConfigurator."""
+    def test_moe_model_uses_hybrid_database_mode(self, mock_create, mock_run, mock_is_moe):
+        """MoE models should use HYBRID mode (documented fallback for missing silicon data)."""
+        mock_create.return_value = MagicMock()
+        mock_run.return_value = {"pareto_df": _make_pareto_df(), "pareto_frontier_df": None}
+
+        adapter = AIConfiguratorEstimateAdapter()
+        exp = _make_experiment(model="mistralai/Mixtral-8x7B-v0.1")
+        adapter.run(exp)
+
+        call_kwargs = mock_create.call_args[1]
+        assert call_kwargs["database_mode"] == "HYBRID"
+
+    @patch("experiment.adapters.aiconfigurator_est._check_is_moe", return_value=False)
+    @patch("experiment.adapters.aiconfigurator_est._run_task")
+    @patch("experiment.adapters.aiconfigurator_est._create_task_config")
+    def test_non_moe_model_uses_default_database_mode(self, mock_create, mock_run, mock_is_moe):
+        """Non-MoE models use default SILICON mode (no database_mode override)."""
+        mock_create.return_value = MagicMock()
+        mock_run.return_value = {"pareto_df": _make_pareto_df(), "pareto_frontier_df": None}
+
+        adapter = AIConfiguratorEstimateAdapter()
+        exp = _make_experiment()
+        adapter.run(exp)
+
+        call_kwargs = mock_create.call_args[1]
+        assert call_kwargs["database_mode"] is None
+
+    @patch("experiment.adapters.aiconfigurator_est._run_task")
+    @patch("experiment.adapters.aiconfigurator_est._create_task_config")
+    def test_fp8_passes_fp8_profile(self, mock_create, mock_run):
+        """FP8 experiments should pass profiles=['fp8'] to AIConfigurator (0.9.0)."""
         mock_create.return_value = MagicMock()
         mock_run.return_value = {"pareto_df": _make_pareto_df(), "pareto_frontier_df": None}
 
@@ -488,12 +530,12 @@ class TestRunWithMock:
         adapter.run(exp)
 
         call_kwargs = mock_create.call_args[1]
-        assert call_kwargs["profiles"] == []
+        assert call_kwargs["profiles"] == ["fp8"]
 
     def test_run_rejects_unsupported_hardware(self):
         """run() should raise ValueError for unsupported hardware."""
         adapter = AIConfiguratorEstimateAdapter()
-        exp = _make_experiment(hardware="L40S")
+        exp = _make_experiment(hardware="T4")
         with pytest.raises(ValueError, match="Unsupported hardware"):
             adapter.run(exp)
 

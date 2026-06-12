@@ -1,4 +1,8 @@
-"""LLMServingSim adapter for validation against vLLM ground-truth experiments."""
+"""LLMServingSim adapter for validation against vLLM ground-truth experiments.
+
+Compatible with LLMServingSim v1.1.0 (``python -m serving`` entry point,
+profiler/perf/ layout, explicit parallelism cluster configs).
+"""
 
 from __future__ import annotations
 
@@ -34,6 +38,17 @@ from experiment.data_model import (
 MODEL_MAP: dict[str, str] = {
     "meta-llama/Llama-3.1-8B-Instruct": "meta-llama/Llama-3.1-8B",
     "mistralai/Mixtral-8x7B-v0.1": "mistralai/Mixtral-8x7B-v0.1",
+}
+
+# Map experiment precision labels to LLMServingSim dtype CLI values and
+# profiler variant folder names.
+_PRECISION_TO_DTYPE: dict[str, str] = {
+    "FP16": "bfloat16",
+    "FP8": "fp8",
+}
+_PRECISION_TO_VARIANT: dict[str, str] = {
+    "FP16": "bf16",
+    "FP8": "fp8",
 }
 
 
@@ -95,9 +110,9 @@ def _split_by_stage(rows: list[dict], stages: list[dict]) -> list[list[dict]]:
 
 
 class LLMServingSimAdapter(SimulatorAdapter):
-    """Adapter for the LLMServingSim discrete-event simulator.
+    """Adapter for the LLMServingSim discrete-event simulator (v1.1.0+).
 
-    Supports H100 hardware with Llama-3.1-8B and Mixtral-8x7B models.
+    Supports hardware with available profiler data under profiler/perf/<hw>/.
     Generates workloads from ground-truth token counts with constant-rate
     arrivals, executes LLMServingSim via subprocess, and parses results
     into standardised metrics for comparison with vLLM ground truth.
@@ -113,7 +128,7 @@ class LLMServingSimAdapter(SimulatorAdapter):
 
         Args:
             llmservingsim_dir: Path to LLMServingSim directory containing
-                main.py.
+                serving/__main__.py.
             use_docker: Whether to use Docker for execution (default True).
                 If False or Docker is unavailable, falls back to native execution.
             max_requests_per_experiment: Optional limit on number of requests
@@ -121,13 +136,13 @@ class LLMServingSimAdapter(SimulatorAdapter):
                 Useful for quick testing (e.g., 100 requests instead of 16,800).
 
         Raises:
-            ValueError: If the directory does not contain main.py.
+            ValueError: If the directory does not contain serving/__main__.py.
         """
         self.llmservingsim_dir = os.path.abspath(llmservingsim_dir)
-        if not os.path.exists(os.path.join(self.llmservingsim_dir, "main.py")):
+        if not os.path.exists(os.path.join(self.llmservingsim_dir, "serving", "__main__.py")):
             raise ValueError(
                 f"Invalid LLMServingSim directory: {llmservingsim_dir}. "
-                "Must contain main.py"
+                "Must contain serving/__main__.py"
             )
 
         # Set container name before checking Docker availability
@@ -155,9 +170,8 @@ class LLMServingSimAdapter(SimulatorAdapter):
         Returns True only if:
         - Hardware is H100
         - Model is in MODEL_MAP
-        - Performance model exists for the TP configuration
-        - Attention predictions exist (required for simulation)
-        - Precision is FP16
+        - Precision maps to a known dtype/variant
+        - Profile data exists at profiler/perf/<hw>/<model>/<variant>/tp<N>/dense.csv
         """
         # Check hardware
         if experiment.hardware != "H100":
@@ -168,25 +182,21 @@ class LLMServingSimAdapter(SimulatorAdapter):
         if not model_sim:
             return False
 
-        # Check perf model directory exists
-        perf_model_path = os.path.join(
+        # Check precision mapping
+        variant = _PRECISION_TO_VARIANT.get(experiment.precision)
+        if not variant:
+            return False
+
+        # Check profile data directory exists with required CSVs (v1.1.0 layout)
+        perf_dir = os.path.join(
             self.llmservingsim_dir,
-            f"llm_profile/perf_models/H100/{model_sim}/tp{experiment.tp}",
+            "profiler", "perf", experiment.hardware,
+            model_sim, variant, f"tp{experiment.tp}",
         )
-        if not os.path.exists(perf_model_path):
-            return False
+        dense_csv = os.path.join(perf_dir, "dense.csv")
+        attention_csv = os.path.join(perf_dir, "attention.csv")
 
-        # Check that attention predictions exist
-        # LLMServingSim requires these files to run simulations
-        predictions_dir = os.path.join(perf_model_path, "predictions")
-        attn_prefill_csv = os.path.join(predictions_dir, "attn_prefill_predictions.csv")
-        attn_decode_csv = os.path.join(predictions_dir, "attn_decode_predictions.csv")
-
-        if not os.path.exists(attn_prefill_csv) or not os.path.exists(attn_decode_csv):
-            return False
-
-        # Check precision
-        if experiment.precision != "FP16":
+        if not os.path.exists(dense_csv) or not os.path.exists(attention_csv):
             return False
 
         return True
@@ -261,29 +271,12 @@ class LLMServingSimAdapter(SimulatorAdapter):
             # Already built
             return
 
-        # Need to build - install dependencies and compile
+        # Need to build - compile ASTRA-Sim
         print(f"Building LLMServingSim in Docker container '{self.container_name}'...")
 
-        # Install Python dependencies
-        deps_cmd = [
-            "docker", "exec", self.container_name,
-            "pip3", "install", "-q",
-            "pyyaml", "pyinstrument", "transformers", "datasets",
-            "msgspec", "scikit-learn", "xgboost==3.1.2",
-            "matplotlib==3.5.3", "pandas==1.5.3", "numpy==1.23.5"
-        ]
-
-        try:
-            subprocess.run(deps_cmd, capture_output=True, check=True, timeout=600)
-        except subprocess.CalledProcessError as exc:
-            raise RuntimeError(
-                f"Failed to install Python dependencies in Docker: {exc.stderr.decode('utf-8', errors='replace')}"
-            )
-
-        # Run compile.sh
         compile_cmd = [
             "docker", "exec", self.container_name,
-            "bash", "-c", "cd /app/LLMServingSim && ./compile.sh"
+            "bash", "-c", "cd /app/LLMServingSim && bash scripts/compile.sh"
         ]
 
         try:
@@ -297,6 +290,8 @@ class LLMServingSimAdapter(SimulatorAdapter):
     def _generate_cluster_config(self, experiment: "Experiment", output_path: str) -> None:
         """Generate cluster config JSON for the experiment.
 
+        Uses the v1.1.0 cluster config format with explicit tp_size/num_npus.
+
         Args:
             experiment: Experiment configuration
             output_path: Where to write the cluster config JSON
@@ -304,7 +299,7 @@ class LLMServingSimAdapter(SimulatorAdapter):
         # Load H100 template
         template_path = os.path.join(
             self.llmservingsim_dir,
-            "cluster_config/single_node_single_instance_H100.json",
+            "configs", "cluster", "single_node_single_instance_H100.json",
         )
         with open(template_path) as f:
             config = json.load(f)
@@ -312,19 +307,23 @@ class LLMServingSimAdapter(SimulatorAdapter):
         # Get LLMServingSim model name
         model_sim = MODEL_MAP[experiment.model]
 
-        # Modify instance config
+        # Modify instance config (v1.1.0 format)
         instance = config["nodes"][0]["instances"][0]
         instance["model_name"] = model_sim
-        instance["npu_num"] = experiment.tp
-        instance["npu_group"] = 1  # npus_per_group = npu_num / npu_group = TP
-        instance["npu_mem"]["mem_size"] = 80.0  # H100 HBM3
+        instance["hardware"] = experiment.hardware
+        instance["tp_size"] = experiment.tp
+        instance["num_npus"] = experiment.tp
+        instance["npu_mem"]["mem_size"] = 80  # H100 HBM3 (GB)
 
         # Handle multi-instance (dp > 1) - use deep copy to avoid shared dicts
         if experiment.dp and experiment.dp > 1:
             config["nodes"][0]["num_instances"] = experiment.dp
-            config["nodes"][0]["instances"] = [
-                copy.deepcopy(instance) for _ in range(experiment.dp)
-            ]
+            instances = []
+            for _ in range(experiment.dp):
+                inst = copy.deepcopy(instance)
+                inst["dp_group"] = "A"
+                instances.append(inst)
+            config["nodes"][0]["instances"] = instances
 
         # Write config
         with open(output_path, "w") as f:
@@ -390,7 +389,7 @@ class LLMServingSimAdapter(SimulatorAdapter):
         workload: str,
         output: str,
     ) -> list[str]:
-        """Build LLMServingSim CLI arguments.
+        """Build LLMServingSim CLI arguments (v1.1.0 interface).
 
         Args:
             experiment: Experiment configuration
@@ -402,34 +401,25 @@ class LLMServingSimAdapter(SimulatorAdapter):
             List of CLI arguments
         """
         # Calculate total requests
-        # Note: If max_requests_per_experiment is set, the experiment's stages
-        # have already been proportionally sampled by run() method
         total_requests = sum(
             round(stage["rate"] * stage["duration"])
             for stage in experiment.profile_config["load"]["stages"]
         )
 
+        # Resolve dtype from precision
+        dtype = _PRECISION_TO_DTYPE.get(experiment.precision, "bfloat16")
+
         args = [
-            "python3",
-            "main.py",
-            "--cluster-config",
-            cluster_config,
-            "--dataset",
-            workload,
-            "--output",
-            output,
-            "--fp",
-            "16",
-            "--block-size",
-            "16",
-            "--max-batch",
-            str(experiment.max_num_seqs),
-            "--max-num-batched-tokens",
-            str(experiment.max_num_batched_tokens),
-            "--num-req",
-            str(total_requests),
-            "--log-level",
-            "WARNING",
+            "python3", "-m", "serving",
+            "--cluster-config", cluster_config,
+            "--dataset", workload,
+            "--output", output,
+            "--dtype", dtype,
+            "--block-size", "16",
+            "--max-num-seqs", str(experiment.max_num_seqs),
+            "--max-num-batched-tokens", str(experiment.max_num_batched_tokens),
+            "--num-reqs", str(total_requests),
+            "--log-level", "WARNING",
         ]
 
         # Add routing policy for multi-instance

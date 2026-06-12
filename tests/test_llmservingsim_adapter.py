@@ -62,29 +62,36 @@ def _make_experiment(**overrides):
 
 @pytest.fixture
 def adapter(tmp_path):
-    """Create adapter with mock LLMServingSim directory."""
+    """Create adapter with mock LLMServingSim directory (v1.1.0 layout)."""
     llm_dir = tmp_path / "LLMServingSim"
     llm_dir.mkdir()
-    (llm_dir / "main.py").touch()
 
-    # Create mock perf model directories
-    perf_base = llm_dir / "llm_profile" / "perf_models" / "H100"
-    (perf_base / "meta-llama/Llama-3.1-8B" / "tp1").mkdir(parents=True)
-    (perf_base / "meta-llama/Llama-3.1-8B" / "tp2").mkdir(parents=True)
-    (perf_base / "mistralai/Mixtral-8x7B-v0.1" / "tp1").mkdir(parents=True)
-    (perf_base / "mistralai/Mixtral-8x7B-v0.1" / "tp2").mkdir(parents=True)
-    (perf_base / "mistralai/Mixtral-8x7B-v0.1" / "tp4").mkdir(parents=True)
+    # v1.1.0 entry point: serving/__main__.py
+    serving_dir = llm_dir / "serving"
+    serving_dir.mkdir()
+    (serving_dir / "__main__.py").touch()
 
-    # Create mock cluster config template
-    config_dir = llm_dir / "cluster_config"
-    config_dir.mkdir()
+    # Create mock profiler data (v1.1.0 layout: profiler/perf/<hw>/<model>/<variant>/tp<N>/)
+    perf_base = llm_dir / "profiler" / "perf" / "H100"
+
+    for model in ("meta-llama/Llama-3.1-8B", "mistralai/Mixtral-8x7B-v0.1"):
+        for tp in (1, 2, 4):
+            tp_dir = perf_base / model / "bf16" / f"tp{tp}"
+            tp_dir.mkdir(parents=True, exist_ok=True)
+            (tp_dir / "dense.csv").touch()
+            (tp_dir / "attention.csv").touch()
+
+    # Create mock cluster config template (v1.1.0 location: configs/cluster/)
+    config_dir = llm_dir / "configs" / "cluster"
+    config_dir.mkdir(parents=True)
     template = {
         "nodes": [{
             "num_instances": 1,
             "instances": [{
                 "model_name": "placeholder",
-                "npu_num": 1,
-                "npu_group": 1,
+                "hardware": "H100",
+                "tp_size": 1,
+                "num_npus": 1,
                 "npu_mem": {
                     "mem_size": 40.0,
                     "mem_bw": 3350,
@@ -96,7 +103,7 @@ def adapter(tmp_path):
     with open(config_dir / "single_node_single_instance_H100.json", "w") as f:
         json.dump(template, f)
 
-    return LLMServingSimAdapter(str(llm_dir))
+    return LLMServingSimAdapter(str(llm_dir), use_docker=False)
 
 
 # ---------------------------------------------------------------------------
@@ -126,23 +133,23 @@ class TestModelMap:
 class TestLLMServingSimAdapterBasics:
     def test_name(self, tmp_path):
         """Adapter name should be 'llmservingsim'."""
-        # Create a fake main.py so the constructor doesn't raise
-        main_py = tmp_path / "main.py"
-        main_py.write_text("")
-        adapter = LLMServingSimAdapter(str(tmp_path))
+        # Create serving/__main__.py so the constructor doesn't raise
+        (tmp_path / "serving").mkdir()
+        (tmp_path / "serving" / "__main__.py").touch()
+        adapter = LLMServingSimAdapter(str(tmp_path), use_docker=False)
         assert adapter.name == "llmservingsim"
 
     def test_init_stores_absolute_path(self, tmp_path):
         """Constructor should store absolute path to LLMServingSim dir."""
-        main_py = tmp_path / "main.py"
-        main_py.write_text("")
-        adapter = LLMServingSimAdapter(str(tmp_path))
+        (tmp_path / "serving").mkdir()
+        (tmp_path / "serving" / "__main__.py").touch()
+        adapter = LLMServingSimAdapter(str(tmp_path), use_docker=False)
         assert os.path.isabs(adapter.llmservingsim_dir)
 
-    def test_init_rejects_missing_main_py(self, tmp_path):
-        """Constructor should raise ValueError if main.py not found."""
+    def test_init_rejects_missing_entry_point(self, tmp_path):
+        """Constructor should raise ValueError if serving/__main__.py not found."""
         with pytest.raises(ValueError, match="Invalid LLMServingSim directory"):
-            LLMServingSimAdapter(str(tmp_path))
+            LLMServingSimAdapter(str(tmp_path), use_docker=False)
 
 
 # ---------------------------------------------------------------------------
@@ -181,8 +188,9 @@ class TestCanRun:
         exp = _make_experiment(model="codellama/CodeLlama-34b-Instruct-hf")
         assert adapter.can_run(exp) is False
 
-    def test_can_run_unsupported_precision(self, adapter):
-        """Test can_run returns False for FP8 precision."""
+    def test_can_run_no_fp8_profile_data(self, adapter):
+        """Test can_run returns False when FP8 profile data doesn't exist."""
+        # FP8 is supported in principle but fixture only creates bf16 dirs
         exp = _make_experiment(precision="FP8")
         assert adapter.can_run(exp) is False
 
@@ -212,15 +220,18 @@ class TestGenerateClusterConfig:
         with open(output_path) as f:
             config = json.load(f)
 
+        instance = config["nodes"][0]["instances"][0]
+
         # Check model name
-        assert config["nodes"][0]["instances"][0]["model_name"] == "meta-llama/Llama-3.1-8B"
+        assert instance["model_name"] == "meta-llama/Llama-3.1-8B"
 
-        # Check TP config
-        assert config["nodes"][0]["instances"][0]["npu_num"] == 2
-        assert config["nodes"][0]["instances"][0]["npu_group"] == 1
+        # Check v1.1.0 parallelism fields
+        assert instance["tp_size"] == 2
+        assert instance["num_npus"] == 2
+        assert instance["hardware"] == "H100"
 
-        # Check GPU memory
-        assert config["nodes"][0]["instances"][0]["npu_mem"]["mem_size"] == 80.0
+        # Check GPU memory (H100 = 80 GB)
+        assert instance["npu_mem"]["mem_size"] == 80
 
         # Check single instance
         assert config["nodes"][0]["num_instances"] == 1
@@ -244,12 +255,14 @@ class TestGenerateClusterConfig:
         assert config["nodes"][0]["num_instances"] == 2
         assert len(config["nodes"][0]["instances"]) == 2
 
-        # Check both instances have correct config
+        # Check both instances have correct v1.1.0 config
         for instance in config["nodes"][0]["instances"]:
             assert instance["model_name"] == "mistralai/Mixtral-8x7B-v0.1"
-            assert instance["npu_num"] == 4
-            assert instance["npu_group"] == 1
-            assert instance["npu_mem"]["mem_size"] == 80.0
+            assert instance["tp_size"] == 4
+            assert instance["num_npus"] == 4
+            assert instance["hardware"] == "H100"
+            assert instance["npu_mem"]["mem_size"] == 80
+            assert instance["dp_group"] == "A"
 
 
 # ---------------------------------------------------------------------------
@@ -353,7 +366,7 @@ def test_generate_workload_file(adapter, tmp_path):
 
 
 def test_build_cli_args_single_instance(adapter):
-    """Test CLI args for single-instance experiment"""
+    """Test CLI args for single-instance experiment (v1.1.0 interface)"""
     exp = _make_experiment(
         profile_config={
             "load": {"stages": [{"rate": 10, "duration": 5}]}
@@ -361,6 +374,7 @@ def test_build_cli_args_single_instance(adapter):
         max_num_seqs=256,
         max_num_batched_tokens=8192,
         dp=1,
+        precision="FP16",
     )
 
     args = adapter._build_cli_args(
@@ -370,26 +384,36 @@ def test_build_cli_args_single_instance(adapter):
         output="/path/to/output.csv",
     )
 
-    assert args[0:2] == ["python", "main.py"]
+    # v1.1.0 entry point
+    assert args[0:3] == ["python3", "-m", "serving"]
+
+    # Path arguments
     assert "--cluster-config" in args
     assert "/path/to/cluster.json" in args
     assert "--dataset" in args
     assert "/path/to/workload.jsonl" in args
     assert "--output" in args
     assert "/path/to/output.csv" in args
-    assert "--fp" in args
-    assert "16" in args
+
+    # v1.1.0 renamed flags
+    assert "--dtype" in args
+    assert "bfloat16" in args
     assert "--block-size" in args
     assert "16" in args
-    assert "--max-batch" in args
+    assert "--max-num-seqs" in args
     assert "256" in args
     assert "--max-num-batched-tokens" in args
     assert "8192" in args
-    assert "--num-req" in args
+    assert "--num-reqs" in args
     assert "50" in args  # 10 req/s * 5s = 50
 
     # Should NOT have routing policy for single instance
     assert "--request-routing-policy" not in args
+
+    # Old flags should NOT be present
+    assert "--fp" not in args
+    assert "--max-batch" not in args
+    assert "--num-req" not in args
 
 
 def test_build_cli_args_multi_instance(adapter):
@@ -413,6 +437,26 @@ def test_build_cli_args_multi_instance(adapter):
     # Should have routing policy for multi-instance
     assert "--request-routing-policy" in args
     assert "RR" in args
+
+
+def test_build_cli_args_fp8_dtype(adapter):
+    """Test CLI args use 'fp8' dtype for FP8 precision."""
+    exp = _make_experiment(
+        profile_config={
+            "load": {"stages": [{"rate": 5, "duration": 2}]}
+        },
+        precision="FP8",
+    )
+
+    args = adapter._build_cli_args(
+        exp,
+        cluster_config="c.json",
+        workload="w.jsonl",
+        output="o.csv",
+    )
+
+    idx = args.index("--dtype")
+    assert args[idx + 1] == "fp8"
 
 
 # ---------------------------------------------------------------------------
@@ -595,10 +639,10 @@ def test_run_orchestration(adapter, tmp_path):
         with patch.object(adapter, "_parse_results", side_effect=mock_parse):
             result = adapter.run(exp)
 
-        # Verify subprocess was called
+        # Verify subprocess was called (native mode, use_docker=False)
         mock_run.assert_called_once()
         args = mock_run.call_args[0][0]
-        assert args[0:2] == ["python", "main.py"]
+        assert args[0:3] == ["python3", "-m", "serving"]
         assert "--cluster-config" in args
         assert "--dataset" in args
         assert "--output" in args

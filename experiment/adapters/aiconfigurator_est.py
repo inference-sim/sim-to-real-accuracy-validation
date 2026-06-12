@@ -17,6 +17,8 @@ skips comparisons where the simulator does not provide a value).
 
 E2E latency is derived using the standard formula:
 ``E2E = TTFT + TPOT × (output_length - 1)``
+
+Compatible with aiconfigurator ≥ 0.9.0 (model_path API, bfloat16/fp8 profiles).
 """
 
 from __future__ import annotations
@@ -34,32 +36,30 @@ from experiment.data_model import (
 
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# Model-name mapping: HuggingFace ID → AIConfigurator SupportedModels key
-# ---------------------------------------------------------------------------
-_MODEL_MAP: dict[str, str] = {
-    "meta-llama/Llama-2-7b-hf": "LLAMA2_7B",
-    "meta-llama/Llama-2-70b-hf": "LLAMA2_70B",
-}
+# Suppress noisy interpolation warnings from AIConfigurator's SDK.
+# These fire when model dimensions fall outside the profiled GEMM grid
+# (sparse data at non-power-of-2 sizes). Predictions still complete.
+logging.getLogger("aiconfigurator.sdk.interpolation").setLevel(logging.ERROR)
 
 # ---------------------------------------------------------------------------
 # Hardware mapping: experiment hardware tag → AIConfigurator system name
-# Only H100 has vLLM perf data in AIConfigurator; A100/L40S excluded via can_run.
 # ---------------------------------------------------------------------------
-_HW_TO_AICONFIG: dict[str, str] = {"H100": "h100_sxm"}
-
-# MoE models that cannot use the vllm backend in AIConfigurator.
-_MOE_MODELS: frozenset[str] = frozenset({
-    "mistralai/Mixtral-8x7B-v0.1",
-    "mistralai/Mixtral-8x22B-v0.1",
-    "mistralai/Mixtral-8x22B-Instruct-v0.1",
-    "RedHatAI/Llama-4-Scout-17B-16E-Instruct-FP8-dynamic",
-})
+_HW_TO_AICONFIG: dict[str, str] = {
+    "H100": "h100_sxm",
+    "A100-80GB": "a100_sxm",
+    "L40S": "l40s",
+}
 
 
 # ---------------------------------------------------------------------------
 # Lazy-import wrappers (same pattern as llm_optimizer_est.py)
 # ---------------------------------------------------------------------------
+
+def _check_is_moe(model_path: str) -> bool:
+    """Lazy import wrapper — check if model is Mixture-of-Experts."""
+    from aiconfigurator.sdk.models.helpers import check_is_moe
+    return check_is_moe(model_path)
+
 
 def _create_task_config(**kwargs):
     """Lazy import wrapper — allows mocking without requiring aiconfigurator installed."""
@@ -68,7 +68,12 @@ def _create_task_config(**kwargs):
 
 
 def _run_task(task_config):
-    """Lazy import wrapper — allows mocking without requiring aiconfigurator installed."""
+    """Lazy import wrapper — allows mocking without requiring aiconfigurator installed.
+
+    In aiconfigurator ≥ 0.9.0, TaskRunner.run() raises NoFeasibleConfigError
+    when no configuration satisfies the SLA constraints, rather than returning
+    None. Callers should handle both cases.
+    """
     from aiconfigurator.sdk.task import TaskRunner
     return TaskRunner().run(task_config)
 
@@ -85,12 +90,10 @@ class AIConfiguratorEstimateAdapter(SimulatorAdapter):
     # ------------------------------------------------------------------
 
     def can_run(self, experiment: Experiment) -> bool:
-        """True when hardware is supported, precision is FP16/FP8, model is not MoE, and profile uses shared_prefix."""
+        """True when hardware is supported, precision is FP16/FP8, and profile uses shared_prefix."""
         if experiment.hardware not in _HW_TO_AICONFIG:
             return False
         if experiment.precision not in ("FP16", "FP8"):
-            return False
-        if experiment.model in _MOE_MODELS:
             return False
         try:
             data = experiment.profile_config["data"]
@@ -104,15 +107,6 @@ class AIConfiguratorEstimateAdapter(SimulatorAdapter):
     # ------------------------------------------------------------------
     # Internals
     # ------------------------------------------------------------------
-
-    @staticmethod
-    def _resolve_model_name(hf_model_id: str) -> str:
-        """Map a HuggingFace model ID to AIConfigurator's model key.
-
-        Falls back to the raw HF ID for models not in the map (AIConfigurator
-        resolves them via ``get_model_config_from_hf_id``).
-        """
-        return _MODEL_MAP.get(hf_model_id, hf_model_id)
 
     @staticmethod
     def _match_throughput(stage_rate: float, pareto_df, tolerance: float = 0.15):
@@ -168,12 +162,18 @@ class AIConfiguratorEstimateAdapter(SimulatorAdapter):
         return best_row
 
     @staticmethod
-    def _extract_lengths(experiment: Experiment) -> tuple[int, int]:
-        """Extract input/output token lengths from profile config."""
+    def _extract_lengths(experiment: Experiment) -> tuple[int, int, int]:
+        """Extract input/output/prefix token lengths from profile config.
+
+        Returns:
+            (input_length, output_length, prefix_length) where prefix_length
+            is the system_prompt_len (shared KV-cache tokens in AIConfigurator).
+        """
         data_cfg = experiment.profile_config["data"]["shared_prefix"]
         input_length = data_cfg["question_len"] + data_cfg["system_prompt_len"]
         output_length = data_cfg["output_len"]
-        return input_length, output_length
+        prefix_length = data_cfg["system_prompt_len"]
+        return input_length, output_length, prefix_length
 
     @staticmethod
     def _make_latency_dist(mean: float) -> LatencyDistribution:
@@ -189,47 +189,58 @@ class AIConfiguratorEstimateAdapter(SimulatorAdapter):
                 f"Unsupported hardware '{experiment.hardware}' for {self.name} "
                 f"(supported: {sorted(_HW_TO_AICONFIG)})"
             )
-        model_name = self._resolve_model_name(experiment.model)
-        input_length, output_length = self._extract_lengths(experiment)
+        input_length, output_length, prefix_length = self._extract_lengths(experiment)
 
         # Run AIConfigurator once — it sweeps all concurrency levels.
         system_name = _HW_TO_AICONFIG[experiment.hardware]
-        # FP16: explicit float16 profile; FP8: empty list lets AIConfigurator
-        # use its native FP8 path.
+        # aiconfigurator ≥ 0.9.0 profiles: "bfloat16" for FP16, "fp8" for FP8.
         if experiment.precision == "FP16":
-            profiles = ["float16_default"]
+            profiles = ["bfloat16"]
         elif experiment.precision == "FP8":
-            profiles = []
+            profiles = ["fp8"]
         else:
             raise ValueError(
                 f"Unsupported precision '{experiment.precision}' for {self.name} "
                 f"(supported: FP16, FP8)"
             )
 
+        # Use HYBRID database mode for MoE models — AIConfigurator's default
+        # SILICON mode lacks profiling data for MoE GEMM dimensions on H100+vLLM.
+        # HYBRID is the documented fallback (error messages direct users to it).
+        is_moe = _check_is_moe(experiment.model)
+        database_mode = "HYBRID" if is_moe else None
+
         task_config = _create_task_config(
             serving_mode="agg",
-            model_name=model_name,
+            model_path=experiment.model,
             system_name=system_name,
             backend_name="vllm",
             total_gpus=experiment.tp,
             isl=input_length,
             osl=output_length,
+            prefix=prefix_length,
             # TTFT constraint set to 150s to cover all experiments in dataset
             # (P99=103s). Expands pareto frontier for better concurrency matching.
             # TPOT=200ms is sufficient (actual P99=55ms).
             ttft=150000.0,
             tpot=200.0,
             profiles=profiles,
+            database_mode=database_mode,
         )
-        result = _run_task(task_config)
+        try:
+            result = _run_task(task_config)
+        except Exception as exc:
+            raise RuntimeError(
+                f"AIConfigurator failed for {experiment.model} (tp={experiment.tp}): {exc}"
+            ) from exc
         if result is None:
             raise RuntimeError(
-                f"AIConfigurator returned None for {model_name} (tp={experiment.tp})"
+                f"AIConfigurator returned None for {experiment.model} (tp={experiment.tp})"
             )
         pareto_df = result["pareto_df"]
         if pareto_df is None or pareto_df.empty:
             raise RuntimeError(
-                f"AIConfigurator returned empty pareto_df for {model_name} (tp={experiment.tp})"
+                f"AIConfigurator returned empty pareto_df for {experiment.model} (tp={experiment.tp})"
             )
 
         # Filter to rows matching the experiment's tensor parallelism.

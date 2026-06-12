@@ -53,8 +53,9 @@ def _make_experiment(**overrides):
 
 
 @pytest.mark.skipif(
-    not os.path.exists("LLMServingSim/main.py"),
-    reason="LLMServingSim not installed"
+    not os.path.exists("LLMServingSim/serving/__main__.py")
+    or not os.path.exists("LLMServingSim/profiler/perf/H100/meta-llama/Llama-3.1-8B/bf16/tp1/dense.csv"),
+    reason="LLMServingSim not installed or H100 profiler data not available"
 )
 def test_e2e_llama_h100_tp1(tmp_path):
     """End-to-end test with real LLMServingSim on small workload"""

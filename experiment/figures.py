@@ -28,11 +28,10 @@ logger = logging.getLogger(__name__)
 # Constants
 # ---------------------------------------------------------------------------
 
-EXCLUDED_SIMULATORS = frozenset({"blis-blackbox", "blis-crossmodel", "blis-trained-roofline", "blis-roofline", "blis-evolved"})
+EXCLUDED_SIMULATORS = frozenset({"blis-blackbox", "blis-crossmodel", "blis-trained-roofline", "blis-evolved"})
 
 SIMULATOR_ORDER = [
     "blis-trained-physics",
-    "blis-evolved",
     "blis-roofline",
     "vidur",
     "llm-optimizer-estimate",
@@ -42,7 +41,6 @@ SIMULATOR_ORDER = [
 
 SIMULATOR_DISPLAY_NAMES = {
     "blis-trained-physics": "BLIS",
-    "blis-evolved": "BLIS-Evolved",
     "blis-roofline": "BLIS-Roofline",
     "vidur": "Vidur",
     "llm-optimizer-estimate": "LLM-Optimizer",
@@ -52,7 +50,6 @@ SIMULATOR_DISPLAY_NAMES = {
 
 COLOR_PALETTE = {
     "blis-trained-physics": "#D946EF",
-    "blis-evolved": "#9C27B0",
     "blis-roofline": "#64B5F6",
     "vidur": "#DD8452",
     "llm-optimizer-estimate": "#55A868",
@@ -62,7 +59,6 @@ COLOR_PALETTE = {
 
 HATCH_PATTERNS = {
     "blis-trained-physics": "||",
-    "blis-evolved": "--",
     "blis-roofline": "//",
     "vidur": "\\\\",
     "llm-optimizer-estimate": "xx",
@@ -72,7 +68,6 @@ HATCH_PATTERNS = {
 
 MARKER_STYLES = {
     "blis-trained-physics": "*",
-    "blis-evolved": "p",
     "blis-roofline": "s",
     "vidur": "D",
     "llm-optimizer-estimate": "^",
@@ -1252,7 +1247,7 @@ def plot_simulator_comparison(
     Parameters
     ----------
     sim1 : str or list[str]
-        Single simulator or list of simulators to compare (e.g., ["blis-roofline", "blis-trained-physics", "blis-evolved"])
+        Single simulator or list of simulators to compare (e.g., ["blis-roofline", "blis-trained-physics"])
         If a list, will include whichever simulators have data (doesn't require all)
     sim2 : str
         Simulator to compare against
@@ -1853,7 +1848,6 @@ def plot_pareto(
     # Ensure no axis collision
     _annotation_offsets = {
         "blis-trained-physics": (10, -35),      # BELOW pink point - raised to clear x-axis
-        "blis-evolved": (35, -22),              # RIGHT and DOWN, separate from cluster
         "blis-roofline": (10, 28),              # ABOVE cyan (light blue) point - slightly lower
         "vidur": (25, 15),                      # Right side
         "llm-optimizer-estimate": (10, 35),     # TOP of green point
@@ -2348,10 +2342,10 @@ def main(argv: list[str] | None = None) -> None:
     os.makedirs(sim_comparison_dir, exist_ok=True)
 
     comparison_pairs = [
-        (["blis-roofline", "blis-trained-physics", "blis-evolved"], "vidur", "blis_vs_vidur.pdf"),
-        (["blis-roofline", "blis-trained-physics", "blis-evolved"], "llm-optimizer-estimate", "blis_vs_llm_optimizer.pdf"),
-        (["blis-roofline", "blis-trained-physics", "blis-evolved"], "aiconfigurator-estimate", "blis_vs_aiconfigurator.pdf"),
-        (["blis-roofline", "blis-trained-physics", "blis-evolved"], "llmservingsim", "blis_vs_llmservingsim.pdf"),
+        (["blis-roofline", "blis-trained-physics"], "vidur", "blis_vs_vidur.pdf"),
+        (["blis-roofline", "blis-trained-physics"], "llm-optimizer-estimate", "blis_vs_llm_optimizer.pdf"),
+        (["blis-roofline", "blis-trained-physics"], "aiconfigurator-estimate", "blis_vs_aiconfigurator.pdf"),
+        (["blis-roofline", "blis-trained-physics"], "llmservingsim", "blis_vs_llmservingsim.pdf"),
     ]
 
     for sim1, sim2, filename in comparison_pairs:

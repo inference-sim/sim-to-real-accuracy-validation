@@ -132,7 +132,7 @@ def _sample_metadata_csv(tmp_path: Path) -> str:
 class TestConstants:
     def test_simulator_order_length(self):
         from experiment.figures import SIMULATOR_ORDER
-        assert len(SIMULATOR_ORDER) == 7
+        assert len(SIMULATOR_ORDER) == 6
 
     def test_excluded_not_in_order(self):
         from experiment.figures import SIMULATOR_ORDER, EXCLUDED_SIMULATORS
@@ -450,7 +450,7 @@ class TestTable1:
         from experiment.figures import format_runtime_table_latex
         result = format_runtime_table_latex(self._make_runtime_df())
         assert "\\begin{tabular}" in result
-        assert "BLIS-Trained" in result
+        assert "BLIS" in result
 
     def test_saves_tex_file(self, tmp_path):
         from experiment.figures import format_runtime_table_latex
