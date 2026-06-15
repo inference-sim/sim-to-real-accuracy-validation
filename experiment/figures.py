@@ -32,6 +32,7 @@ EXCLUDED_SIMULATORS = frozenset({"blis-blackbox", "blis-crossmodel", "blis-train
 
 SIMULATOR_ORDER = [
     "blis-trained-physics",
+    "blis-roofline",
     "vidur",
     "llm-optimizer-estimate",
     "aiconfigurator-estimate",
@@ -2321,6 +2322,15 @@ def main(argv: list[str] | None = None) -> None:
 
     error_df_all = _add_config_tags(error_df_all)
 
+    # Load blis-roofline + blis-trained-physics for Figure 6 (bypasses EXCLUDED_SIMULATORS)
+    _blis_raw = pd.read_csv(error_csv)
+    _blis_raw = _blis_raw[
+        (_blis_raw["simulator"].isin(["blis-roofline", "blis-trained-physics"]))
+        & (_blis_raw["stage_index"] == -1)
+    ].reset_index(drop=True)
+    blis_comparison_df = enrich_with_metadata(_blis_raw, args.metadata)
+    blis_comparison_df = _add_config_tags(blis_comparison_df)
+
     out = args.output_dir
     os.makedirs(out, exist_ok=True)
 
@@ -2337,6 +2347,12 @@ def main(argv: list[str] | None = None) -> None:
          lambda: plot_config_sensitivity_moe(error_df, os.path.join(out, "fig4b_config_moe.pdf"))),
         ("fig5_pareto.pdf",
          lambda: plot_pareto(error_df_all, runtime_df_all, os.path.join(out, "fig5_pareto.pdf"))),
+        ("fig6_blis_roofline_vs_trained.pdf",
+         lambda: plot_simulator_comparison(
+             blis_comparison_df, "blis-roofline", "blis-trained-physics",
+             output_path=os.path.join(out, "fig6_blis_roofline_vs_trained.pdf"),
+             show_aggregate=not args.sim_comparison_no_aggregate,
+         )),
     ]
 
     for name, generate in figures:
