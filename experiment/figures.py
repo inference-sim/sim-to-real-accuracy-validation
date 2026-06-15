@@ -28,11 +28,10 @@ logger = logging.getLogger(__name__)
 # Constants
 # ---------------------------------------------------------------------------
 
-EXCLUDED_SIMULATORS = frozenset({"blis-blackbox", "blis-crossmodel", "blis-trained-roofline", "blis-evolved"})
+EXCLUDED_SIMULATORS = frozenset({"blis-blackbox", "blis-crossmodel", "blis-trained-roofline", "blis-evolved", "blis-roofline"})
 
 SIMULATOR_ORDER = [
     "blis-trained-physics",
-    "blis-roofline",
     "vidur",
     "llm-optimizer-estimate",
     "aiconfigurator-estimate",
@@ -432,21 +431,20 @@ def _grouped_bar(
         else:
             axes_to_plot = [ax_obj]
 
-        # Precompute which groups have only one simulator with data
-        sims_per_group = {}
+        # Precompute which simulators have data per group (preserving order)
+        sims_present_per_group = {}
         for g_idx, group_val in enumerate(present_groups):
-            count = sum(
-                1 for s in simulators
+            present = [
+                s for s in simulators
                 if not df[
                     (df[group_col] == group_val)
                     & (df["simulator"] == s)
                     & (df["metric_name"] == metric_key)
                 ]["mape"].empty
-            )
-            sims_per_group[g_idx] = count
+            ]
+            sims_present_per_group[g_idx] = present
 
         for sim_idx, sim in enumerate(simulators):
-            offset = (sim_idx - n_sims / 2 + 0.5) * bar_width
             positions = []
             heights = []
 
@@ -459,8 +457,11 @@ def _grouped_bar(
                 if vals.empty:
                     continue
                 mape = vals.median() if aggregate else vals.iloc[0]
-                # Center bar if this is the only simulator in the group
-                pos = x[g_idx] if sims_per_group[g_idx] == 1 else x[g_idx] + offset
+                # Center bars around group label based on how many are present
+                present = sims_present_per_group[g_idx]
+                n_present = len(present)
+                rank = present.index(sim)
+                pos = x[g_idx] + (rank - n_present / 2 + 0.5) * bar_width
                 positions.append(pos)
                 heights.append(mape)
 
@@ -652,9 +653,9 @@ def plot_aggregate_comparison_analytical(
     df: pd.DataFrame,
     output_path: str | None = None,
 ) -> plt.Figure | None:
-    """Figure 0a: BLIS-Roofline vs LLM-Optimizer vs AIConfigurator.
+    """Figure 0a: BLIS vs LLM-Optimizer vs AIConfigurator.
 
-    Only includes experiments where blis-roofline, llm-optimizer-estimate,
+    Only includes experiments where blis-trained-physics, llm-optimizer-estimate,
     and aiconfigurator-estimate all have data. Filters to default configs
     (model's default TP, cpu_offload=false, gpu_mem=0.9, dp≤1, mbt=2048)
     and general/general-lite workloads (consistent with Figure 2).
@@ -664,7 +665,7 @@ def plot_aggregate_comparison_analytical(
     _apply_rc_params()
 
     # Find experiments with data from all three target simulators
-    target_sims = {"blis-roofline", "llm-optimizer-estimate", "aiconfigurator-estimate"}
+    target_sims = {"blis-trained-physics", "llm-optimizer-estimate", "aiconfigurator-estimate"}
     exp_sims = df.groupby("experiment_folder")["simulator"].apply(set)
     common_exps = exp_sims[exp_sims.apply(lambda s: target_sims.issubset(s))].index
 
@@ -799,9 +800,9 @@ def plot_aggregate_comparison_trace(
     df: pd.DataFrame,
     output_path: str | None = None,
 ) -> plt.Figure | None:
-    """Figure 0b: BLIS-Roofline vs Vidur.
+    """Figure 0b: BLIS vs Vidur.
 
-    Only includes experiments where both blis-roofline and vidur have data.
+    Only includes experiments where both blis-trained-physics and vidur have data.
     Filters to default configs (model's default TP, cpu_offload=false,
     gpu_mem=0.9, dp≤1, mbt=2048) and general/general-lite workloads.
     Shows median MAPE across these experiments for E2E, TTFT, and ITL
@@ -813,7 +814,7 @@ def plot_aggregate_comparison_trace(
     _apply_rc_params()
 
     # Find experiments with data from both trace-replay simulators
-    target_sims = {"blis-roofline", "vidur"}
+    target_sims = {"blis-trained-physics", "vidur"}
     exp_sims = df.groupby("experiment_folder")["simulator"].apply(set)
     common_exps = exp_sims[exp_sims.apply(lambda s: target_sims.issubset(s))].index
 
@@ -945,9 +946,9 @@ def plot_aggregate_comparison_llmservingsim(
     df: pd.DataFrame,
     output_path: str | None = None,
 ) -> plt.Figure | None:
-    """Figure 0c: BLIS-Roofline vs LLM-Optimizer vs LLMServingSim for MoE.
+    """Figure 0c: BLIS vs LLM-Optimizer vs LLMServingSim for MoE.
 
-    Compares blis-roofline, llm-optimizer-estimate, and llmservingsim on the
+    Compares blis-trained-physics, llm-optimizer-estimate, and llmservingsim on the
     single Mixtral-8x7B tp4 experiment where all three simulators have data.
     Shows MAPE for E2E, TTFT, and ITL.
 
@@ -958,7 +959,7 @@ def plot_aggregate_comparison_llmservingsim(
     _apply_rc_params()
 
     # Find experiments with data from all three simulators
-    target_sims = {"blis-roofline", "llm-optimizer-estimate", "llmservingsim"}
+    target_sims = {"blis-trained-physics", "llm-optimizer-estimate", "llmservingsim"}
     exp_sims = df.groupby("experiment_folder")["simulator"].apply(set)
     common_exps = exp_sims[exp_sims.apply(lambda s: target_sims.issubset(s))].index
 
@@ -1191,8 +1192,19 @@ def _plot_model_breakdown_panel(
     x = np.arange(n_models)
     global_max = 0.0
 
+    # Precompute which simulators have data per model (preserving order)
+    sims_present_per_model = {}
+    for m_idx, model in enumerate(present_models):
+        present = [
+            s for s in sims_ordered
+            if not df_filtered[
+                (df_filtered["model"] == model) &
+                (df_filtered["simulator"] == s)
+            ]["mape"].empty
+        ]
+        sims_present_per_model[m_idx] = present
+
     for sim_idx, sim in enumerate(sims_ordered):
-        offset = (sim_idx - n_sims / 2 + 0.5) * bar_width
         positions = []
         heights = []
 
@@ -1204,7 +1216,12 @@ def _plot_model_breakdown_panel(
             if vals.empty:
                 continue
             mape = vals.median()
-            positions.append(x[m_idx] + offset)
+            # Center bars around label based on how many are present
+            present = sims_present_per_model[m_idx]
+            n_present = len(present)
+            rank = present.index(sim)
+            pos = x[m_idx] + (rank - n_present / 2 + 0.5) * bar_width
+            positions.append(pos)
             heights.append(mape)
 
         if not positions:
@@ -1712,13 +1729,22 @@ def _plot_config_sensitivity(
 
     fig, ax = plt.subplots(figsize=FIGURE_SIZES["wide"])
 
+    # Precompute which simulators have data per entry (preserving order)
+    sims_present_per_entry = {}
+    for i, (_, _, sim_mapes) in enumerate(entries):
+        sims_present_per_entry[i] = [s for s in simulators if s in sim_mapes]
+
     for sim_idx, sim in enumerate(simulators):
-        offset = (sim_idx - n_sims / 2 + 0.5) * bar_width
         positions = []
         heights = []
         for i, (_, _, sim_mapes) in enumerate(entries):
             if sim in sim_mapes:
-                positions.append(x[i] + offset)
+                # Center bars around label based on how many are present
+                present = sims_present_per_entry[i]
+                n_present = len(present)
+                rank = present.index(sim)
+                pos = x[i] + (rank - n_present / 2 + 0.5) * bar_width
+                positions.append(pos)
                 heights.append(sim_mapes[sim])
         if not heights:
             continue
@@ -2342,10 +2368,10 @@ def main(argv: list[str] | None = None) -> None:
     os.makedirs(sim_comparison_dir, exist_ok=True)
 
     comparison_pairs = [
-        (["blis-roofline", "blis-trained-physics"], "vidur", "blis_vs_vidur.pdf"),
-        (["blis-roofline", "blis-trained-physics"], "llm-optimizer-estimate", "blis_vs_llm_optimizer.pdf"),
-        (["blis-roofline", "blis-trained-physics"], "aiconfigurator-estimate", "blis_vs_aiconfigurator.pdf"),
-        (["blis-roofline", "blis-trained-physics"], "llmservingsim", "blis_vs_llmservingsim.pdf"),
+        ("blis-trained-physics", "vidur", "blis_vs_vidur.pdf"),
+        ("blis-trained-physics", "llm-optimizer-estimate", "blis_vs_llm_optimizer.pdf"),
+        ("blis-trained-physics", "aiconfigurator-estimate", "blis_vs_aiconfigurator.pdf"),
+        ("blis-trained-physics", "llmservingsim", "blis_vs_llmservingsim.pdf"),
     ]
 
     for sim1, sim2, filename in comparison_pairs:
