@@ -1256,6 +1256,7 @@ def plot_simulator_comparison(
     yscale: str | None = None,
     yscale_linthresh: float = 100,
     show_aggregate: bool = True,
+    display_names: dict[str, str] | None = None,
 ) -> plt.Figure | None:
     """Compare simulators with 2×3 grid (aggregate + model breakdown) or 1×3 grid (model breakdown only).
 
@@ -1282,6 +1283,35 @@ def plot_simulator_comparison(
     """
     _apply_rc_params()
 
+    # Apply display name overrides for this figure
+    original_names = {}
+    if display_names:
+        for key, val in display_names.items():
+            original_names[key] = SIMULATOR_DISPLAY_NAMES.get(key)
+            SIMULATOR_DISPLAY_NAMES[key] = val
+
+    try:
+        return _plot_simulator_comparison_inner(
+            df, sim1, sim2, output_path, yscale, yscale_linthresh, show_aggregate,
+        )
+    finally:
+        # Restore original display names
+        for key, orig_val in original_names.items():
+            if orig_val is None:
+                SIMULATOR_DISPLAY_NAMES.pop(key, None)
+            else:
+                SIMULATOR_DISPLAY_NAMES[key] = orig_val
+
+
+def _plot_simulator_comparison_inner(
+    df: pd.DataFrame,
+    sim1: str | list[str],
+    sim2: str,
+    output_path: str | None = None,
+    yscale: str | None = None,
+    yscale_linthresh: float = 100,
+    show_aggregate: bool = True,
+) -> plt.Figure | None:
     # Handle sim1 as list or string
     sim1_list = sim1 if isinstance(sim1, list) else [sim1]
 
@@ -2351,7 +2381,8 @@ def main(argv: list[str] | None = None) -> None:
          lambda: plot_simulator_comparison(
              blis_comparison_df, "blis-roofline", "blis-trained-physics",
              output_path=os.path.join(out, "fig6_blis_roofline_vs_trained.pdf"),
-             show_aggregate=not args.sim_comparison_no_aggregate,
+             show_aggregate=False,
+             display_names={"blis-trained-physics": "BLIS Trained-Physics"},
          )),
     ]
 
