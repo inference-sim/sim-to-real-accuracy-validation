@@ -18,8 +18,9 @@ All ground-truth measurements were collected using [inference-perf](https://gith
 
 - **BLIS variant.** "BLIS" refers to the `blis-trained-physics` latency mode (learned alpha/beta coefficients + physics-based TP All-Reduce modeling).
 - **Metrics.** All figures report summary-level MAPE (`stage_index = -1`), not per-stage.
-- **Simulation types.** BLIS and Vidur replay full per-request traces. LLM-Optimizer and AIConfigurator are analytical (concurrency derived via throughput-matching against stage arrival rate — no ground-truth latency used). LLMServingSim is cycle-accurate.
-- **Coverage gaps.** Vidur excludes MoE models. LLM-Optimizer approximates MoE as dense. AIConfigurator supports H100, A100-80GB, and L40S. Only BLIS supports all hardware, workloads, and config parameters.
+- **Simulation types.** BLIS and Vidur replay full per-request traces. LLM-Optimizer and AIConfigurator are analytical (concurrency derived via throughput-matching against stage arrival rate — no ground-truth latency used). LLMServingSim is a discrete-event simulator that models vLLM's continuous batching scheduler at the iteration level.
+- **LLMServingSim setup.** We profiled each model × GPU × TP combination using LLMServingSim's built-in profiler on H100 hardware. Each simulation replayed the first 300 requests from the ground-truth trace at the original arrival rate. Results were compared against the same 300-request subset of ground truth to ensure an apples-to-apples comparison. Runtimes in the Pareto plot (Figure 5) are scaled proportionally to full workload size.
+- **Coverage gaps.** Vidur excludes MoE models. LLM-Optimizer approximates MoE as dense. AIConfigurator supports H100, A100-80GB, and L40S. LLMServingSim is limited to H100 (profiled hardware). Only BLIS supports all hardware, workloads, and config parameters.
 
 ---
 
@@ -67,7 +68,7 @@ E2E Mean MAPE for individual config values under controlled single-parameter swe
 
 ![Figure 5](figures/fig5_pareto.png)
 
-Median MAPE vs. median wall-clock runtime per simulator on log-log axes, aggregated across all experiments without filtering. Error bars show interquartile range. BLIS achieves the best accuracy (~10% median MAPE) at moderate speed (~5.8s median runtime, 208× speedup). LLM-Optimizer is the fastest (~0.05s, 22,679× speedup) but with higher error (~65% median MAPE). LLMServingSim achieves ~65% median MAPE at ~3,000s scaled runtime (raw time: 353s for 2000-request subset, scaled to match full workload size) — comparable to LLM-Optimizer's accuracy at orders-of-magnitude greater cost. Vidur shows the highest median error (>1,000%) due to systematic TTFT overprediction.
+Median MAPE vs. median wall-clock runtime per simulator on log-log axes, aggregated across all experiments without filtering. Error bars show interquartile range. BLIS achieves the best accuracy (~10% median MAPE) at moderate speed (~5.7s median runtime, 212× speedup). LLM-Optimizer is the fastest (~0.05s, 22,562× speedup) but with higher error (~65% median MAPE). LLMServingSim achieves ~19% E2E median MAPE at ~200s raw runtime for 300 requests (scaled to full workload size in the plot). Vidur shows the highest median error (>1,000%) due to systematic TTFT overprediction.
 
 ---
 
@@ -83,13 +84,13 @@ Total wall-clock time and estimated cost to run the full experiment suite (36 pa
 
 | Simulator | Median Runtime (s) | Speedup vs. Real |
 |---|---|---|
-| BLIS | 5.8 | 208× |
-| Vidur | 8.4 | 145× |
-| LLM-Optimizer | 0.1 | 22,679× |
-| AIConfigurator | 3.5 | 350× |
-| LLMServingSim | 353.3 | 0.4× |
+| BLIS | 5.7 | 212× |
+| Vidur | 8.6 | 141× |
+| LLM-Optimizer | 0.1 | 22,562× |
+| AIConfigurator | 2.1 | 586× |
+| LLMServingSim | 199.8 | 0.2× |
 
-Median wall-clock runtime per simulator and speedup relative to real experiment execution (~1,200s per experiment). BLIS provides the best accuracy-speed tradeoff: 10× more accurate than LLM-Optimizer at only 58× slower, and orders of magnitude faster than LLMServingSim at comparable or better accuracy. LLMServingSim's cycle-accurate simulation is slower than running the actual serving experiment on hardware.
+Median wall-clock runtime per simulator and speedup relative to real experiment execution. LLMServingSim runtime shown is for 300-request runs; it is slower than real serving due to per-iteration discrete-event simulation overhead. BLIS provides the best accuracy-speed tradeoff: significantly more accurate than LLM-Optimizer at only moderate runtime, and orders of magnitude faster than LLMServingSim while achieving comparable E2E accuracy.
 
 ---
 

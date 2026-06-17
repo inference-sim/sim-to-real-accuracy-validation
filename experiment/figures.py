@@ -306,6 +306,7 @@ def _grouped_bar(
     metrics: list[tuple[str, str]] | None = None,
     yscale: str | None = None,
     yscale_linthresh: float = 100,
+    annotate_small_bars: set[str] | None = None,
 ) -> plt.Figure | None:
     """Grouped bar chart: x = groups, bars = simulators, y = MAPE.
 
@@ -420,6 +421,8 @@ def _grouped_bar(
     x = np.arange(n_groups)
     col_maxes = [0.0] * n_cols
     labeled_sims = set()  # Track which simulators have been labeled
+    # Collect bar data for annotation: {(col_idx, sim): [(pos, height), ...]}
+    _bar_data: dict[tuple[int, str], list[tuple[float, float]]] = {}
 
     for col_idx, (metric_key, metric_label) in enumerate(metrics):
         ax_obj = axes[col_idx]
@@ -469,6 +472,10 @@ def _grouped_bar(
             if not positions:
                 continue
             col_maxes[col_idx] = max(col_maxes[col_idx], max(heights))
+
+            # Store bar data for potential annotation
+            if annotate_small_bars and sim in annotate_small_bars:
+                _bar_data[(col_idx, sim)] = list(zip(positions, heights))
 
             # Add label only the first time this simulator is plotted
             label = SIMULATOR_DISPLAY_NAMES[sim] if sim not in labeled_sims else ""
@@ -611,6 +618,25 @@ def _grouped_bar(
                 ax_obj.set_yscale('symlog', linthresh=yscale_linthresh)
             elif yscale is not None:
                 ax_obj.set_yscale(yscale)
+
+    # Annotate very small bars (MAPE < 2%) for specified simulators
+    if annotate_small_bars:
+        for (col_idx, sim), bar_info in _bar_data.items():
+            use_break, lower_max, _, _, _ = break_configs[col_idx]
+            ax_obj = axes[col_idx]
+            ax = ax_obj[1] if use_break else ax_obj
+            for bar_x, bar_y in bar_info:
+                if bar_y < 2.0:
+                    label = f"{bar_y:.2f}"
+                    ax.text(
+                        bar_x, bar_y + 1.0, label,
+                        ha="center", va="bottom", fontsize=5.5,
+                        color=COLOR_PALETTE[sim], fontweight="bold",
+                        bbox=dict(boxstyle="round,pad=0.15", facecolor="white",
+                                  edgecolor=COLOR_PALETTE[sim], linewidth=0.4,
+                                  alpha=0.95),
+                        zorder=10,
+                    )
 
     fig.suptitle(title, fontsize=11, fontweight="bold")
 
@@ -1499,6 +1525,7 @@ def plot_model_sensitivity(
             ("ttft_mean", "TTFT Mean"),
             ("itl_mean", "ITL Mean"),
         ],
+        annotate_small_bars={"blis-trained-physics", "aiconfigurator-estimate"},
     )
     if fig is None:
         warnings.warn("Figure 1: no models with data")
@@ -1669,7 +1696,11 @@ def _plot_config_sensitivity(
     hw_str = "H100"
     wl_vals = df["workload"].dropna()
     wl_vals = wl_vals[wl_vals != ""]
-    wl_names = [WORKLOAD_DISPLAY_NAMES.get(w, w) for w in sorted(wl_vals.unique())]
+    wl_unique = sorted(wl_vals.unique())
+    # Treat "general-lite" as part of "general" for display purposes
+    if "general" in wl_unique and "general-lite" in wl_unique:
+        wl_unique = [w for w in wl_unique if w != "general-lite"]
+    wl_names = [WORKLOAD_DISPLAY_NAMES.get(w, w) for w in wl_unique]
     wl_str = ", ".join(wl_names) if wl_names else None
 
     extra_parts = [hw_str]
@@ -1787,6 +1818,37 @@ def _plot_config_sensitivity(
             edgecolor="black", linewidth=0.5,
             label=SIMULATOR_DISPLAY_NAMES[sim],
         )
+
+    # Annotate tiny bars with MAPE values for readability
+    # For TP=4 bars (MoE), BLIS and LLMServingSim are often too small to read
+    _annotate_sims = {"blis-trained-physics", "llmservingsim"}
+    for i, (group_label, val_label, sim_mapes) in enumerate(entries):
+        if group_label == "TP" and val_label == "4":
+            present = sims_present_per_entry[i]
+            for sim in present:
+                if sim in _annotate_sims and sim in sim_mapes:
+                    rank = present.index(sim)
+                    n_present = len(present)
+                    bar_x = x[i] + (rank - n_present / 2 + 0.5) * bar_width
+                    bar_y = sim_mapes[sim]
+                    # Use 2 decimal places for small values
+                    label = f"{bar_y:.2f}" if bar_y < 10 else f"{bar_y:.1f}"
+                    # Offset outward from center to avoid overlap with tall adjacent bars
+                    if rank < n_present / 2:
+                        ha, x_off = "right", -bar_width * 0.1
+                    else:
+                        ha, x_off = "left", bar_width * 0.6
+                    ax.annotate(
+                        label,
+                        (bar_x, bar_y),
+                        xytext=(bar_x + x_off, global_max * 0.08),
+                        ha=ha, va="bottom", fontsize=6.5,
+                        color=COLOR_PALETTE[sim], fontweight="bold",
+                        bbox=dict(boxstyle="round,pad=0.15", facecolor="white",
+                                  edgecolor="none", alpha=0.9),
+                        arrowprops={"arrowstyle": "-", "color": COLOR_PALETTE[sim],
+                                    "linewidth": 0.6},
+                    )
 
     # X-axis: value labels
     ax.set_xticks(x)
@@ -1991,17 +2053,15 @@ def plot_pareto(
 
 
 def _scale_llmservingsim_runtimes(llmservingsim_runtime_df: pd.DataFrame, results_dir: str) -> pd.DataFrame:
-    """Scale LLMServingSim runtimes from 2000-request runs to full workload size.
+    """Scale LLMServingSim runtimes from sampled runs to full workload size.
 
-    LLMServingSim in cluster_2000req ran only 2000 requests, while other simulators
+    LLMServingSim ran a subset of requests (e.g. 300), while other simulators
     ran the full workload. To make runtimes comparable in the Pareto plot, we scale
-    LLMServingSim's wall_clock_seconds proportionally: runtime × (gt_count / 2000).
+    LLMServingSim's wall_clock_seconds proportionally: runtime × (gt_count / sim_count).
 
     Returns a copy of the dataframe with scaled wall_clock_seconds.
     """
     base_dir = os.path.dirname(os.path.abspath(results_dir))
-    if os.path.basename(results_dir) == "cluster_2000req":
-        base_dir = os.path.dirname(base_dir)
 
     scaled_df = llmservingsim_runtime_df.copy()
 
@@ -2026,9 +2086,11 @@ def _scale_llmservingsim_runtimes(llmservingsim_runtime_df: pd.DataFrame, result
                 gt_request_count = summary.get("load_summary", {}).get("count", 0)
 
             if gt_request_count > 0:
-                # Scale: runtime × (gt_count / 2000)
+                # Scale: runtime × (gt_count / sim_count)
+                # Use _sim_request_count column if present, otherwise default to 300
+                sim_count = row.get("_sim_request_count", 300)
                 original_runtime = row["wall_clock_seconds"]
-                scaling_factor = gt_request_count / 2000.0
+                scaling_factor = gt_request_count / float(sim_count)
                 scaled_runtime = original_runtime * scaling_factor
 
                 scaled_df.at[idx, "wall_clock_seconds"] = scaled_runtime
@@ -2053,13 +2115,8 @@ def _calculate_median_real_duration(runtime_df: pd.DataFrame, results_dir: str) 
 
     Falls back to 1200.0 if ground truth data cannot be found.
     """
-    # Try to find ground truth summaries relative to results_dir
-    # Handle both results_iter26 and results_iter26/cluster_2000req cases
+    # Find ground truth summaries relative to results_dir (one level up from results/)
     base_dir = os.path.dirname(os.path.abspath(results_dir))
-
-    # For cluster_2000req subdirs, go up one more level
-    if os.path.basename(results_dir) == "cluster_2000req":
-        base_dir = os.path.dirname(base_dir)
 
     summary_pattern = os.path.join(base_dir, "vllm_data/ground_truth/*/results/summary_lifecycle_metrics.json")
     summary_files = glob.glob(summary_pattern)
@@ -2123,8 +2180,6 @@ def format_runtime_table_latex(
         Real experiment duration. If None, calculated per-simulator from ground truth profiles.
         For LLMServingSim in cluster_2000req, scales based on 2000-request runs.
     """
-    is_cluster_2000req = os.path.basename(results_dir) == "cluster_2000req"
-
     lines = [
         r"\begin{tabular}{lrr}",
         r"\toprule",
@@ -2137,11 +2192,8 @@ def format_runtime_table_latex(
         if sdf.empty:
             continue
 
-        # Check if this simulator has the _cluster_2000req marker
-        has_cluster_marker = "_cluster_2000req" in sdf.columns and sdf["_cluster_2000req"].any()
-
-        # For display: use original runtime if available (for LLMServingSim from cluster)
-        if has_cluster_marker and "_original_wall_clock_seconds" in sdf.columns:
+        # For display: use original (unscaled) runtime if available
+        if "_original_wall_clock_seconds" in sdf.columns and sdf["_original_wall_clock_seconds"].notna().any():
             median_t = sdf["_original_wall_clock_seconds"].median()
         else:
             median_t = sdf["wall_clock_seconds"].median()
@@ -2150,8 +2202,8 @@ def format_runtime_table_latex(
         if real_experiment_seconds is not None:
             # Use provided duration
             real_dur = real_experiment_seconds
-        elif (is_cluster_2000req or has_cluster_marker) and sim == "llmservingsim":
-            # For LLMServingSim from cluster_2000req (2000 requests), calculate scaled duration
+        elif sim == "llmservingsim" and "_original_wall_clock_seconds" in sdf.columns:
+            # For LLMServingSim (ran subset of requests), calculate scaled real duration
             real_dur = _calculate_llmservingsim_scaled_duration(sdf, results_dir)
         else:
             # For other simulators, use median from ground truth
@@ -2182,20 +2234,20 @@ def format_runtime_table_latex(
 
 
 def _calculate_llmservingsim_scaled_duration(llmservingsim_df: pd.DataFrame, results_dir: str) -> float:
-    """Calculate scaled real duration for LLMServingSim which ran 2000 requests.
+    """Calculate scaled real duration for LLMServingSim which ran a subset of requests.
 
     Uses actual measured duration and request counts from summary_lifecycle_metrics.json.
+    Scales the real duration proportionally to the number of requests the simulator ran.
     Returns median of scaled durations across LLMServingSim experiments.
     """
     base_dir = os.path.dirname(os.path.abspath(results_dir))
-    if os.path.basename(results_dir) == "cluster_2000req":
-        base_dir = os.path.dirname(base_dir)
 
     scaled_durations = []
 
     for _, row in llmservingsim_df.iterrows():
         exp_path = row.get("experiment_folder", "")
         exp_folder = os.path.basename(exp_path) if isinstance(exp_path, str) else ""
+        sim_count = row.get("_sim_request_count", 300)
 
         if not exp_folder:
             continue
@@ -2215,12 +2267,12 @@ def _calculate_llmservingsim_scaled_duration(llmservingsim_df: pd.DataFrame, res
             if gt_request_count > 0 and rps > 0:
                 gt_duration = gt_request_count / rps
 
-                # Scale: (2000 / gt_count) * actual_duration
-                scaled = (2000.0 / gt_request_count) * gt_duration
+                # Scale real duration to match sim request count
+                scaled = (float(sim_count) / gt_request_count) * gt_duration
                 scaled_durations.append(scaled)
                 logger.debug(
-                    "LLMServingSim %s: %d→2000 requests, %.1fs→%.1fs (actual)",
-                    exp_folder, gt_request_count, gt_duration, scaled
+                    "LLMServingSim %s: %d→%d requests, %.1fs→%.1fs (real duration)",
+                    exp_folder, gt_request_count, sim_count, gt_duration, scaled
                 )
         except Exception as e:
             logger.warning("Failed to scale duration for %s: %s", exp_folder, e)
@@ -2304,25 +2356,20 @@ def main(argv: list[str] | None = None) -> None:
     error_df = _add_config_tags(error_df)
 
     # Fig 5 (Pareto) and Table 1 use all simulators (ignore CLI exclusions)
-    # For LLMServingSim, merge data from cluster_2000req if available
     error_df_all = enrich_with_metadata(error_df_full, args.metadata)
     runtime_df_all = enrich_with_metadata(runtime_df_full, args.metadata)
 
-    # Check for cluster_2000req data and merge LLMServingSim results
-    cluster_error_csv = os.path.join(args.results_dir, "cluster_2000req/error_records.csv")
-    cluster_runtime_csv = os.path.join(args.results_dir, "cluster_2000req/runtime.csv")
+    # Load LLMServingSim data from separate result files
+    llmsim_error_csv = os.path.join(args.results_dir, "llmservingsim_error_records_matched.csv")
+    llmsim_runtime_csv = os.path.join(args.results_dir, "llmservingsim_runtime.csv")
 
-    if os.path.exists(cluster_error_csv) and os.path.exists(cluster_runtime_csv):
+    if os.path.exists(llmsim_error_csv) and os.path.exists(llmsim_runtime_csv):
         try:
-            cluster_error_df = load_error_data(cluster_error_csv)
-            cluster_runtime_df = load_runtime_data(cluster_runtime_csv)
-
-            # Extract only LLMServingSim from cluster
-            llmsim_error = cluster_error_df[cluster_error_df["simulator"] == "llmservingsim"]
-            llmsim_runtime = cluster_runtime_df[cluster_runtime_df["simulator"] == "llmservingsim"]
+            llmsim_error = load_error_data(llmsim_error_csv)
+            llmsim_runtime = load_runtime_data(llmsim_runtime_csv)
 
             if not llmsim_error.empty and not llmsim_runtime.empty:
-                # Enrich cluster data with metadata
+                # Enrich with metadata
                 llmsim_error = enrich_with_metadata(llmsim_error, args.metadata)
                 llmsim_runtime = enrich_with_metadata(llmsim_runtime, args.metadata)
 
@@ -2330,25 +2377,30 @@ def main(argv: list[str] | None = None) -> None:
                 llmsim_runtime["_original_wall_clock_seconds"] = llmsim_runtime["wall_clock_seconds"]
 
                 # Scale LLMServingSim runtimes for fair comparison in Pareto plot
-                # (LLMServingSim ran 2000 requests, need to scale to full workload size)
+                # (LLMServingSim ran 300 requests, need to scale to full workload size)
                 llmsim_runtime = _scale_llmservingsim_runtimes(
                     llmsim_runtime, args.results_dir
                 )
-
-                # Mark LLMServingSim data as coming from cluster_2000req (for speedup calc)
-                llmsim_runtime["_cluster_2000req"] = True
 
                 # Remove any existing LLMServingSim from main results
                 error_df_all = error_df_all[error_df_all["simulator"] != "llmservingsim"]
                 runtime_df_all = runtime_df_all[runtime_df_all["simulator"] != "llmservingsim"]
 
-                # Merge cluster LLMServingSim with main results
+                # Merge LLMServingSim into the all-simulators dataframes
                 error_df_all = pd.concat([error_df_all, llmsim_error], ignore_index=True)
                 runtime_df_all = pd.concat([runtime_df_all, llmsim_runtime], ignore_index=True)
 
-                logger.info("Merged LLMServingSim data from cluster_2000req for Pareto and runtime table")
+                # Also add to the filtered dataframes (for figs 1-4) unless excluded
+                if "llmservingsim" not in (args.exclude_simulators or []):
+                    error_df = error_df[error_df["simulator"] != "llmservingsim"]
+                    runtime_df = runtime_df[runtime_df["simulator"] != "llmservingsim"]
+                    llmsim_error_tagged = _add_config_tags(llmsim_error)
+                    error_df = pd.concat([error_df, llmsim_error_tagged], ignore_index=True)
+                    runtime_df = pd.concat([runtime_df, llmsim_runtime], ignore_index=True)
+
+                logger.info("Loaded LLMServingSim data from separate result files")
         except Exception as e:
-            logger.warning("Failed to merge cluster_2000req data: %s", e)
+            logger.warning("Failed to load LLMServingSim data: %s", e)
 
     error_df_all = _add_config_tags(error_df_all)
 
@@ -2398,7 +2450,7 @@ def main(argv: list[str] | None = None) -> None:
             print(f"  FAIL: {name} ({e})")
             logger.exception("Failed to generate %s", name)
 
-    # Table 1 - use runtime_df_all to include LLMServingSim from cluster_2000req
+    # Table 1 - use runtime_df_all to include all simulators
     try:
         tex = format_runtime_table_latex(
             runtime_df_all,
@@ -2431,35 +2483,35 @@ def main(argv: list[str] | None = None) -> None:
             # Add show_aggregate parameter from CLI args
             yscale_kwargs["show_aggregate"] = not args.sim_comparison_no_aggregate
 
-            # Special handling for llmservingsim comparisons: use cluster results if available and complete
+            # Special handling for llmservingsim comparisons: use separate result file
             if filename == "blis_vs_llmservingsim.pdf":
-                cluster_error_csv = os.path.join(args.results_dir, "cluster_2000req/error_records.csv")
-                use_cluster = False
+                llmsim_csv = os.path.join(args.results_dir, "llmservingsim_error_records_matched.csv")
+                used_llmsim = False
 
-                if os.path.exists(cluster_error_csv):
-                    cluster_error_df = load_error_data(cluster_error_csv)
-                    cluster_error_df = enrich_with_metadata(cluster_error_df, args.metadata)
-                    cluster_error_df = _add_config_tags(cluster_error_df)
+                if os.path.exists(llmsim_csv):
+                    llmsim_df = load_error_data(llmsim_csv)
+                    llmsim_df = enrich_with_metadata(llmsim_df, args.metadata)
+                    llmsim_df = _add_config_tags(llmsim_df)
 
-                    # Check if cluster results have the BLIS variants we need
-                    cluster_sims = set(cluster_error_df["simulator"].unique())
-                    sim1_list = sim1 if isinstance(sim1, list) else [sim1]
-                    has_required_sims = sim2 in cluster_sims and any(s in cluster_sims for s in sim1_list)
+                    if not llmsim_df.empty:
+                        # Combine with blis data from main results
+                        sim1_list = sim1 if isinstance(sim1, list) else [sim1]
+                        blis_df = error_df_all[error_df_all["simulator"].isin(sim1_list)]
+                        combined_df = pd.concat([blis_df, llmsim_df], ignore_index=True)
 
-                    if has_required_sims:
-                        use_cluster = True
-                        print(f"  Using cluster results for {filename}")
+                        used_llmsim = True
+                        print(f"  Using separate LLMServingSim results for {filename}")
                         fig = plot_simulator_comparison(
-                            cluster_error_df, sim1, sim2,
+                            combined_df, sim1, sim2,
                             os.path.join(sim_comparison_dir, filename),
                             **yscale_kwargs
                         )
 
-                if not use_cluster:
-                    # Fall back to regular results if cluster missing or incomplete
-                    print(f"  Using regular results for {filename} (cluster incomplete or missing)")
+                if not used_llmsim:
+                    # Fall back to error_df_all which may have LLMServingSim merged
+                    print(f"  Using error_df_all for {filename}")
                     fig = plot_simulator_comparison(
-                        error_df_full, sim1, sim2,
+                        error_df_all, sim1, sim2,
                         os.path.join(sim_comparison_dir, filename),
                         **yscale_kwargs
                     )

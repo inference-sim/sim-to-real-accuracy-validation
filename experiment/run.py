@@ -298,8 +298,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--max-requests-per-experiment",
         type=int,
-        default=0,
-        help="Limit number of requests per experiment (default: 0 = unlimited). Set to a positive number to sample workload.",
+        default=300,
+        help="Limit number of requests per experiment (default: 300). Set to 0 for unlimited.",
     )
     return parser.parse_args(argv)
 

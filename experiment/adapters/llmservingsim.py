@@ -36,8 +36,13 @@ from experiment.data_model import (
 # model ID from exp-config.yaml (e.g. "meta-llama/Llama-3.1-8B-Instruct").
 # LLMServingSim's perf model directories drop the "-Instruct" suffix.
 MODEL_MAP: dict[str, str] = {
-    "meta-llama/Llama-3.1-8B-Instruct": "meta-llama/Llama-3.1-8B",
+    "meta-llama/Llama-3.1-8B-Instruct": "meta-llama/Llama-3.1-8B-Instruct",
+    "meta-llama/Llama-2-70b-hf": "meta-llama/Llama-2-70b-hf",
     "mistralai/Mixtral-8x7B-v0.1": "mistralai/Mixtral-8x7B-v0.1",
+    "mistralai/Mixtral-8x22B-Instruct-v0.1": "mistralai/Mixtral-8x22B-Instruct-v0.1",
+    "mistralai/Mixtral-8x22B-v0.1": "mistralai/Mixtral-8x22B-Instruct-v0.1",
+    "codellama/CodeLlama-34b-Instruct-hf": "codellama/CodeLlama-34b-Instruct-hf",
+    "Qwen/Qwen3-14B": "Qwen/Qwen3-14B",
 }
 
 # Map experiment precision labels to LLMServingSim dtype CLI values and
@@ -49,6 +54,10 @@ _PRECISION_TO_DTYPE: dict[str, str] = {
 _PRECISION_TO_VARIANT: dict[str, str] = {
     "FP16": "bf16",
     "FP8": "fp8",
+}
+# Models whose torch_dtype is float16 (not bfloat16) — profiler uses "fp16" variant
+_MODEL_VARIANT_OVERRIDE: dict[str, str] = {
+    "meta-llama/Llama-2-70b-hf": "fp16",
 }
 
 
@@ -183,7 +192,8 @@ class LLMServingSimAdapter(SimulatorAdapter):
             return False
 
         # Check precision mapping
-        variant = _PRECISION_TO_VARIANT.get(experiment.precision)
+        variant = _MODEL_VARIANT_OVERRIDE.get(model_sim,
+                    _PRECISION_TO_VARIANT.get(experiment.precision))
         if not variant:
             return False
 
@@ -406,8 +416,12 @@ class LLMServingSimAdapter(SimulatorAdapter):
             for stage in experiment.profile_config["load"]["stages"]
         )
 
-        # Resolve dtype from precision
-        dtype = _PRECISION_TO_DTYPE.get(experiment.precision, "bfloat16")
+        # Resolve dtype from precision (some older models use float16)
+        model_sim = MODEL_MAP[experiment.model]
+        if model_sim in _MODEL_VARIANT_OVERRIDE:
+            dtype = "float16"
+        else:
+            dtype = _PRECISION_TO_DTYPE.get(experiment.precision, "bfloat16")
 
         args = [
             "python3", "-m", "serving",
