@@ -8,7 +8,7 @@
 | Vidur | [microsoft/vidur](https://github.com/microsoft/vidur) | `8383d29` |
 | LLM-Optimizer | [bentoml/llm-optimizer](https://github.com/bentoml/llm-optimizer) | `bb82d22` |
 | AIConfigurator | [aiconfigurator SDK](https://pypi.org/project/aiconfigurator/) | `0.9.0` |
-| LLMServingSim | [casys-kaist/LLMServingSim](https://github.com/casys-kaist/LLMServingSim) | `3012eb1` (v1.1.0) |
+| LLMServingSim | [casys-kaist/LLMServingSim](https://github.com/casys-kaist/LLMServingSim) | `61ab5b1` (v1.1.0) |
 
 ## Ground Truth
 
